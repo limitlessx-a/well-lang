@@ -224,6 +224,99 @@ static WellHttpConn *http_conn_unref_locked(WellHttpConn *c) {
 
 /* ---------- request lifetime (all refcount ops hold g_http_lock) ---------- */
 
+/* Request id hash: keeps `Http.respond(reqId)` O(1) instead of a list scan.
+ * Deletion uses Knuth's backward-shift algorithm, so the table stays dense. */
+static WellHttpRequest **g_req_slots = NULL;
+static int g_req_slot_cap = 0;
+static int g_req_slot_used = 0;
+
+static unsigned long long http_mix(long long id) {
+    unsigned long long x = (unsigned long long)id + 0x9e3779b97f4a7c15ULL;
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27;
+    x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return x ? x : 1ULL;
+}
+
+static void http_req_map_rehash(int cap) {
+    WellHttpRequest **ns = (WellHttpRequest **)calloc((size_t)cap, sizeof(WellHttpRequest *));
+    unsigned long long mask;
+    int i;
+    if (!ns) well_panic("out of memory (http request map)");
+    mask = (unsigned long long)(cap - 1);
+    for (i = 0; i < g_req_slot_cap; i++) {
+        WellHttpRequest *r = g_req_slots[i];
+        unsigned long long h;
+        if (!r) continue;
+        h = http_mix(r->id) & mask;
+        while (ns[h]) h = (h + 1) & mask;
+        ns[h] = r;
+    }
+    free(g_req_slots);
+    g_req_slots = ns;
+    g_req_slot_cap = cap;
+}
+
+/* Caller holds g_http_lock. */
+static void http_req_map_put(WellHttpRequest *req) {
+    unsigned long long mask, h;
+    if (g_req_slot_cap == 0 || (g_req_slot_used + 1) * 10 >= g_req_slot_cap * 7)
+        http_req_map_rehash(g_req_slot_cap ? g_req_slot_cap * 2 : 64);
+    mask = (unsigned long long)(g_req_slot_cap - 1);
+    h = http_mix(req->id) & mask;
+    while (g_req_slots[h]) h = (h + 1) & mask;
+    g_req_slots[h] = req;
+    g_req_slot_used++;
+}
+
+/* Caller holds g_http_lock. */
+static WellHttpRequest *http_req_map_find(long long id) {
+    unsigned long long mask, h;
+    if (g_req_slot_cap == 0) return NULL;
+    mask = (unsigned long long)(g_req_slot_cap - 1);
+    h = http_mix(id) & mask;
+    while (g_req_slots[h]) {
+        if (g_req_slots[h]->id == id) return g_req_slots[h];
+        h = (h + 1) & mask;
+    }
+    return NULL;
+}
+
+/* Caller holds g_http_lock. */
+static void http_req_map_del(long long id) {
+    unsigned long long mask, h;
+    if (g_req_slot_cap == 0) return;
+    mask = (unsigned long long)(g_req_slot_cap - 1);
+    h = http_mix(id) & mask;
+    while (g_req_slots[h]) {
+        if (g_req_slots[h]->id == id) break;
+        h = (h + 1) & mask;
+    }
+    if (!g_req_slots[h]) return;
+    for (;;) {
+        unsigned long long j = h;
+        unsigned long long k;
+        g_req_slots[h] = NULL;
+        for (;;) {
+            j = (j + 1) & mask;
+            if (!g_req_slots[j]) {
+                g_req_slot_used--;
+                return;
+            }
+            k = http_mix(g_req_slots[j]->id) & mask;
+            if (h <= j) {
+                if (k <= h || k > j) break;
+            } else {
+                if (k <= h && k > j) break;
+            }
+        }
+        g_req_slots[h] = g_req_slots[j];
+        h = j;
+    }
+}
+
 static void http_req_free(WellHttpRequest *req) {
     if (req->method) well_release(req->method);
     if (req->path) well_release(req->path);
@@ -245,24 +338,19 @@ static WellHttpRequest *http_req_unref_locked(WellHttpRequest *req) {
         }
         pp = &(*pp)->next;
     }
+    http_req_map_del(req->id);
     return req;
 }
 
 /* First response wins: whoever claims `responded` writes. The reader thread
  * waits for `written` before reading the next request on a keep-alive socket. */
 void well_http_respond(long long req_id, int status, const char *body) {
-    WellHttpRequest *req = NULL;
+    WellHttpRequest *req;
     WellHttpRequest *dead;
-    WellHttpRequest *p;
     WellHttpConn *conn;
     http_lock_init();
     well_mutex_lock(&g_http_lock);
-    for (p = g_requests; p; p = p->next) {
-        if (p->id == req_id) {
-            req = p;
-            break;
-        }
-    }
+    req = http_req_map_find(req_id);
     if (!req) {
         well_mutex_unlock(&g_http_lock);
         return;
@@ -343,59 +431,51 @@ static int http_has_ci(const char *s, const char *needle) {
     return 0;
 }
 
-/* Reads one request from a keep-alive connection.
+/* Reads one request from a keep-alive connection into `buf` (caller-owned
+ * scratch, at least 65537 bytes). method/path/query point into `buf` and stay
+ * valid until the next call; body is malloc'd (NULL when empty).
  * Returns 0 on success, -1 on a malformed request, -2 when the peer closed
  * (or the idle read timeout elapsed) before sending a new request. */
-static int http_read_request(WellSocket fd, char **method, char **path,
-                             char **query, char **body, int *keep_alive) {
-    char *buf = (char *)malloc(65537);
-    size_t cap = 65536;
+static int http_read_request(WellSocket fd, char *buf, size_t cap,
+                             char **method, char **path, char **query,
+                             char **body, int *keep_alive) {
     size_t len = 0;
     char *hdr_end = NULL;
     size_t body_len = 0;
     char *line, *next;
     char *target = NULL;
-    char *m = NULL;
     int content_length = -1;
     int http11 = 0;
     int conn_close = 0;
     int conn_keep = 0;
 
-    if (!buf) well_panic("out of memory (HTTP request)");
+    *body = NULL;
     for (;;) {
         int k;
-        if (len == cap) {
-            free(buf);
-            return -1;
-        }
+        if (len == cap) return -1;
         k = http_recv(fd, buf + len, (int)(cap - len));
         if (k <= 0) {
             int eof = (len == 0);
-            free(buf);
             return eof ? -2 : -1;
         }
         len += (size_t)k;
         buf[len] = '\0';
         hdr_end = strstr(buf, "\r\n\r\n");
         if (hdr_end) break;
-        if (len > 16384) {
-            free(buf);
-            return -1;
-        }
+        if (len > 16384) return -1;
     }
 
     line = buf;
     next = strstr(line, "\r\n");
-    if (!next) { free(buf); return -1; }
+    if (!next) return -1;
     *next = '\0';
     {
         char *sp1 = strchr(line, ' ');
         char *sp2 = sp1 ? strchr(sp1 + 1, ' ') : NULL;
-        if (!sp1 || !sp2) { free(buf); return -1; }
+        if (!sp1 || !sp2) return -1;
         *sp1 = '\0';
         *sp2 = '\0';
-        m = http_strdup(line);
-        target = http_strdup(sp1 + 1);
+        target = sp1 + 1;
         http11 = (strcmp(sp2 + 1, "HTTP/1.1") == 0);
     }
 
@@ -413,36 +493,37 @@ static int http_read_request(WellSocket fd, char **method, char **path,
         line = e + 2;
     }
     if (content_length < 0) content_length = 0;
-    if (content_length > 1048576) { free(buf); free(m); free(target); return -1; }
+    if (content_length > 1048576) return -1;
 
     body_len = (size_t)content_length;
-    *body = (char *)malloc(body_len + 1);
-    if (!*body) well_panic("out of memory (HTTP body)");
-    {
-        size_t have = len - (size_t)((hdr_end + 4) - buf);
-        if (have > body_len) have = body_len;
-        memcpy(*body, hdr_end + 4, have);
-        while (have < body_len) {
-            int k = http_recv(fd, *body + have, (int)(body_len - have));
-            if (k <= 0) { free(buf); free(m); free(target); free(*body); *body = NULL; return -1; }
-            have += (size_t)k;
+    if (body_len > 0) {
+        *body = (char *)malloc(body_len + 1);
+        if (!*body) well_panic("out of memory (HTTP body)");
+        {
+            size_t have = len - (size_t)((hdr_end + 4) - buf);
+            if (have > body_len) have = body_len;
+            memcpy(*body, hdr_end + 4, have);
+            while (have < body_len) {
+                int k = http_recv(fd, *body + have, (int)(body_len - have));
+                if (k <= 0) { free(*body); *body = NULL; return -1; }
+                have += (size_t)k;
+            }
+            (*body)[body_len] = '\0';
         }
-        (*body)[body_len] = '\0';
     }
 
     {
         char *q = strchr(target, '?');
         if (q) {
             *q = '\0';
-            *query = http_strdup(q + 1);
+            *query = q + 1;
         } else {
-            *query = http_strdup("");
+            *query = target + strlen(target);
         }
     }
     *path = target;
-    *method = m;
+    *method = buf;
     *keep_alive = http11 ? !conn_close : conn_keep;
-    free(buf);
     return 0;
 }
 
@@ -472,6 +553,8 @@ static void http_task_done(void *arg) {
 static void *http_conn_thread(void *arg) {
     WellHttpConn *conn = (WellHttpConn *)arg;
     WellSocket fd = conn->fd;
+    char *scratch = (char *)malloc(65537);
+    if (!scratch) well_panic("out of memory (HTTP connection buffer)");
     for (;;) {
         char *method = NULL, *path = NULL, *query = NULL, *body = NULL;
         int keep_alive = 0;
@@ -484,7 +567,7 @@ static void *http_conn_thread(void *arg) {
         WellHttpRequest *deadreq;
         WellHttpConn *deadconn;
 
-        rc = http_read_request(fd, &method, &path, &query, &body, &keep_alive);
+        rc = http_read_request(fd, scratch, 65536, &method, &path, &query, &body, &keep_alive);
         if (rc == -2) break;
         if (rc != 0) {
             const char *bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -495,25 +578,23 @@ static void *http_conn_thread(void *arg) {
         req = (WellHttpRequest *)calloc(1, sizeof(WellHttpRequest));
         if (!req) well_panic("out of memory (HTTP request)");
         req->id = well_id_util_get_id();
-        req->method = well_string_new(method);
-        req->path = well_string_new(path);
-        req->query = well_string_new(query);
-        req->body = well_string_new(body);
+        req->method = well_string_new(method ? method : "");
+        req->path = well_string_new(path ? path : "");
+        req->query = well_string_new(query ? query : "");
+        req->body = well_string_new(body ? body : "");
         req->conn = conn;
         req->keep_alive = keep_alive;
         req->responded = 0;
         req->written = 0;
         req->refs = 2; /* list reference + this thread */
         req->deadline_ms = well_host_now_ms() + WELL_HTTP_TIMEOUT_MS;
-        free(method);
-        free(path);
-        free(query);
         free(body);
 
         http_lock_init();
         well_mutex_lock(&g_http_lock);
         req->next = g_requests;
         g_requests = req;
+        http_req_map_put(req);
         conn->refs++; /* the in-flight request keeps the connection alive */
         well_mutex_unlock(&g_http_lock);
 
@@ -550,6 +631,7 @@ static void *http_conn_thread(void *arg) {
         if (!written || closed || !keep_alive) break;
     }
 
+    free(scratch);
     {
         WellSocket to_close;
         WellHttpConn *deadconn;
