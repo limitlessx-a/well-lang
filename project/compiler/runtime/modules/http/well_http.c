@@ -58,7 +58,7 @@ static WellSocket g_http_listen_fd = WELL_INVALID_SOCKET;
 static WellThread g_http_thread;
 static int g_http_thread_started = 0;
 static int g_http_service_held = 0;
-static WellHttpRequest *g_current_req = NULL;
+static WellHttpRequest *g_requests = NULL;
 
 static void http_lock_init(void) {
     if (g_http_inited) return;
@@ -165,17 +165,26 @@ static void http_write_response(WellHttpRequest *req, int status, const char *bo
 }
 
 void well_http_respond(long long req_id, int status, const char *body) {
-    WellHttpRequest *req;
+    WellHttpRequest *req = NULL;
+    WellHttpRequest *p;
     http_lock_init();
     well_mutex_lock(&g_http_lock);
-    req = g_current_req;
-    if (!req || req->id != req_id || req->responded) {
+    for (p = g_requests; p; p = p->next) {
+        if (p->id == req_id) {
+            req = p;
+            break;
+        }
+    }
+    if (!req || req->responded) {
         well_mutex_unlock(&g_http_lock);
         return;
     }
     req->responded = 1;
     well_mutex_unlock(&g_http_lock);
     http_write_response(req, status, body);
+    well_mutex_lock(&req->lock);
+    well_cond_signal(&req->cond);
+    well_mutex_unlock(&req->lock);
 }
 
 void well_http_route(const char *path, const char *method, WellHttpRouteFn fn) {
@@ -305,6 +314,27 @@ static int http_read_request(WellSocket fd, char **method, char **path,
     return 0;
 }
 
+typedef struct HttpTaskCtx {
+    WellHttpRequest *req;
+    HttpRoute *route;
+    WellMutex lock;
+    WellCond cond;
+    int done;
+} HttpTaskCtx;
+
+static void http_task_entry(WellCtx *ctx, void *arg) {
+    HttpTaskCtx *t = (HttpTaskCtx *)arg;
+    if (t->route && t->route->fn) t->route->fn(ctx, t->req);
+}
+
+static void http_task_done(void *arg) {
+    HttpTaskCtx *t = (HttpTaskCtx *)arg;
+    well_mutex_lock(&t->lock);
+    t->done = 1;
+    well_cond_signal(&t->cond);
+    well_mutex_unlock(&t->lock);
+}
+
 static void http_handle_connection(WellSocket fd) {
     char *method = NULL, *path = NULL, *query = NULL, *body = NULL;
     HttpRoute *route;
@@ -325,39 +355,60 @@ static void http_handle_connection(WellSocket fd) {
     req->query = well_string_new(query);
     req->body = well_string_new(body);
     req->fd = (long long)fd;
+    well_mutex_init(&req->lock);
+    well_cond_init(&req->cond);
+    req->responded = 0;
 
     http_lock_init();
     well_mutex_lock(&g_http_lock);
-    g_current_req = req;
+    req->next = g_requests;
+    g_requests = req;
     well_mutex_unlock(&g_http_lock);
 
     if (route) {
-        jmp_buf jb;
-        jmp_buf *old;
-        volatile int failed = 0;
-        well_ctx_init(&ctx, req->id);
-        old = well_panic_push(&jb);
-        if (setjmp(jb) == 0) {
-            route->fn(&ctx, req);
-            well_panic_pop(old);
-        } else {
-            failed = 1;
-            well_panic_pop(old);
+        HttpTaskCtx task;
+        memset(&task, 0, sizeof(task));
+        task.req = req;
+        task.route = route;
+        well_mutex_init(&task.lock);
+        well_cond_init(&task.cond);
+        well_schedule_task(req->id, http_task_entry, &task, http_task_done);
+        well_mutex_lock(&task.lock);
+        while (!task.done) well_cond_wait(&task.cond, &task.lock);
+        well_mutex_unlock(&task.lock);
+        well_mutex_destroy(&task.lock);
+        well_cond_destroy(&task.cond);
+        /* handler may emit a business event and respond later */
+        if (!req->responded) {
+            long long deadline = well_host_now_ms() + 5000;
+            well_mutex_lock(&req->lock);
+            while (!req->responded && well_host_now_ms() < deadline)
+                well_cond_wait(&req->cond, &req->lock);
+            well_mutex_unlock(&req->lock);
         }
-        well_ctx_clear(&ctx);
-        if (failed) well_http_respond(req->id, 500, "handler panic");
     } else {
         well_http_respond(req->id, 404, "not found");
     }
     if (!req->responded) well_http_respond(req->id, 500, "no response");
 
     well_mutex_lock(&g_http_lock);
-    if (g_current_req == req) g_current_req = NULL;
+    {
+        WellHttpRequest **pp = &g_requests;
+        while (*pp) {
+            if (*pp == req) {
+                *pp = req->next;
+                break;
+            }
+            pp = &(*pp)->next;
+        }
+    }
     well_mutex_unlock(&g_http_lock);
     well_release(req->method);
     well_release(req->path);
     well_release(req->query);
     well_release(req->body);
+    well_mutex_destroy(&req->lock);
+    well_cond_destroy(&req->cond);
     free(req);
     free(method);
     free(path);

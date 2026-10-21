@@ -91,6 +91,10 @@ void well_off_owner(int owner) {
 typedef struct WellEventNode {
     long long channel;
     void *event;
+    int kind; /* 0 = event, 1 = task */
+    WellTaskFn task_fn;
+    WellTaskDone task_done;
+    void *task_arg;
     struct WellEventNode *next;
 } WellEventNode;
 
@@ -470,11 +474,47 @@ void well_emit_event(void *event, long long channel) {
     if (!n) well_panic("out of memory (event queue)");
     n->channel = channel;
     n->event = event;
+    n->kind = 0;
+    n->task_fn = NULL;
+    n->task_done = NULL;
+    n->task_arg = NULL;
     n->next = NULL;
     well_retain(event);
     well_mutex_lock(&g_sched_mutex);
     q = qmap_get(ev->oid);
     if (!q) q = qmap_create(ev->oid);
+    {
+        int idle = (!q->scheduled && !q->running && q->head == NULL);
+        if (q->tail) q->tail->next = n;
+        else q->head = n;
+        q->tail = n;
+        if (idle) g_pending++;
+        if (!q->scheduled && !q->running) {
+            ready_push(q);
+            well_cond_signal(&g_sched_cond);
+        }
+    }
+    well_mutex_unlock(&g_sched_mutex);
+}
+
+void well_schedule_task(long long oid, WellTaskFn fn, void *arg, WellTaskDone done) {
+    WellEventNode *n;
+    WellOidQueue *q;
+    if (!fn) well_panic("schedule_task(null)");
+    if (oid == 0) oid = well_id_util_get_id();
+    well_event_init();
+    n = (WellEventNode *)malloc(sizeof(WellEventNode));
+    if (!n) well_panic("out of memory (task queue)");
+    n->channel = 0;
+    n->event = NULL;
+    n->kind = 1;
+    n->task_fn = fn;
+    n->task_done = done;
+    n->task_arg = arg;
+    n->next = NULL;
+    well_mutex_lock(&g_sched_mutex);
+    q = qmap_get(oid);
+    if (!q) q = qmap_create(oid);
     {
         int idle = (!q->scheduled && !q->running && q->head == NULL);
         if (q->tail) q->tail->next = n;
@@ -535,6 +575,22 @@ static void dispatch_event(WellEventNode *node) {
     free(matches);
 }
 
+static void dispatch_task(long long oid, WellEventNode *node) {
+    WellCtx ctx;
+    jmp_buf jb;
+    jmp_buf *old;
+    well_ctx_init(&ctx, oid);
+    old = well_panic_push(&jb);
+    if (setjmp(jb) == 0) {
+        node->task_fn(&ctx, node->task_arg);
+        well_panic_pop(old);
+    } else {
+        well_panic_pop(old);
+    }
+    well_ctx_clear(&ctx);
+    if (node->task_done) node->task_done(node->task_arg);
+}
+
 /* One scheduler worker. Returns when g_stop is set (non-main) or idle (main). */
 static void sched_worker_loop(int wid, int is_main) {
     for (;;) {
@@ -568,8 +624,11 @@ static void sched_worker_loop(int wid, int is_main) {
             if (!q->head) q->tail = NULL;
             well_mutex_unlock(&g_sched_mutex);
 
-            dispatch_event(node);
-            well_release(node->event);
+            if (node->kind == 1) dispatch_task(q->oid, node);
+            else {
+                dispatch_event(node);
+                well_release(node->event);
+            }
             free(node);
         }
 

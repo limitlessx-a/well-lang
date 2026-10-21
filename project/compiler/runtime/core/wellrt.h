@@ -230,6 +230,11 @@ typedef void (*WellHandlerFn)(WellCtx *, void *);
 void well_on_type(unsigned int event_type, WellHandlerFn fn, int once, long long channel);
 void well_off_type(unsigned int event_type, WellHandlerFn fn, long long channel);
 void well_emit_event(void *event, long long channel);
+
+typedef void (*WellTaskFn)(WellCtx *ctx, void *arg);
+typedef void (*WellTaskDone)(void *arg);
+void well_schedule_task(long long oid, WellTaskFn fn, void *arg, WellTaskDone done);
+
 void well_run_loop(void);
 void well_owner_push(int owner);
 void well_owner_pop(void);

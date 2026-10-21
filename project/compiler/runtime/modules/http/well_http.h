@@ -2,6 +2,7 @@
 #define WELL_HTTP_H
 
 #include "wellrt.h"
+#include "well_internal.h"
 
 typedef struct WellHttpRequest WellHttpRequest;
 typedef void (*WellHttpRouteFn)(WellCtx *ctx, WellHttpRequest *req);
@@ -14,6 +15,9 @@ struct WellHttpRequest {
     WellString *body;
     long long fd;
     int responded;
+    WellMutex lock;
+    WellCond cond;
+    struct WellHttpRequest *next;
 };
 
 void well_http_route(const char *path, const char *method, WellHttpRouteFn fn);
