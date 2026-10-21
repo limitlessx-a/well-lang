@@ -13,8 +13,9 @@
   - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
 - 基础类型：`int / long / bool / double / String / Bytes / void / null`
 - 容器：`Array<T>`（`[]`）、`Map<T>`（`{}`，String 键、值同质）、`Linked<T>`（双向链表）
-  - `a.push/pop`、`a.get/set`、`a[i]`、`a.length`、`for (x of a)`
-  - `m.get/set`、`m.has/delete`、`m["k"]`、`m.size`、`for (k in m)`
+  - `a.push/pop/shift/unshift`、`a.get/set`、`a[i]`、`a.length`、`for (x of a)`
+  - `a.slice(起,止)`、`a.concat(other)`、`a.join(sep)`（仅 `Array<String>`）、`a.indexOf(v)`、`a.includes(v)`、`a.clear()`
+  - `m.get/set`、`m.has/delete`、`m["k"]`、`m.size`、`m.keys()`、`m.values()`、`m.clear()`、`for (k in m)`
   - `l.pushHead/pushTail/popHead/popTail`、`l.head/tail/get`、`l.length`、`for (x of l)`
   - 越界/缺失：值类型返回默认值，引用类型返回 `null`
   - 写容器要求 `container.oid == ctx.oid`，插入引用元素要求 `element.oid == container.oid`
@@ -50,7 +51,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（63 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（64 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```

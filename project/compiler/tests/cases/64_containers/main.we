@@ -1,0 +1,50 @@
+module demo.containers;
+
+controller MainController extends Controller {
+    run() {
+        var a: Array<int> = [1, 2, 3, 4, 5];
+        print(a.indexOf(3));
+        print(a.indexOf(9));
+        print(a.includes(5));
+        print(a.includes(6));
+        var b: Array<int> = a.slice(1, 4);
+        print(b.length);
+        print(b[0]);
+        print(b[2]);
+        var c: Array<int> = a.concat(b);
+        print(c.length);
+        print(c[5]);
+        var s: Array<String> = ["a", "b", "c"];
+        print(s.join("-"));
+        print(s.indexOf("b"));
+        print(s.includes("z"));
+        var q: Array<int> = [1, 2, 3];
+        print(q.shift());
+        print(q.length);
+        q.unshift(9);
+        print(q[0]);
+        print(q[2]);
+        q.clear();
+        print(q.length);
+        var m: Map<int> = {};
+        m.set("a", 1);
+        m.set("b", 2);
+        var ks: Array<String> = m.keys();
+        print(ks.length);
+        print(ks[0]);
+        print(ks[1]);
+        var vs: Array<int> = m.values();
+        print(vs.length);
+        print(vs[1]);
+        m.clear();
+        print(m.size);
+        print("x,y,z".split(",").length);
+        print("x,y,z".split(",")[1]);
+        print("x,y,z".split(",").join("|"));
+        print("x,y,z".split(",").indexOf("z"));
+        print("x,y,z".split(",").includes("q"));
+        print("a,b,c".split(",").slice(1, 3).join("-"));
+    }
+}
+
+entry MainController;

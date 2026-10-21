@@ -249,7 +249,12 @@ typedef struct WellStore {
 - 容器创建时 `oid = ctx.oid`；**写容器前**校验 `container.oid == ctx.oid`（`well_check_oid(..., "container write")`）；插入引用元素时再校验 `element.oid == container.oid`（String 除外），直接自引用 panic。读操作不检查。
 - `Array<T>`/`Map<T>` 的 `T` 是引用类型时，容器 `is_ref=1`；值类型时 `is_ref=0`（不误 release 整数）。
 - 越界/缺失：返回零值 `WellValue`；值类型得到 0/false/0.0，引用类型得到 `null`。
-- `pop()` 把元素的引用所有权转移给调用方（codegen 标记为 owned）。
+- `pop()` 把元素的引用所有权转移给调用方（codegen 标记为 owned）；`shift()` 同理（O(n)）。
+- Array 方法：`push/pop/get/set/slice/concat/join/indexOf/includes/clear/shift/unshift`。
+  - `slice(a,b)` / `concat(other)` 返回新数组（引用元素 retain，`is_ref` 沿用源数组）；`join(sep)` 仅支持 `Array<String>`；
+  - `indexOf/includes` 按元素类型比较（标量按值、String 按内容、其他引用按指针），比较方式由 codegen 传 kind。
+- Map 方法：`get/set/has/delete/keys/values/clear`；`keys()` → `Array<String>`，`values()` → `Array<T>`（均为新数组、插入序）。
+- 「take」变体（`well_array_slice_take` 等）：接收者为临时值时先计算再释放接收者，用于 `"a,b".split(",").join("-")` 这类链式表达式。
 - `Map` 键为 String，`well_map_set`/`delete` 维护键的 retain/release。
 - **哈希表**：String 创建时缓存 FNV-1a 64 位 hash；`WellMap` 使用开放寻址 + 线性探测（负载因子 0.7，容量 2 的幂），`get/set/has` 平均 O(1)。
 - **插入序**：`keys/vals` 数组保持插入顺序供 `for-in`/`key_at`；`delete` 需要移位并重建槽位，因此是 O(n)。
@@ -422,7 +427,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（63 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（64 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

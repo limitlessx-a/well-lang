@@ -132,7 +132,200 @@ void well_array_set(WellArray *a, long long i, WellValue v, WellCtx *ctx) {
     if (a->is_ref && v.p) well_retain(v.p);
 }
 
+/* ---------- Array extra methods ---------- */
+
+WellArray *well_array_slice(WellArray *a, long long start, long long end, WellCtx *ctx) {
+    WellArray *r = well_array_new(ctx, a ? a->is_ref : 0);
+    long long n = a ? a->len : 0, i;
+    if (start < 0) start = 0;
+    if (end > n) end = n;
+    if (start > end) start = end;
+    for (i = start; i < end; i++) well_array_push(r, a->items[i], ctx);
+    return r;
+}
+
+WellArray *well_array_concat(WellArray *a, WellArray *b, WellCtx *ctx) {
+    WellArray *r = well_array_new(ctx, a ? a->is_ref : (b ? b->is_ref : 0));
+    long long i;
+    if (a) for (i = 0; i < a->len; i++) well_array_push(r, a->items[i], ctx);
+    if (b) for (i = 0; i < b->len; i++) well_array_push(r, b->items[i], ctx);
+    return r;
+}
+
+/* Array<String> only (checked by the compiler). */
+WellString *well_array_join(WellArray *a, WellString *sep) {
+    const char *sp = sep ? sep->data : "";
+    size_t spl = strlen(sp);
+    long long n = a ? a->len : 0, i;
+    size_t total = 0;
+    char *buf, *p;
+    WellString *out;
+    for (i = 0; i < n; i++) {
+        WellString *s = (WellString *)a->items[i].p;
+        total += strlen(s ? s->data : "");
+        if (i) total += spl;
+    }
+    buf = (char *)malloc(total + 1);
+    if (!buf) well_panic("out of memory (array join)");
+    p = buf;
+    for (i = 0; i < n; i++) {
+        WellString *s = (WellString *)a->items[i].p;
+        const char *d = s ? s->data : "";
+        size_t l = strlen(d);
+        if (i) { memcpy(p, sp, spl); p += spl; }
+        memcpy(p, d, l);
+        p += l;
+    }
+    *p = 0;
+    out = well_string_new(buf);
+    free(buf);
+    return out;
+}
+
+/* kind: 0 int/long/bool, 1 double/float, 2 pointer identity, 3 String content */
+long long well_array_index_of(WellArray *a, WellValue v, int kind) {
+    long long i;
+    if (!a) return -1;
+    for (i = 0; i < a->len; i++) {
+        switch (kind) {
+        case 0: if (a->items[i].i == v.i) return i; break;
+        case 1: if (a->items[i].d == v.d) return i; break;
+        case 3: if (well_string_eq((WellString *)a->items[i].p, (WellString *)v.p)) return i; break;
+        default: if (a->items[i].p == v.p) return i; break;
+        }
+    }
+    return -1;
+}
+
+int well_array_includes(WellArray *a, WellValue v, int kind) {
+    return well_array_index_of(a, v, kind) >= 0;
+}
+
+void well_array_clear(WellArray *a, WellCtx *ctx) {
+    long long i;
+    if (!a) return;
+    well_check_oid((void *)a, ctx, "container write");
+    if (a->is_ref) {
+        for (i = 0; i < a->len; i++) {
+            if (a->items[i].p) {
+                well_graph_remove_edge((WellObj *)a, (WellObj *)a->items[i].p);
+                well_release(a->items[i].p);
+            }
+        }
+    }
+    a->len = 0;
+}
+
+WellValue well_array_shift(WellArray *a, WellCtx *ctx) {
+    WellValue v;
+    long long i;
+    v.i = 0;
+    if (!a) return v;
+    well_check_oid((void *)a, ctx, "container write");
+    if (a->len == 0) return v;
+    v = a->items[0];
+    if (a->is_ref && v.p)
+        well_graph_remove_edge((WellObj *)a, (WellObj *)v.p);
+    for (i = 1; i < a->len; i++) a->items[i - 1] = a->items[i];
+    a->len--;
+    return v;
+}
+
+void well_array_unshift(WellArray *a, WellValue v, WellCtx *ctx) {
+    long long i;
+    if (!a) well_panic("unshift on null array");
+    well_check_oid((void *)a, ctx, "container write");
+    if (a->is_ref && v.p) {
+        container_check_ref(a, v.p);
+        well_graph_add_edge((WellObj *)a, (WellObj *)v.p);
+    }
+    array_grow(a, a->len + 1);
+    for (i = a->len; i > 0; i--) a->items[i] = a->items[i - 1];
+    a->len++;
+    a->items[0] = v;
+    if (a->is_ref && v.p) well_retain(v.p);
+}
+
+/* ---------- take variants for owned receivers ---------- */
+
+WellArray *well_array_slice_take(WellArray *a, long long start, long long end, WellCtx *ctx) {
+    WellArray *r = well_array_slice(a, start, end, ctx);
+    well_release(a);
+    return r;
+}
+
+WellArray *well_array_concat_take(WellArray *a, WellArray *b, WellCtx *ctx) {
+    WellArray *r = well_array_concat(a, b, ctx);
+    well_release(a);
+    return r;
+}
+
+WellString *well_array_join_take(WellArray *a, WellString *sep) {
+    WellString *r = well_array_join(a, sep);
+    well_release(a);
+    return r;
+}
+
+long long well_array_index_of_take(WellArray *a, WellValue v, int kind) {
+    long long i = well_array_index_of(a, v, kind);
+    well_release(a);
+    return i;
+}
+
+int well_array_includes_take(WellArray *a, WellValue v, int kind) {
+    int r = well_array_includes(a, v, kind);
+    well_release(a);
+    return r;
+}
+
+WellValue well_array_get_take(WellArray *a, long long i) {
+    WellValue v = well_array_get(a, i);
+    if (a && a->is_ref && v.p) well_retain(v.p);
+    well_release(a);
+    return v;
+}
+
 long long well_map_len(WellMap *m) { return m ? m->len : 0; }
+
+/* ---------- Map extra methods ---------- */
+
+static void map_rehash(WellMap *m, long long ncap);
+
+WellArray *well_map_keys(WellMap *m, WellCtx *ctx) {
+    WellArray *r = well_array_new(ctx, 1);
+    long long i;
+    WellValue v;
+    if (!m) return r;
+    for (i = 0; i < m->len; i++) {
+        v.p = m->keys[i];
+        well_array_push(r, v, ctx);
+    }
+    return r;
+}
+
+WellArray *well_map_values(WellMap *m, WellCtx *ctx) {
+    WellArray *r = well_array_new(ctx, m ? m->is_ref : 0);
+    long long i;
+    if (!m) return r;
+    for (i = 0; i < m->len; i++) well_array_push(r, m->vals[i], ctx);
+    return r;
+}
+
+void well_map_clear(WellMap *m, WellCtx *ctx) {
+    long long i;
+    if (!m) return;
+    well_check_oid((void *)m, ctx, "container write");
+    for (i = 0; i < m->len; i++) {
+        well_release(m->keys[i]);
+        if (m->is_ref && m->vals[i].p) {
+            well_graph_remove_edge((WellObj *)m, (WellObj *)m->vals[i].p);
+            well_release(m->vals[i].p);
+        }
+    }
+    m->len = 0;
+    m->tomb = 0;
+    if (m->slot_cap) map_rehash(m, m->slot_cap);
+}
 
 static void map_rehash(WellMap *m, long long ncap) {
     long long *ns;

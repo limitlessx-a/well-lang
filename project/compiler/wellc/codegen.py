@@ -112,6 +112,16 @@ class CodeGen:
     def container_ref_flag(self, et: str) -> str:
         return "1" if self.is_ref(et) else "0"
 
+    def elem_kind_code(self, et: str) -> str:
+        """Runtime element compare kind for Array.indexOf/includes."""
+        if et in ("int", "long", "bool"):
+            return "0"
+        if et in ("float", "double"):
+            return "1"
+        if et == "String":
+            return "3"
+        return "2"
+
     def box_value(self, code: str, ty: str) -> str:
         return f"well_box_{self.value_kind(ty)}({code})"
 
@@ -137,6 +147,12 @@ class CodeGen:
             return getattr(e, "ty", "void") not in ("void",) and self.is_ref(getattr(e, "ty"))
         if isinstance(e, Call) and getattr(e, "method_op", None) == "array_pop":
             return self.is_ref(getattr(e, "ty", ""))
+        if isinstance(e, Call) and getattr(e, "method_op", None) in ("array_slice", "array_concat", "array_join", "map_keys", "map_values"):
+            return True
+        if isinstance(e, Call) and getattr(e, "method_op", None) == "array_shift":
+            return self.is_ref(getattr(e, "ty", ""))
+        if isinstance(e, Index) and self.is_owned(e.obj) and self.is_ref(getattr(e, "ty", "")):
+            return True
         if isinstance(e, Call) and getattr(e, "method_op", None) in ("linked_popHead", "linked_popTail"):
             return self.is_ref(getattr(e, "ty", ""))
         if isinstance(e, Call) and getattr(e, "method_op", None) in ("str_substring", "str_trim", "str_split"):
@@ -222,7 +238,10 @@ class CodeGen:
             obj = self.gen_expr(e.obj)
             idx = self.gen_expr(e.index)
             if kind == "array":
-                val = f"well_array_get({obj}, (long long)({idx}))"
+                if self.is_owned(e.obj):
+                    val = f"well_array_get_take({obj}, (long long)({idx}))"
+                else:
+                    val = f"well_array_get({obj}, (long long)({idx}))"
             elif kind == "map":
                 val = f"well_map_get({obj}, {idx})"
             else:
@@ -357,6 +376,34 @@ class CodeGen:
                 return self.unbox_value(f"well_array_get({obj}, (long long)({self.gen_expr(e.args[0])}))", e.elem_ty)
             if op == "array_set":
                 return f"well_array_set({obj}, (long long)({self.gen_expr(e.args[0])}), {self.box_value(self.gen_expr(e.args[1]), e.elem_ty)}, ctx)"
+            if op == "array_slice":
+                return (f"well_array_slice{take}({obj}, (long long)({self.gen_expr(e.args[0])}), "
+                        f"(long long)({self.gen_expr(e.args[1])}), ctx)")
+            if op == "array_concat":
+                return f"well_array_concat{take}({obj}, {self.gen_expr(e.args[0])}, ctx)"
+            if op == "array_join":
+                return f"well_array_join{take}({obj}, {self.gen_expr(e.args[0])})"
+            if op == "array_index_of":
+                return (f"well_array_index_of{take}({obj}, "
+                        f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}, "
+                        f"{self.elem_kind_code(e.elem_ty)})")
+            if op == "array_includes":
+                return (f"well_array_includes{take}({obj}, "
+                        f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}, "
+                        f"{self.elem_kind_code(e.elem_ty)})")
+            if op == "array_clear":
+                return f"well_array_clear({obj}, ctx)"
+            if op == "array_shift":
+                return self.unbox_value(f"well_array_shift({obj}, ctx)", e.elem_ty)
+            if op == "array_unshift":
+                return (f"well_array_unshift({obj}, "
+                        f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}, ctx)")
+            if op == "map_keys":
+                return f"well_map_keys({obj}, ctx)"
+            if op == "map_values":
+                return f"well_map_values({obj}, ctx)"
+            if op == "map_clear":
+                return f"well_map_clear({obj}, ctx)"
             if op == "map_has":
                 return f"well_map_has({obj}, {self.gen_expr(e.args[0])})"
             if op == "map_get":

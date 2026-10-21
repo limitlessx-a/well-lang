@@ -839,6 +839,74 @@ class Checker:
                         e.method_obj = e.func.obj
                         e.elem_ty = et
                         return
+                    if name == "slice":
+                        if len(e.args) != 2:
+                            self.err("Array.slice(start, end) expects 2 arguments")
+                        for a in e.args:
+                            if self.check_expr(a, env) not in ("int", "long"):
+                                self.err("Array index must be int/long")
+                        e.ty = ot
+                        e.elem_ty = et
+                        e.method_op = "array_slice"
+                        e.method_obj = e.func.obj
+                        return
+                    if name == "concat":
+                        if len(e.args) != 1:
+                            self.err("Array.concat(other) expects 1 argument")
+                        at = self.check_expr(e.args[0], env)
+                        if at != ot:
+                            self.err(f"Array.concat expects {ot}, got {at}")
+                        e.ty = ot
+                        e.elem_ty = et
+                        e.method_op = "array_concat"
+                        e.method_obj = e.func.obj
+                        return
+                    if name == "join":
+                        if len(e.args) != 1:
+                            self.err("Array.join(sep) expects 1 argument")
+                        if et != "String":
+                            self.err("Array.join requires Array<String>")
+                        if self.check_expr(e.args[0], env) != "String":
+                            self.err("Array.join: sep must be String")
+                        e.ty = "String"
+                        e.method_op = "array_join"
+                        e.method_obj = e.func.obj
+                        return
+                    if name in ("indexOf", "includes"):
+                        if len(e.args) != 1:
+                            self.err(f"Array.{name}(value) expects 1 argument")
+                        at = self.check_expr(e.args[0], env)
+                        self.check_assignable(et, at)
+                        e.ty = "int" if name == "indexOf" else "bool"
+                        e.method_op = "array_index_of" if name == "indexOf" else "array_includes"
+                        e.method_obj = e.func.obj
+                        e.elem_ty = et
+                        return
+                    if name == "clear":
+                        if e.args:
+                            self.err("Array.clear() takes no arguments")
+                        e.ty = "void"
+                        e.method_op = "array_clear"
+                        e.method_obj = e.func.obj
+                        return
+                    if name == "shift":
+                        if e.args:
+                            self.err("Array.shift() takes no arguments")
+                        e.ty = et
+                        e.elem_ty = et
+                        e.method_op = "array_shift"
+                        e.method_obj = e.func.obj
+                        return
+                    if name == "unshift":
+                        if len(e.args) != 1:
+                            self.err("Array.unshift(value) expects 1 argument")
+                        at = self.check_expr(e.args[0], env)
+                        self.check_assignable(et, at)
+                        e.ty = "void"
+                        e.elem_ty = et
+                        e.method_op = "array_unshift"
+                        e.method_obj = e.func.obj
+                        return
                     self.err(f"unknown Array method {name}")
                 if kind == "linked":
                     if name in ("pushHead", "pushTail"):
@@ -914,6 +982,29 @@ class Checker:
                             self.err("Map key must be String")
                         e.ty = "void"
                         e.method_op = "map_delete"
+                        e.method_obj = e.func.obj
+                        return
+                    if name == "clear":
+                        if e.args:
+                            self.err("Map.clear() takes no arguments")
+                        e.ty = "void"
+                        e.method_op = "map_clear"
+                        e.method_obj = e.func.obj
+                        return
+                    if name == "keys":
+                        if e.args:
+                            self.err("Map.keys() takes no arguments")
+                        e.ty = "Array<String>"
+                        e.elem_ty = "String"
+                        e.method_op = "map_keys"
+                        e.method_obj = e.func.obj
+                        return
+                    if name == "values":
+                        if e.args:
+                            self.err("Map.values() takes no arguments")
+                        e.ty = f"Array<{et}>"
+                        e.elem_ty = et
+                        e.method_op = "map_values"
                         e.method_obj = e.func.obj
                         return
                     self.err(f"unknown Map method {name}")

@@ -245,6 +245,21 @@ void well_array_push(WellArray *a, WellValue v, WellCtx *ctx);
 WellValue well_array_pop(WellArray *a, WellCtx *ctx);
 WellValue well_array_get(WellArray *a, long long i);
 void well_array_set(WellArray *a, long long i, WellValue v, WellCtx *ctx);
+WellArray *well_array_slice(WellArray *a, long long start, long long end, WellCtx *ctx);
+WellArray *well_array_concat(WellArray *a, WellArray *b, WellCtx *ctx);
+WellString *well_array_join(WellArray *a, WellString *sep);
+long long well_array_index_of(WellArray *a, WellValue v, int kind);
+int well_array_includes(WellArray *a, WellValue v, int kind);
+void well_array_clear(WellArray *a, WellCtx *ctx);
+WellValue well_array_shift(WellArray *a, WellCtx *ctx);
+void well_array_unshift(WellArray *a, WellValue v, WellCtx *ctx);
+/* take variants (owned receiver) */
+WellArray *well_array_slice_take(WellArray *a, long long start, long long end, WellCtx *ctx);
+WellArray *well_array_concat_take(WellArray *a, WellArray *b, WellCtx *ctx);
+WellString *well_array_join_take(WellArray *a, WellString *sep);
+long long well_array_index_of_take(WellArray *a, WellValue v, int kind);
+int well_array_includes_take(WellArray *a, WellValue v, int kind);
+WellValue well_array_get_take(WellArray *a, long long i);
 long long well_map_len(WellMap *m);
 void well_map_set(WellMap *m, WellString *k, WellValue v, WellCtx *ctx);
 WellValue well_map_get(WellMap *m, WellString *k);
@@ -252,6 +267,9 @@ int well_map_has(WellMap *m, WellString *k);
 void well_map_delete(WellMap *m, WellString *k, WellCtx *ctx);
 WellString *well_map_key_at(WellMap *m, long long i);
 WellValue well_map_value_at(WellMap *m, long long i);
+WellArray *well_map_keys(WellMap *m, WellCtx *ctx);
+WellArray *well_map_values(WellMap *m, WellCtx *ctx);
+void well_map_clear(WellMap *m, WellCtx *ctx);
 
 /* Linked<T>: doubly linked list; head/tail O(1), get O(n) */
 WellLinked *well_linked_new(WellCtx *ctx, int is_ref);
