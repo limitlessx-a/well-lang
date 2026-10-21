@@ -110,6 +110,13 @@ class CodeGen:
             return "d"
         return "p"
 
+    def gen_arg_temp(self, e) -> str:
+        """Generate a ref argument; owned temporaries are held until frame end."""
+        code = self.gen_expr(e)
+        if self.is_owned(e) and self.is_ref(getattr(e, "ty", "void")):
+            return f"well_temp_hold((void*)({code}))"
+        return code
+
     def container_ref_flag(self, et: str) -> str:
         return "1" if self.is_ref(et) else "0"
 
@@ -331,7 +338,7 @@ class CodeGen:
             return "well_ws_stop()"
         if getattr(e, "builtin", None) == "ws_send":
             return (f"well_ws_send((long long)({self.gen_expr(e.args[0])}), "
-                    f"well_string_cstr({self.gen_expr(e.args[1])}))")
+                    f"well_string_cstr({self.gen_arg_temp(e.args[1])}))")
         if getattr(e, "builtin", None) == "ws_close":
             return (f"well_ws_close((long long)({self.gen_expr(e.args[0])}), "
                     f"(int)({self.gen_expr(e.args[1])}), "
@@ -345,12 +352,12 @@ class CodeGen:
             return "well_http_stop()"
         if getattr(e, "builtin", None) == "http_respond":
             return (f"well_http_respond((long long)({self.gen_expr(e.args[0])}), "
-                    f"(int)({self.gen_expr(e.args[1])}), well_string_cstr({self.gen_expr(e.args[2])}))")
+                    f"(int)({self.gen_expr(e.args[1])}), well_string_cstr({self.gen_arg_temp(e.args[2])}))")
         if getattr(e, "builtin", None) == "file_read":
             return f"well_file_read(well_string_cstr({self.gen_expr(e.args[0])}))"
         if getattr(e, "builtin", None) == "file_write":
-            return (f"well_file_write(well_string_cstr({self.gen_expr(e.args[0])}), "
-                    f"well_string_cstr({self.gen_expr(e.args[1])}))")
+            return (f"well_file_write(well_string_cstr({self.gen_arg_temp(e.args[0])}), "
+                    f"well_string_cstr({self.gen_arg_temp(e.args[1])}))")
         if getattr(e, "builtin", None) == "file_exists":
             return f"well_file_exists(well_string_cstr({self.gen_expr(e.args[0])}))"
         if getattr(e, "builtin", None) == "file_remove":
@@ -456,7 +463,7 @@ class CodeGen:
             if op == "bytes_append":
                 return f"well_bytes_append({obj}, {self.gen_expr(e.args[0])}, ctx)"
             if op == "bytes_append_str":
-                return f"well_bytes_append_str({obj}, {self.gen_expr(e.args[0])}, ctx)"
+                return f"well_bytes_append_str({obj}, {self.gen_arg_temp(e.args[0])}, ctx)"
             if op == "bytes_clear":
                 return f"well_bytes_clear({obj}, ctx)"
             if op == "bytes_to_string":

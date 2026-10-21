@@ -1,0 +1,13 @@
+module demo.statictypeerr;
+
+static RoleConfig {
+    maxLevel: int = 1;
+}
+
+controller MainController extends Controller {
+    run() {
+        RoleConfig.maxLevel = "not-a-number";
+    }
+}
+
+entry MainController;

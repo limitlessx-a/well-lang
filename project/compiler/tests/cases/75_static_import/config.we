@@ -1,0 +1,17 @@
+module demo.lib.config;
+
+static AppConfig {
+    port: int = 8080;
+    name: String = "svc";
+    debug: bool = false;
+}
+
+namespace AppUtil {
+    addr(): String {
+        var b: Bytes = new Bytes();
+        b.appendStr(AppConfig.name);
+        b.appendStr(":");
+        b.appendStr(String.fromInt(AppConfig.port));
+        return b.toString();
+    }
+}

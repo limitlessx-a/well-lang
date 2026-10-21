@@ -1,0 +1,27 @@
+module demo.staticimport;
+
+import "config";
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        print(AppConfig.name);
+        print(AppConfig.port);
+        AppConfig.port = 9000;
+        AppConfig.name = "api";
+        print(AppUtil.addr());
+        on(PingEvent, PingHandler);
+        emit(new PingEvent(0) { n: 1 });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print(AppUtil.addr());
+    }
+}
+
+entry MainController;
