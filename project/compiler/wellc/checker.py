@@ -1,7 +1,7 @@
 """Lightweight type checker + symbol tables for Well MVP."""
 from .ast_nodes import *
 
-BUILTIN = {"bool", "int", "long", "float", "double", "String", "void", "null"}
+BUILTIN = {"bool", "int", "long", "float", "double", "String", "Bytes", "void", "null"}
 NUMERIC = {"int", "long", "float", "double"}
 ROOTS = {"Vo", "Event", "Controller", "Handler"}
 
@@ -351,6 +351,13 @@ class Checker:
                 e.str_index = True
                 e.str_obj = e.obj
                 return
+            if ot == "Bytes":
+                it = self.check_expr(e.index, env)
+                if it not in ("int", "long"):
+                    self.err("Bytes index must be int/long")
+                e.ty = "int"
+                e.bytes_index = True
+                return
             kind, et = self.container_info(ot)
             if kind == "array":
                 it = self.check_expr(e.index, env)
@@ -380,6 +387,10 @@ class Checker:
                     e.ty = "int"
                     e.str_len = True
                     return
+                if ft is None and ot == "Bytes" and e.name == "length":
+                    e.ty = "long"
+                    e.container_len = "bytes"
+                    return
                 kind, _ = self.container_info(ot)
                 if ft is None and kind == "array" and e.name == "length":
                     e.ty = "long"
@@ -404,6 +415,12 @@ class Checker:
         elif isinstance(e, New):
             ty = e.type.name
             self.check_type_name(ty)
+            if ty == "Bytes":
+                if e.args or e.init:
+                    self.err("new Bytes() takes no arguments")
+                e.ty = "Bytes"
+                e.bytes_new = True
+                return
             kind, _ = self.container_info(ty)
             if kind:
                 if e.args or e.init:
@@ -773,6 +790,9 @@ class Checker:
             if ot == "String":
                 self.check_string_method(e, env)
                 return
+            if ot == "Bytes":
+                self.check_bytes_method(e, env)
+                return
             kind, et = self.container_info(ot)
             if kind:
                 name = e.func.name
@@ -1052,6 +1072,59 @@ class Checker:
             e.method_op = "str_split"
         else:
             self.err(f"unknown String method {name}")
+        e.method_obj = e.func.obj
+
+    def check_bytes_method(self, e, env):
+        name = e.func.name
+        if name == "push":
+            if len(e.args) != 1:
+                self.err("Bytes.push(byte) expects 1 argument")
+            if self.check_expr(e.args[0], env) not in ("int", "long"):
+                self.err("Bytes.push: value must be int/long")
+            e.ty = "void"
+            e.method_op = "bytes_push"
+        elif name in ("get", "byteAt"):
+            if len(e.args) != 1:
+                self.err("Bytes.get(index) expects 1 argument")
+            if self.check_expr(e.args[0], env) not in ("int", "long"):
+                self.err("Bytes index must be int/long")
+            e.ty = "int"
+            e.method_op = "bytes_get"
+        elif name == "set":
+            if len(e.args) != 2:
+                self.err("Bytes.set(index, byte) expects 2 arguments")
+            if self.check_expr(e.args[0], env) not in ("int", "long"):
+                self.err("Bytes index must be int/long")
+            if self.check_expr(e.args[1], env) not in ("int", "long"):
+                self.err("Bytes.set: value must be int/long")
+            e.ty = "void"
+            e.method_op = "bytes_set"
+        elif name == "append":
+            if len(e.args) != 1:
+                self.err("Bytes.append(other) expects 1 argument")
+            if self.check_expr(e.args[0], env) != "Bytes":
+                self.err("Bytes.append: argument must be Bytes")
+            e.ty = "void"
+            e.method_op = "bytes_append"
+        elif name == "appendStr":
+            if len(e.args) != 1:
+                self.err("Bytes.appendStr(text) expects 1 argument")
+            if self.check_expr(e.args[0], env) != "String":
+                self.err("Bytes.appendStr: argument must be String")
+            e.ty = "void"
+            e.method_op = "bytes_append_str"
+        elif name == "clear":
+            if e.args:
+                self.err("Bytes.clear() takes no arguments")
+            e.ty = "void"
+            e.method_op = "bytes_clear"
+        elif name == "toString":
+            if e.args:
+                self.err("Bytes.toString() takes no arguments")
+            e.ty = "String"
+            e.method_op = "bytes_to_string"
+        else:
+            self.err(f"unknown Bytes method {name}")
         e.method_obj = e.func.obj
 
     def resolve_event_type(self, e) -> str:

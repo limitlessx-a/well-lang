@@ -71,9 +71,10 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 
 ### 2.2 类型
 
-`bool / int / long / float / double / String / void / null`、用户 struct/event，以及 `Array<T>` / `Map<T>` / `Linked<T>`（同质；`Map` 键为 String）。
+`bool / int / long / float / double / String / Bytes / void / null`、用户 struct/event，以及 `Array<T>` / `Map<T>` / `Linked<T>`（同质；`Map` 键为 String）。
 - `String` 是引用类型（`WellString*`），默认 `""`，不可变，字面量驻留；长度与下标都按 **字节**（与 `String.length` 一致）。
-- `int`/`bool` → C `int`；`long` → `long long`；`double`/`float` → `double`。
+- `Bytes` 是可变字节缓冲（`WellBytes*`），`new Bytes()` 创建；不是容器类型、不参与 oid 写入检查，用于增量拼装文本/二进制负载（避免 String `+` 的 O(n²)）。
+- `int`/`bool` → C `int`；`long` → `long long`；`double`/`float` → `double`；`Bytes` → `WellBytes*`。
 - `Array<T>` → `WellArray*`；`Map<T>` → `WellMap*`；`Linked<T>` → `WellLinked*`；三者是引用类型，带 oid。
 - 所有引用类型可为 `null`。
 
@@ -96,6 +97,20 @@ String 方法（全部字节语义）：
 | `s.trim()` | 去首尾 ASCII 空白，返回新 String |
 | `s.split(sep)` | `Array<String>`；`sep` 为空串时不切分 |
 | `String.fromByte(n)` | 取低 8 位构造单字节 String |
+
+Bytes（可变字节缓冲）：
+
+| 调用 | 语义 |
+|---|---|
+| `new Bytes()` | 空缓冲 |
+| `b.length` | 字节数（`long`） |
+| `b.push(v)` / `b.get(i)` / `b.byteAt(i)` / `b[i]` | 追加一个字节 / 读取字节；越界 `-1` |
+| `b.set(i, v)` | 写入字节；越界 panic |
+| `b.append(other)` / `b.appendStr(text)` | 追加另一个 Bytes / 一个 String |
+| `b.clear()` | 清空（保留容量） |
+| `b.toString()` | 复制为 String（按文本处理，二进制负载应保持 Bytes） |
+
+临时值说明：方法返回的 String/Bytes 作为临时值参与链式表达式（`.length`、下标、`==`、`+`、再调用 String 方法）时会自动释放；赋给变量后按普通引用计数管理。
 
 ### 2.5 内建调用
 
@@ -407,7 +422,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（62 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（63 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

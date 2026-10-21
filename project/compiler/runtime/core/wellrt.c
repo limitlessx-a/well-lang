@@ -353,6 +353,8 @@ void well_graph_remove_edge(WellObj *from, WellObj *to) {
     well_lock_release(&g_graph_lock);
 }
 
+static void bytes_destroy(void *p);
+
 void well_init(void) {
     memset(g_destroy, 0, sizeof(g_destroy));
     memset(g_type_desc, 0, sizeof(g_type_desc));
@@ -364,6 +366,7 @@ void well_init(void) {
     well_mutex_init(&g_print_mutex);
     g_print_inited = 1;
     well_register_type(WELL_T_STRING, string_destroy);
+    well_register_type(WELL_T_BYTES, bytes_destroy);
     well_containers_register();
     well_event_init();
     well_model_init();
@@ -777,7 +780,180 @@ long long well_string_len(WellString *s) {
     return (long long)strlen(s ? s->data : "");
 }
 
-/* ---------- String helpers (byte oriented, matching String.length) ---------- */
+/* ---------- Bytes: mutable byte buffer ---------- */
+
+static void bytes_destroy(void *p) {
+    WellBytes *b = (WellBytes *)p;
+    if (!b) return;
+    free(b->data);
+    free(b);
+}
+
+WellBytes *well_bytes_new(WellCtx *ctx) {
+    WellBytes *b = (WellBytes *)well_new(sizeof(WellBytes), WELL_T_BYTES, ctx ? ctx->oid : 0);
+    b->data = NULL;
+    b->len = 0;
+    b->cap = 0;
+    return b;
+}
+
+long long well_bytes_len(WellBytes *b) { return b ? b->len : 0; }
+
+static void bytes_reserve(WellBytes *b, long long need) {
+    long long cap;
+    unsigned char *n;
+    if (!b) return;
+    if (need <= b->cap) return;
+    cap = b->cap > 0 ? b->cap : 32;
+    while (cap < need) cap *= 2;
+    n = (unsigned char *)realloc(b->data, (size_t)cap);
+    if (!n) well_panic("out of memory (Bytes)");
+    b->data = n;
+    b->cap = cap;
+}
+
+void well_bytes_push(WellBytes *b, int byte, WellCtx *ctx) {
+    (void)ctx;
+    if (!b) well_panic("push on null Bytes");
+    bytes_reserve(b, b->len + 1);
+    b->data[b->len++] = (unsigned char)(byte & 0xFF);
+}
+
+void well_bytes_append(WellBytes *b, WellBytes *src, WellCtx *ctx) {
+    (void)ctx;
+    if (!b || !src || src->len == 0) return;
+    bytes_reserve(b, b->len + src->len);
+    memcpy(b->data + b->len, src->data, (size_t)src->len);
+    b->len += src->len;
+}
+
+void well_bytes_append_str(WellBytes *b, WellString *s, WellCtx *ctx) {
+    size_t n;
+    (void)ctx;
+    if (!b || !s) return;
+    n = strlen(s->data);
+    bytes_reserve(b, b->len + (long long)n);
+    memcpy(b->data + b->len, s->data, n);
+    b->len += (long long)n;
+}
+
+long long well_bytes_get(WellBytes *b, long long i) {
+    if (!b || i < 0 || i >= b->len) return -1;
+    return (long long)b->data[i];
+}
+
+void well_bytes_set(WellBytes *b, long long i, int byte, WellCtx *ctx) {
+    (void)ctx;
+    if (!b || i < 0 || i >= b->len) well_panic("Bytes.set: index out of range");
+    b->data[i] = (unsigned char)(byte & 0xFF);
+}
+
+void well_bytes_clear(WellBytes *b, WellCtx *ctx) {
+    (void)ctx;
+    if (b) b->len = 0;
+}
+
+/* Treats the buffer as text (NUL terminated); binary payloads should stay Bytes. */
+WellString *well_bytes_to_string(WellBytes *b) {
+    if (!b) return well_string_lit("");
+    return string_alloc_n((const char *)b->data, (size_t)b->len);
+}
+
+/* ---------- take helpers: compute from an owned temporary, then release it ---------- */
+
+long long well_str_len_take(WellString *s) {
+    long long n = well_string_len(s);
+    well_release(s);
+    return n;
+}
+
+long long well_str_byte_at_take(WellString *s, long long i) {
+    long long v = well_str_byte_at(s, i);
+    well_release(s);
+    return v;
+}
+
+long long well_bytes_len_take(WellBytes *b) {
+    long long n = well_bytes_len(b);
+    well_release(b);
+    return n;
+}
+
+long long well_bytes_get_take(WellBytes *b, long long i) {
+    long long v = well_bytes_get(b, i);
+    well_release(b);
+    return v;
+}
+
+long long well_array_len_take(WellArray *a) {
+    long long n = well_array_len(a);
+    well_release(a);
+    return n;
+}
+
+int well_str_eq_take(WellString *a, int a_owned, WellString *b, int b_owned) {
+    int eq = well_string_eq(a, b);
+    if (a_owned) well_release(a);
+    if (b_owned) well_release(b);
+    return eq;
+}
+
+WellString *well_string_concat_take(WellString *a, int a_owned, WellString *b, int b_owned) {
+    WellString *s = well_string_concat(a, b);
+    if (a_owned) well_release(a);
+    if (b_owned) well_release(b);
+    return s;
+}
+
+WellString *well_str_substring_take(WellString *s, long long start, long long end) {
+    WellString *r = well_str_substring(s, start, end);
+    well_release(s);
+    return r;
+}
+
+WellString *well_str_trim_take(WellString *s) {
+    WellString *r = well_str_trim(s);
+    well_release(s);
+    return r;
+}
+
+WellArray *well_str_split_take(WellString *s, WellString *sep, WellCtx *ctx) {
+    WellArray *r = well_str_split(s, sep, ctx);
+    well_release(s);
+    return r;
+}
+
+long long well_str_index_of_take(WellString *s, WellString *needle) {
+    long long i = well_str_index_of(s, needle);
+    well_release(s);
+    return i;
+}
+
+long long well_str_index_of_from_take(WellString *s, WellString *needle, long long from) {
+    long long i = well_str_index_of_from(s, needle, from);
+    well_release(s);
+    return i;
+}
+
+int well_str_contains_take(WellString *s, WellString *needle) {
+    int v = well_str_contains(s, needle);
+    well_release(s);
+    return v;
+}
+
+int well_str_starts_with_take(WellString *s, WellString *prefix) {
+    int v = well_str_starts_with(s, prefix);
+    well_release(s);
+    return v;
+}
+
+int well_str_ends_with_take(WellString *s, WellString *suffix) {
+    int v = well_str_ends_with(s, suffix);
+    well_release(s);
+    return v;
+}
+
+
 
 long long well_str_byte_at(WellString *s, long long i) {
     long long n = well_string_len(s);

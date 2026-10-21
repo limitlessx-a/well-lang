@@ -11,7 +11,7 @@
 - `func` 函数
 - **事件路由**：`on(EventType, H)` / `on(EventType, H, channel)`；`emit(event)` / `emit(event, channel)`
   - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
-- 基础类型：`int / long / bool / double / String / void / null`
+- 基础类型：`int / long / bool / double / String / Bytes / void / null`
 - 容器：`Array<T>`（`[]`）、`Map<T>`（`{}`，String 键、值同质）、`Linked<T>`（双向链表）
   - `a.push/pop`、`a.get/set`、`a[i]`、`a.length`、`for (x of a)`
   - `m.get/set`、`m.has/delete`、`m["k"]`、`m.size`、`for (k in m)`
@@ -22,6 +22,7 @@
 - 语句：`var`、赋值、`if/else`、`while`、`for`、`return`、`break/continue`
 - 表达式：算术/比较/逻辑、字符串拼接、`String.length`、成员访问、`new`、对象初始化
 - **String 字节方法**：`s[i]` / `byteAt(i)` / `charCodeAt(i)`、`substring/slice(a,b)`、`indexOf(x[,from])`、`contains/startsWith/endsWith`、`trim`、`split(sep)`、`String.fromByte(n)`（长度与下标均按字节，与 `String.length` 一致）
+- **Bytes 可变字节缓冲**：`new Bytes()`、`b.length`、`push/get/set/append/appendStr/clear/toString`；用于增量拼装负载，避免 String `+` 的 O(n²)
 - oid 写入检查、Model `get/set/remove`（64 分片哈希表 + spinlock）、引用计数（A 方案，原子 RC）、事件队列、订阅表 spinlock + 快照派发、按 oid 队列 + N worker 线程池、线程局部 handler panic 隔离、print 串行化
 - **成环策略**：允许成环，运行时不做 DFS 检查；环随 oid 过期由 registry 强制整组回收（见 `IMPLEMENTATION §3.15`）
 - **Struct 元数据**：每个 struct/event 生成 `WellTypeDesc`/`WellFieldDesc`（字段名、偏移、类型、容器元素类型），运行时可查询/遍历
@@ -49,7 +50,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（62 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（63 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```

@@ -18,3 +18,10 @@ World
 0
 -1
 0
+11
+eq-take
+Hello,World!
+2
+true
+chain-ok
+World

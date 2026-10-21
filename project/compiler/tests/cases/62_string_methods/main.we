@@ -26,6 +26,17 @@ controller MainController extends Controller {
         print(empty.length);
         print(empty.byteAt(0));
         print(empty.substring(0, 5).length);
+        print(t.trim().length);
+        if (t.substring(0, 5) == "Hello") {
+            print("eq-take");
+        }
+        print(t.trim() + "!");
+        print(t.trim().split(",").length);
+        print(t.trim().contains("World"));
+        if (t.trim().indexOf("World") == 6) {
+            print("chain-ok");
+        }
+        print(t.trim().substring(6, 11));
     }
 }
 

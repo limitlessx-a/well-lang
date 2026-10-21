@@ -8,6 +8,7 @@
 #define WELL_T_ARRAY 2u
 #define WELL_T_MAP 3u
 #define WELL_T_LINKED 4u
+#define WELL_T_BYTES 5u
 #define WELL_FLAG_IMMORTAL 1u
 #define WELL_FLAG_IN_MODEL 2u
 #define WELL_FLAG_FROZEN 4u
@@ -46,6 +47,14 @@ typedef struct WellString {
     char *data;
     unsigned long long hash;
 } WellString;
+
+/* Mutable byte buffer: build binary/text payloads without O(n^2) concatenation. */
+typedef struct WellBytes {
+    WellObj hdr;
+    unsigned char *data;
+    long long len;
+    long long cap;
+} WellBytes;
 
 typedef struct WellOidPin {
     long long oid;
@@ -198,6 +207,35 @@ int well_str_starts_with(WellString *s, WellString *prefix);
 int well_str_ends_with(WellString *s, WellString *suffix);
 WellString *well_str_trim(WellString *s);
 WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx);
+
+/* Bytes: mutable, byte addressed. get(byteAt) returns -1 when out of range. */
+WellBytes *well_bytes_new(WellCtx *ctx);
+long long well_bytes_len(WellBytes *b);
+void well_bytes_push(WellBytes *b, int byte, WellCtx *ctx);
+void well_bytes_append(WellBytes *b, WellBytes *src, WellCtx *ctx);
+void well_bytes_append_str(WellBytes *b, WellString *s, WellCtx *ctx);
+long long well_bytes_get(WellBytes *b, long long i);
+void well_bytes_set(WellBytes *b, long long i, int byte, WellCtx *ctx);
+void well_bytes_clear(WellBytes *b, WellCtx *ctx);
+WellString *well_bytes_to_string(WellBytes *b);
+
+/* "take" variants: release the owned temporary after computing (inline use of
+ * an owned expression such as `s.trim().length`). */
+long long well_str_len_take(WellString *s);
+long long well_str_byte_at_take(WellString *s, long long i);
+long long well_bytes_len_take(WellBytes *b);
+long long well_bytes_get_take(WellBytes *b, long long i);
+long long well_array_len_take(WellArray *a);
+int well_str_eq_take(WellString *a, int a_owned, WellString *b, int b_owned);
+WellString *well_string_concat_take(WellString *a, int a_owned, WellString *b, int b_owned);
+WellString *well_str_substring_take(WellString *s, long long start, long long end);
+WellString *well_str_trim_take(WellString *s);
+WellArray *well_str_split_take(WellString *s, WellString *sep, WellCtx *ctx);
+long long well_str_index_of_take(WellString *s, WellString *needle);
+long long well_str_index_of_from_take(WellString *s, WellString *needle, long long from);
+int well_str_contains_take(WellString *s, WellString *needle);
+int well_str_starts_with_take(WellString *s, WellString *prefix);
+int well_str_ends_with_take(WellString *s, WellString *suffix);
 
 /* containers: Array<T> / Map<T> (homogeneous, String keys) */
 WellArray *well_array_new(WellCtx *ctx, int is_ref);

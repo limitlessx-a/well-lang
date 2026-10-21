@@ -1,0 +1,30 @@
+module demo.bytes;
+
+controller MainController extends Controller {
+    run() {
+        var b: Bytes = new Bytes();
+        print(b.length);
+        b.push(72);
+        b.push(105);
+        b.appendStr(", ");
+        b.appendStr("Well");
+        print(b.length);
+        print(b.get(0));
+        print(b.byteAt(1));
+        print(b.get(999));
+        print(b.toString());
+        b.set(0, 74);
+        print(b.toString());
+        var c: Bytes = new Bytes();
+        c.append(b);
+        c.appendStr("!");
+        print(c.length);
+        print(c.toString());
+        print(c[0]);
+        b.clear();
+        print(b.length);
+        print(c.toString());
+    }
+}
+
+entry MainController;

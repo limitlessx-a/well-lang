@@ -433,8 +433,9 @@ class Parser:
         return e
 
     def parse_unary(self) -> Expr:
-        if self.peek().value in ("!", "-", "+", "~"):
-            op = self.peek().value
+        t = self.peek()
+        if t.kind == "op" and t.value in ("!", "-", "+", "~"):
+            op = t.value
             self.i += 1
             return Unary(op, self.parse_unary())
         return self.parse_postfix()
