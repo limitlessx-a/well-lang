@@ -1,0 +1,39 @@
+module demo.bizoid;
+
+event HttpRequestEvent extends Event {
+    reqId: long;
+    method: String;
+    path: String;
+    query: String;
+    body: String;
+}
+
+event RoleBusinessEvent extends Event {
+    reqId: long;
+    value: String;
+}
+
+controller HttpController extends Controller {
+    run() {
+        on(RoleBusinessEvent, BizHandler);
+        Http.route("/biz", "GET", IngressHandler);
+        Http.listen(18082);
+    }
+}
+
+handler IngressHandler extends Handler {
+    onEvent(e: HttpRequestEvent) {
+        print("ingress ", e.path);
+        emit(new RoleBusinessEvent(0) { reqId: e.reqId, value: "business-ok" });
+    }
+}
+
+handler BizHandler extends Handler {
+    onEvent(e: RoleBusinessEvent) {
+        print("biz ", e.value);
+        Http.respond(e.reqId, 200, e.value);
+        Http.stop();
+    }
+}
+
+entry HttpController;

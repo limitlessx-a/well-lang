@@ -1,0 +1,32 @@
+module demo.httpconcurrent;
+
+event HttpRequestEvent extends Event {
+    reqId: long;
+    method: String;
+    path: String;
+    query: String;
+    body: String;
+}
+
+controller HttpController extends Controller {
+    run() {
+        Http.route("/slow", "GET", SlowHandler);
+        Http.route("/ok", "GET", OkHandler);
+        Http.listen(18085);
+    }
+}
+
+handler SlowHandler extends Handler {
+    onEvent(e: HttpRequestEvent) {
+        print("slow");
+    }
+}
+
+handler OkHandler extends Handler {
+    onEvent(e: HttpRequestEvent) {
+        Http.respond(e.reqId, 200, "ok");
+        Http.stop();
+    }
+}
+
+entry HttpController;

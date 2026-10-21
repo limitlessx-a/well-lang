@@ -182,6 +182,73 @@ def run_http_case(name: str, d: str, exe: str) -> bool:
     return True
 
 
+def run_http_concurrent_case(name: str, d: str, exe: str) -> bool:
+    """The listener must accept a second connection while the first is still
+    waiting for its handler: the request/response pair is not serialized."""
+    port = int(open(os.path.join(d, "http_port.txt"), encoding="utf-8").read().strip())
+    p = subprocess.Popen([exe], cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    s = None
+    for _ in range(50):
+        if p.poll() is not None:
+            out, err = p.communicate()
+            print(f"FAIL {name}: server exited early\n{out.decode(errors='replace')}\n{err.decode(errors='replace')}")
+            return False
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=0.2)
+            break
+        except OSError:
+            time.sleep(0.1)
+    if s is None:
+        p.kill()
+        print(f"FAIL {name}: server did not listen on {port}")
+        return False
+    s2 = None
+    data = b""
+    latency = 0.0
+    try:
+        s.settimeout(5)
+        s.sendall(b"GET /slow HTTP/1.1\r\nHost: test\r\n\r\n")
+        time.sleep(0.3)
+        started = time.time()
+        s2 = socket.create_connection(("127.0.0.1", port), timeout=2)
+        s2.settimeout(3)
+        s2.sendall(b"GET /ok HTTP/1.1\r\nHost: test\r\n\r\n")
+        while True:
+            chunk = s2.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        latency = time.time() - started
+    except OSError as e:
+        p.kill()
+        p.communicate()
+        print(f"FAIL {name}: HTTP client error: {e}")
+        return False
+    finally:
+        if s2 is not None:
+            s2.close()
+        s.close()
+    try:
+        out, err = p.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        print(f"FAIL {name}: server did not stop")
+        return False
+    if p.returncode != 0:
+        print(f"FAIL {name}: exit={p.returncode}\n{err.decode(errors='replace')}")
+        return False
+    resp = data.decode("utf-8", errors="replace")
+    if "200 OK" not in resp or "ok" not in resp:
+        print(f"FAIL {name}: concurrent response mismatch\n{resp}")
+        return False
+    if latency > 1.5:
+        print(f"FAIL {name}: listener blocked (second response took {latency:.2f}s)")
+        return False
+    print(f"PASS {name} (concurrent {latency:.2f}s)")
+    return True
+
+
 def run_case(name: str) -> bool:
     d = os.path.join(CASES, name)
     src = os.path.join(d, "main.we")
@@ -210,6 +277,8 @@ def run_case(name: str) -> bool:
     if os.path.isfile(os.path.join(d, "ws_port.txt")):
         return run_ws_case(name, d, exe)
     if os.path.isfile(os.path.join(d, "http_port.txt")):
+        if os.path.isfile(os.path.join(d, "http_concurrent.txt")):
+            return run_http_concurrent_case(name, d, exe)
         return run_http_case(name, d, exe)
 
     env = os.environ.copy()

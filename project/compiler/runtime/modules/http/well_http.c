@@ -53,12 +53,18 @@ static WellMutex g_http_lock;
 static WellCond g_http_cond;
 static int g_http_inited = 0;
 static int g_http_running = 0;
-static int g_http_done = 0;
 static WellSocket g_http_listen_fd = WELL_INVALID_SOCKET;
 static WellThread g_http_thread;
 static int g_http_thread_started = 0;
 static int g_http_service_held = 0;
 static WellHttpRequest *g_requests = NULL;
+static WellThread g_http_sweep_thread;
+static int g_http_sweep_started = 0;
+static int g_http_sweep_stop = 0;
+
+/* A request that has not been answered within this window is answered with 504. */
+#define WELL_HTTP_TIMEOUT_MS 5000
+#define WELL_HTTP_SWEEP_BATCH 32
 
 static void http_lock_init(void) {
     if (g_http_inited) return;
@@ -148,6 +154,9 @@ static const char *http_reason(int status) {
     case 405: return "Method Not Allowed";
     case 413: return "Payload Too Large";
     case 500: return "Internal Server Error";
+    case 502: return "Bad Gateway";
+    case 503: return "Service Unavailable";
+    case 504: return "Gateway Timeout";
     default: return "OK";
     }
 }
@@ -164,8 +173,37 @@ static void http_write_response(WellHttpRequest *req, int status, const char *bo
     if (blen) http_send_all((WellSocket)req->fd, body, blen);
 }
 
+/* ---------- request lifetime (all refcount ops hold g_http_lock) ---------- */
+
+static void http_req_free(WellHttpRequest *req) {
+    if (req->method) well_release(req->method);
+    if (req->path) well_release(req->path);
+    if (req->query) well_release(req->query);
+    if (req->body) well_release(req->body);
+    free(req);
+}
+
+/* Caller holds g_http_lock. Unlinks on the last ref; returns the orphan to free. */
+static WellHttpRequest *http_req_unref_locked(WellHttpRequest *req) {
+    WellHttpRequest **pp;
+    req->refs--;
+    if (req->refs > 0) return NULL;
+    pp = &g_requests;
+    while (*pp) {
+        if (*pp == req) {
+            *pp = req->next;
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+    return req;
+}
+
+/* First response wins. Whoever claims `responded` owns the socket, writes and
+ * closes it, then drops the list reference. Later calls become no-ops. */
 void well_http_respond(long long req_id, int status, const char *body) {
     WellHttpRequest *req = NULL;
+    WellHttpRequest *dead;
     WellHttpRequest *p;
     http_lock_init();
     well_mutex_lock(&g_http_lock);
@@ -181,10 +219,15 @@ void well_http_respond(long long req_id, int status, const char *body) {
     }
     req->responded = 1;
     well_mutex_unlock(&g_http_lock);
+
     http_write_response(req, status, body);
-    well_mutex_lock(&req->lock);
-    well_cond_signal(&req->cond);
-    well_mutex_unlock(&req->lock);
+    http_close((WellSocket)req->fd);
+
+    well_mutex_lock(&g_http_lock);
+    req->fd = (long long)WELL_INVALID_SOCKET;
+    dead = http_req_unref_locked(req);
+    well_mutex_unlock(&g_http_lock);
+    if (dead) http_req_free(dead);
 }
 
 void well_http_route(const char *path, const char *method, WellHttpRouteFn fn) {
@@ -317,9 +360,6 @@ static int http_read_request(WellSocket fd, char **method, char **path,
 typedef struct HttpTaskCtx {
     WellHttpRequest *req;
     HttpRoute *route;
-    WellMutex lock;
-    WellCond cond;
-    int done;
 } HttpTaskCtx;
 
 static void http_task_entry(WellCtx *ctx, void *arg) {
@@ -329,22 +369,29 @@ static void http_task_entry(WellCtx *ctx, void *arg) {
 
 static void http_task_done(void *arg) {
     HttpTaskCtx *t = (HttpTaskCtx *)arg;
-    well_mutex_lock(&t->lock);
-    t->done = 1;
-    well_cond_signal(&t->cond);
-    well_mutex_unlock(&t->lock);
+    WellHttpRequest *dead;
+    well_mutex_lock(&g_http_lock);
+    dead = http_req_unref_locked(t->req);
+    well_mutex_unlock(&g_http_lock);
+    if (dead) http_req_free(dead);
+    free(t);
 }
 
-static void http_handle_connection(WellSocket fd) {
+/* Parses the request and hands it to a worker. Never blocks on the handler:
+ * the listener returns to accept() immediately, so connections are served
+ * concurrently and an HTTP task can safely emit business events that answer
+ * later from another oid.
+ * Returns 1 when the socket was handed over, 0 when the caller keeps it. */
+static int http_handle_connection(WellSocket fd) {
     char *method = NULL, *path = NULL, *query = NULL, *body = NULL;
     HttpRoute *route;
     WellHttpRequest *req;
-    WellCtx ctx;
+    HttpTaskCtx *task;
 
     if (http_read_request(fd, &method, &path, &query, &body) != 0) {
         const char *bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         http_send_all(fd, bad, strlen(bad));
-        return;
+        return 0;
     }
     route = http_find_route(method, path);
     req = (WellHttpRequest *)calloc(1, sizeof(WellHttpRequest));
@@ -355,9 +402,9 @@ static void http_handle_connection(WellSocket fd) {
     req->query = well_string_new(query);
     req->body = well_string_new(body);
     req->fd = (long long)fd;
-    well_mutex_init(&req->lock);
-    well_cond_init(&req->cond);
     req->responded = 0;
+    req->refs = 1; /* list reference */
+    req->deadline_ms = well_host_now_ms() + WELL_HTTP_TIMEOUT_MS;
 
     http_lock_init();
     well_mutex_lock(&g_http_lock);
@@ -365,61 +412,77 @@ static void http_handle_connection(WellSocket fd) {
     g_requests = req;
     well_mutex_unlock(&g_http_lock);
 
-    if (route) {
-        HttpTaskCtx task;
-        memset(&task, 0, sizeof(task));
-        task.req = req;
-        task.route = route;
-        well_mutex_init(&task.lock);
-        well_cond_init(&task.cond);
-        well_schedule_task(req->id, http_task_entry, &task, http_task_done);
-        well_mutex_lock(&task.lock);
-        while (!task.done) well_cond_wait(&task.cond, &task.lock);
-        well_mutex_unlock(&task.lock);
-        well_mutex_destroy(&task.lock);
-        well_cond_destroy(&task.cond);
-        /* handler may emit a business event and respond later */
-        if (!req->responded) {
-            long long deadline = well_host_now_ms() + 5000;
-            well_mutex_lock(&req->lock);
-            while (!req->responded && well_host_now_ms() < deadline)
-                well_cond_wait(&req->cond, &req->lock);
-            well_mutex_unlock(&req->lock);
-        }
-    } else {
-        well_http_respond(req->id, 404, "not found");
-    }
-    if (!req->responded) well_http_respond(req->id, 500, "no response");
-
-    well_mutex_lock(&g_http_lock);
-    {
-        WellHttpRequest **pp = &g_requests;
-        while (*pp) {
-            if (*pp == req) {
-                *pp = req->next;
-                break;
-            }
-            pp = &(*pp)->next;
-        }
-    }
-    well_mutex_unlock(&g_http_lock);
-    well_release(req->method);
-    well_release(req->path);
-    well_release(req->query);
-    well_release(req->body);
-    well_mutex_destroy(&req->lock);
-    well_cond_destroy(&req->cond);
-    free(req);
     free(method);
     free(path);
     free(query);
     free(body);
+
+    if (!route) {
+        WellHttpRequest *dead;
+        req->responded = 1;
+        http_write_response(req, 404, "not found");
+        well_mutex_lock(&g_http_lock);
+        dead = http_req_unref_locked(req);
+        well_mutex_unlock(&g_http_lock);
+        if (dead) http_req_free(dead);
+        http_close(fd);
+        return 0;
+    }
+
+    task = (HttpTaskCtx *)calloc(1, sizeof(HttpTaskCtx));
+    if (!task) well_panic("out of memory (HTTP task)");
+    task->req = req;
+    task->route = route;
+    well_mutex_lock(&g_http_lock);
+    req->refs++; /* task reference keeps the request alive while the handler runs */
+    well_mutex_unlock(&g_http_lock);
+    well_schedule_task(req->id, http_task_entry, task, http_task_done);
+    return 1;
+}
+
+/* Answers requests that no handler replied to, so sockets never leak. */
+static void *http_sweeper_thread(void *arg) {
+    (void)arg;
+    for (;;) {
+        WellHttpRequest *expired[WELL_HTTP_SWEEP_BATCH];
+        WellHttpRequest *p;
+        int n = 0, i;
+        long long now;
+        well_sleep_ms(50);
+        now = well_host_now_ms();
+        http_lock_init();
+        well_mutex_lock(&g_http_lock);
+        if (g_http_sweep_stop) {
+            well_mutex_unlock(&g_http_lock);
+            break;
+        }
+        for (p = g_requests; p && n < WELL_HTTP_SWEEP_BATCH; p = p->next) {
+            if (!p->responded && now >= p->deadline_ms) {
+                p->responded = 1;
+                expired[n++] = p;
+            }
+        }
+        well_mutex_unlock(&g_http_lock);
+        for (i = 0; i < n; i++) {
+            WellHttpRequest *req = expired[i];
+            WellHttpRequest *dead;
+            http_write_response(req, 504, "gateway timeout");
+            http_close((WellSocket)req->fd);
+            well_mutex_lock(&g_http_lock);
+            req->fd = (long long)WELL_INVALID_SOCKET;
+            dead = http_req_unref_locked(req);
+            well_mutex_unlock(&g_http_lock);
+            if (dead) http_req_free(dead);
+        }
+    }
+    return NULL;
 }
 
 static void *http_listener_thread(void *arg) {
+    WellSocket fd = WELL_INVALID_SOCKET;
     (void)arg;
     for (;;) {
-        WellSocket s, fd;
+        WellSocket s;
         well_mutex_lock(&g_http_lock);
         if (!g_http_running) {
             well_mutex_unlock(&g_http_lock);
@@ -429,20 +492,22 @@ static void *http_listener_thread(void *arg) {
         well_mutex_unlock(&g_http_lock);
         s = http_accept(fd);
         if (s == WELL_INVALID_SOCKET) break;
-        http_handle_connection(s);
-        http_close(s);
+        if (!http_handle_connection(s)) http_close(s);
     }
     well_mutex_lock(&g_http_lock);
-    g_http_done = 1;
+    g_http_running = 0;
+    fd = g_http_listen_fd;
+    g_http_listen_fd = WELL_INVALID_SOCKET;
     if (g_http_service_held) {
         g_http_service_held = 0;
         well_mutex_unlock(&g_http_lock);
         well_service_release();
-        well_mutex_lock(&g_http_lock);
+    } else {
+        well_mutex_unlock(&g_http_lock);
     }
-    g_http_running = 0;
-    well_cond_signal(&g_http_cond);
-    well_mutex_unlock(&g_http_lock);
+    /* stop() closes the listening socket to unblock accept(); close it here
+     * only when accept() failed on its own. */
+    if (fd != WELL_INVALID_SOCKET) http_close(fd);
     return NULL;
 }
 
@@ -463,10 +528,13 @@ void well_http_listen(int port) {
     r = http_listen(g_http_listen_fd);
     if (r != 0) well_panic("Http.listen: listen failed");
     g_http_running = 1;
-    g_http_done = 0;
+    g_http_sweep_stop = 0;
     if (well_thread_start(&g_http_thread, http_listener_thread, NULL) != 0)
         well_panic("Http.listen: cannot start thread");
     g_http_thread_started = 1;
+    if (well_thread_start(&g_http_sweep_thread, http_sweeper_thread, NULL) != 0)
+        well_panic("Http.listen: cannot start sweeper thread");
+    g_http_sweep_started = 1;
     g_http_service_held = 1;
     well_service_hold();
     /* 非阻塞：listener 与 worker 生命周期由 well_run_loop 管理。 */
@@ -489,6 +557,25 @@ void well_http_shutdown(void) {
     if (g_http_thread_started) {
         well_thread_join(g_http_thread);
         g_http_thread_started = 0;
+    }
+    if (g_http_sweep_started) {
+        well_mutex_lock(&g_http_lock);
+        g_http_sweep_stop = 1;
+        well_mutex_unlock(&g_http_lock);
+        well_thread_join(g_http_sweep_thread);
+        g_http_sweep_started = 0;
+    }
+    /* The run loop has already stopped its workers: close whatever is in flight. */
+    for (;;) {
+        WellHttpRequest *req;
+        well_mutex_lock(&g_http_lock);
+        req = g_requests;
+        if (req) g_requests = req->next;
+        well_mutex_unlock(&g_http_lock);
+        if (!req) break;
+        http_close((WellSocket)req->fd);
+        req->fd = (long long)WELL_INVALID_SOCKET;
+        http_req_free(req);
     }
     if (g_http_service_held) {
         g_http_service_held = 0;

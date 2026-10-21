@@ -308,13 +308,19 @@ typedef struct WellStore {
 ### 3.12 HTTP/1.1 服务器
 
 - API：`Http.route(path, method, Handler)`、`Http.listen(port)`、`Http.respond(reqId,status,body)`、`Http.stop()`；
-- `Http.listen` 启动监听线程并阻塞当前 controller，直到 `Http.stop`；
-- 单连接、单请求、阻塞 accept/recv；响应后关闭连接；
+- `Http.listen` 非阻塞：启动监听线程与超时清扫线程，并 `well_service_hold()`；主线程进入 `well_run_loop`，`Http.stop()` 释放服务后返回；
+- listener 只做 accept + 解析，把请求作为 task 投递到该请求 oid 的队列后立即回到 accept，**不等待 handler**，因此连接之间不串行；
+- handler 在 worker 线程执行（每请求一个 task，run-to-completion）；handler 内可 `emit` 业务事件，由另一个 oid 的 handler 稍后响应；
+- `Http.respond(reqId, status, body)` 可在任意 oid/handler 中调用，首个响应生效：认领 `responded` 后写响应并关闭连接，后续调用为空操作；
+- 请求对象引用计数（list 引用 + task 引用），list 表由模块锁保护；响应与 task 结束各释放一个引用，最后一个释放时销毁；
+- 超时清扫线程：`WELL_HTTP_TIMEOUT_MS`（5s）内无人响应则返回 504 并关闭连接，避免 socket 与请求对象泄漏；
+- 路由按 method + path 精确匹配，未命中返回 404；
 - 自写 parser：request line、headers、Content-Length、body；
 - 限制：header 16KB、body 1MB；
 - Handler 通过 `HttpRequestEvent` 接收 `reqId/method/path/query/body`；
 - codegen 为每个 route 生成 wrapper，构造事件并直接调用 handler；
-- handler panic 在 HTTP 线程用 setjmp 捕获，返回 500；
+- handler panic 在 worker 线程用 setjmp 捕获隔离；
+- 当前限制：每个连接一次请求（`Connection: close`），listener 的读取仍是串行的（慢速客户端会拖慢 accept）；无 keep-alive/pipelining/chunked/TLS；
 - Windows：动态加载 `ws2_32.dll`（TCC 无 winsock 头）；Linux：POSIX socket。
 
 ### 3.13 WebSocket
@@ -384,7 +390,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（57 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（59 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

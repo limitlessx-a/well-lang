@@ -7,6 +7,9 @@
 typedef struct WellHttpRequest WellHttpRequest;
 typedef void (*WellHttpRouteFn)(WellCtx *ctx, WellHttpRequest *req);
 
+/* Request lifetime is reference counted and guarded by the module lock.
+ * refs: 1 for list membership, +1 while the worker task is executing.
+ * The response socket is owned by whoever wins the `responded` claim. */
 struct WellHttpRequest {
     long long id;
     WellString *method;
@@ -15,8 +18,8 @@ struct WellHttpRequest {
     WellString *body;
     long long fd;
     int responded;
-    WellMutex lock;
-    WellCond cond;
+    int refs;
+    long long deadline_ms;
     struct WellHttpRequest *next;
 };
 

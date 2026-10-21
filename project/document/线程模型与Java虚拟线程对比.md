@@ -1,7 +1,7 @@
 # Well 线程模型与 Java 虚拟线程对比
 
 > 本文描述当前 Well 运行时的多线程实现，并与 Java Virtual Threads 做对比。
-> 当前基线：SVN r46，57 个 .we 用例 + C 测试通过。
+> 当前基线：59 个 .we 用例 + C 测试通过。
 
 ---
 
@@ -155,25 +155,25 @@ handler 是 **run-to-completion**：
 
 ### 2.6 HTTP / WebSocket 的线程现状
 
-当前 HTTP / WS **没有接入 oid worker 调度器**：
+HTTP 已接入 oid 调度器，WS / MySQL 尚未接入：
 
 ```text
 HTTP listener thread
-  -> 直接调用 route->fn(ctx, req)
+  -> accept + 解析
+  -> well_schedule_task(req.oid, route_fn)   // 投递到请求 oid 的队列后立即回到 accept
 
-WS listener thread
-  -> 直接调用 open/msg/close handler
+worker（oid runner）
+  -> route handler（run-to-completion）
+  -> 可 emit 业务事件，由另一个 oid 的 handler 调用 Http.respond 完成响应
 ```
 
 因此：
 
-- HTTP/WS handler 跑在 listener 线程；
-- 不经过 worker 池；
-- 不遵守同 oid 单 runner；
-- listener 线程会被 handler 阻塞；
-- 只有请求/连接级别串行，而不是 oid 级别串行。
-
-这是当前多线程模型的一个已知缺口。
+- HTTP handler 跑在 worker 池，遵守同 oid 单 runner；
+- listener 不再被 handler 阻塞，连接之间不再串行（`59_http_concurrent` 覆盖）；
+- `Http.respond` 可从任意 handler/线程调用，首个响应生效，响应后关闭连接；
+- 5s 内无人响应的请求由清扫线程返回 504；
+- WS / MySQL 仍在各自线程同步执行，是当前多线程模型剩余缺口。
 
 ### 2.7 当前没有的能力
 
@@ -229,7 +229,7 @@ Java 虚拟线程（JEP 444）是 JVM 管理的轻量线程：
 | 数量级 | worker 1..64 | 可百万级虚拟线程 |
 | 阻塞语义 | 阻塞 worker | 阻塞时让出 carrier |
 | 长任务公平性 | 无 | 依赖阻塞点/调度 |
-| HTTP 集成 | listener 线程直接执行 | 可用虚拟线程每请求 |
+| HTTP 集成 | 请求作为 task 进 oid 队列（listener 不阻塞） | 可用虚拟线程每请求 |
 | GC/RC 关系 | oid exec_ref + RC | GC 管理堆，线程无 RC |
 
 ---
@@ -323,7 +323,7 @@ Well 当前 handler 中：
 
 - 文件 I/O；
 - MySQL 同步调用；
-- HTTP/WS 部分阻塞操作；
+- HTTP/WS 部分阻塞操作（HTTP 已改为任务派发，listener 不再等 handler）；
 
 都会阻塞 worker。
 
@@ -358,10 +358,8 @@ Java 虚拟线程会在阻塞点让出 carrier。
 
 ### P0：HTTP/WS 接入 oid 调度器
 
-- listener 只负责解析/收发；
-- handler 作为 event/task 入 oid 调度器；
-- 响应线程安全；
-- 保持同 oid 单 runner。
+- HTTP：已完成。listener 只负责解析/收发；handler 作为 task 入 oid 调度器；`Http.respond` 线程安全（首个生效）；同 oid 单 runner。
+- WS：待做。listener 只负责握手/收发；open/msg/close handler 作为 task 入 oid 调度器；`Ws.send` 线程安全。
 
 ### P1：调度指标
 
