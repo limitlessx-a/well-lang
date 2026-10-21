@@ -22,6 +22,8 @@ class Checker:
         self.handlers = {}
         self.handler_event = {}   # handler -> TypeRef
         self.handler_method = {}  # handler -> method name
+        self.namespaces = {}      # namespace -> {func name: MethodDecl}
+        self.current_namespace = None
 
     # ---------- public ----------
     def run(self):
@@ -39,6 +41,12 @@ class Checker:
                     self.check_method(m, {"oid": "long"}, owner=name, event_type=ev)
         for name, f in self.funcs.items():
             self.check_method(f, {}, owner=None, is_func=True)
+        for ns, funcs in self.namespaces.items():
+            old = self.current_namespace
+            self.current_namespace = ns
+            for fname, f in funcs.items():
+                self.check_method(f, {}, owner=None, is_func=True)
+            self.current_namespace = old
         if self.p.entry and self.p.entry not in self.controllers:
             self.err(f"entry '{self.p.entry}' is not a controller")
         # expose tables
@@ -47,6 +55,7 @@ class Checker:
         self.p.enums = self.enums
         self.p.consts = self.consts
         self.p.funcs = self.funcs
+        self.p.namespaces = self.namespaces
         self.p.controllers = self.controllers
         self.p.handlers = self.handlers
         self.p.handler_event = self.handler_event
@@ -72,6 +81,15 @@ class Checker:
                 self.controllers[d.name] = d
             elif isinstance(d, HandlerDecl):
                 self.handlers[d.name] = d
+            elif isinstance(d, NamespaceDecl):
+                if d.name in self.namespaces:
+                    self.err(f"duplicate namespace {d.name}")
+                table = {}
+                for f in d.funcs:
+                    if f.name in table:
+                        self.err(f"namespace {d.name}: duplicate function {f.name}")
+                    table[f.name] = f
+                self.namespaces[d.name] = table
         # enums: normalize members (auto values, String default = member name)
         for name, d in self.enums.items():
             kind = None
@@ -495,6 +513,22 @@ class Checker:
             e.ty = lt
 
     def check_call(self, e: Call, env):
+        # NamespaceName.func(...)
+        if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name in self.namespaces:
+            ns = e.func.obj.name
+            table = self.namespaces[ns]
+            fname = e.func.name
+            if fname not in table:
+                self.err(f"namespace {ns} has no function {fname}")
+            f = table[fname]
+            if len(e.args) != len(f.params):
+                self.err(f"{ns}.{fname} expects {len(f.params)} arguments, got {len(e.args)}")
+            for i, a in enumerate(e.args):
+                at = self.check_expr(a, env)
+                self.check_assignable(f.params[i][1].name, at)
+            e.ty = f.ret.name if f.ret else "void"
+            e.call_ns = (ns, fname)
+            return
         # File.*
         if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name == "File":
             name = e.func.name
@@ -1130,6 +1164,16 @@ class Checker:
                 e.ty = "void"
                 e.builtin = name
                 e.controller_name = cn
+                return
+            if self.current_namespace and name in self.namespaces.get(self.current_namespace, {}):
+                f = self.namespaces[self.current_namespace][name]
+                if len(e.args) != len(f.params):
+                    self.err(f"{name} expects {len(f.params)} arguments, got {len(e.args)}")
+                for i, a in enumerate(e.args):
+                    at = self.check_expr(a, env)
+                    self.check_assignable(f.params[i][1].name, at)
+                e.ty = f.ret.name if f.ret else "void"
+                e.call_ns = (self.current_namespace, name)
                 return
             if name in self.funcs:
                 f = self.funcs[name]

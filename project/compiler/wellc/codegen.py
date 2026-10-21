@@ -144,7 +144,7 @@ class CodeGen:
             return True
         if isinstance(e, Binary) and e.op == "+" and getattr(e, "ty", None) == "String":
             return True
-        if isinstance(e, Call) and getattr(e, "call_user", None):
+        if isinstance(e, Call) and (getattr(e, "call_user", None) or getattr(e, "call_ns", None)):
             return getattr(e, "ty", "void") not in ("void",) and self.is_ref(getattr(e, "ty"))
         if isinstance(e, Call) and getattr(e, "method_op", None) == "array_pop":
             return self.is_ref(getattr(e, "ty", ""))
@@ -498,6 +498,10 @@ class CodeGen:
             return f"{e.controller_name}_stop(ctx)"
         if getattr(e, "builtin", None) in ("print", "host_log"):
             raise Exception("print/Host.log is only supported as a statement")
+        if getattr(e, "call_ns", None):
+            ns, fname = e.call_ns
+            args = ", ".join(["ctx"] + [self.gen_expr(a) for a in e.args])
+            return f"{ns}__{fname}({args})"
         if getattr(e, "call_user", None):
             args = ["ctx"]
             for a in e.args:
@@ -983,6 +987,7 @@ class CodeGen:
         self.gen_ws_routes()
         self.gen_timer_wrappers()
         self.gen_user_funcs()
+        self.gen_namespaces()
         self.gen_controllers()
         self.gen_handlers()
         self.gen_main()
@@ -1122,6 +1127,11 @@ class CodeGen:
             ret = self.ctype(f.ret.name) if f.ret else "void"
             params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
             self.w(f"static {ret} {name}({params});")
+        for ns, funcs in getattr(self.p, "namespaces", {}).items():
+            for fname, f in funcs.items():
+                ret = self.ctype(f.ret.name) if f.ret else "void"
+                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
+                self.w(f"static {ret} {ns}__{fname}({params});")
         for name in self.p.controllers:
             self.w(f"static void {name}_ensure(WellCtx* ctx);")
             self.w(f"static void {name}_stop(WellCtx* ctx);")
@@ -1240,6 +1250,29 @@ class CodeGen:
             self.ind -= 1
             self.w("}")
             self.w("")
+
+    def gen_namespaces(self):
+        for ns, funcs in getattr(self.p, "namespaces", {}).items():
+            for fname, f in funcs.items():
+                ret = self.ctype(f.ret.name) if f.ret else "void"
+                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
+                self.w(f"static {ret} {ns}__{fname}({params}) {{")
+                self.ind += 1
+                self.w("(void)ctx;")
+                self.env = {n: t.name for n, t in f.params}
+                self.current_ret = f.ret.name if f.ret else "void"
+                m = self.next_id()
+                mk = f"_m{m}"
+                self.w(f"int {mk} = well_ctx_mark(ctx);")
+                tm, old_tm = self.begin_frame_temp()
+                self.push_scope(mk, False)
+                self.gen_block(f.body)
+                self.emit_scope_release(mk)
+                self.pop_scope(mk)
+                self.end_frame_temp(tm, old_tm)
+                self.ind -= 1
+                self.w("}")
+                self.w("")
 
     def gen_controllers(self):
         for name, c in self.p.controllers.items():

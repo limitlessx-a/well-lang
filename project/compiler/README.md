@@ -9,6 +9,7 @@
 - `controller`（`on/once/off/start/stop/emit/run`）；`start(C)` 单例幂等，`stop(C)` 注销该 controller 类型的订阅并允许重新 start
 - `handler`（`onEvent` 事件处理、无字段）
 - `func` 函数
+- `namespace N { f(a:int):int {...} }` 静态函数集合：`N.f(...)` 编译期解析、生成 `static` C 函数（零运行时开销，不占 oid/RC；成员暂只允许函数）
 - **事件路由**：`on(EventType, H)` / `on(EventType, H, channel)`；`emit(event)` / `emit(event, channel)`
   - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
 - 基础类型：`int / long / bool / double / String / Bytes / void / null`
@@ -54,7 +55,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（70 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（72 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```

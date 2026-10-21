@@ -1,0 +1,29 @@
+module demo.usertool;
+
+namespace UserTool {
+    add(a: int, b: int): int {
+        return a + b;
+    }
+    sub(a: int, b: int): int {
+        return a - b;
+    }
+    twiceSum(a: int, b: int): int {
+        return add(a, b) * 2;
+    }
+    label(): String {
+        var b: Bytes = new Bytes();
+        b.appendStr("tool");
+        return b.toString();
+    }
+}
+
+controller MainController extends Controller {
+    run() {
+        print(UserTool.add(1, 2));
+        print(UserTool.sub(9, 4));
+        print(UserTool.twiceSum(2, 3));
+        print(UserTool.label());
+    }
+}
+
+entry MainController;

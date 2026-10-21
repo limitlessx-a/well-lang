@@ -68,6 +68,14 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 | `controller C extends Controller { run(){...} }` | ✅ | 单例装配器；`start(C)` 幂等，无 `start(C, oid)`；`extends Controller` 可省略，默认 `Controller` |
 | `handler H extends Handler { onEvent(e:E){...} }` | ✅ | 也接受 `handle`/`on`/`handler` 方法名；`extends Handler` 可省略，默认 `Handler` |
 | `func f(a:int):int { ... }` | ✅ | 生成带隐藏 `WellCtx*` 的 C 函数 |
+| `namespace N { f(a:int):int {...} }` | ✅ | 静态函数集合；`N.f(...)` 编译期解析，生成 `static N__f(WellCtx*, ...)`，零运行时开销、不占 oid/RC |
+
+`namespace` 语义（2026-10-22 加入）：
+- 成员只能是函数（暂不放 const/enum/struct）；函数可省略返回类型（视为 void）；
+- 调用形式 `N.f(args)`；namespace 内部可**按名字直接调用同 namespace 的其他函数**；
+- 不是一等值：`N` 不能赋值/传参/作为表达式；
+- 不支持嵌套 namespace、别名/using、函数重载；
+- C 名字修饰 `N__f`，与顶层 `func` 不冲突；`import` 后可直接使用。
 
 ### 2.2 类型
 
@@ -446,7 +454,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（70 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（72 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

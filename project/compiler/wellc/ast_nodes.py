@@ -226,6 +226,12 @@ class FuncDecl:
 
 
 @dataclass
+class NamespaceDecl:
+    name: str
+    funcs: list[MethodDecl]
+
+
+@dataclass
 class ImportDecl:
     path: str
 
@@ -240,6 +246,7 @@ class Program:
     uses_ws: bool = False
     uses_mysql: bool = False
     timer_calls: list = field(default_factory=list)  # {"event","handler","op"}
+    namespaces: dict = field(default_factory=dict)  # name -> {func: MethodDecl}
 
     # lookup helpers filled by checker
     structs: dict = field(default_factory=dict)

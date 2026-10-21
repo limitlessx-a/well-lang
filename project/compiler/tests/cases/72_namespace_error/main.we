@@ -1,0 +1,15 @@
+module demo.usertoolerr;
+
+namespace U {
+    f(a: int): int {
+        return a;
+    }
+}
+
+controller MainController extends Controller {
+    run() {
+        print(U.f());
+    }
+}
+
+entry MainController;

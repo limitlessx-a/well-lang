@@ -170,6 +170,8 @@ handler UserHandler extends Handler {
 
 #工具类 其中全是静态方法 UserTool.add(1,2);
 funcs UserTool {
+	aaa:int;
+	bbb:int;
 	add(a:int,b:int):int{
 		return a+b;
 	}

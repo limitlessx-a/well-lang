@@ -126,6 +126,8 @@ class Parser:
                 prog.decls.append(self.parse_handler())
             elif self.at("func"):
                 prog.decls.append(self.parse_func())
+            elif self.at("namespace"):
+                prog.decls.append(self.parse_namespace())
             else:
                 self.err(f"unexpected top-level token {self.peek().value!r}")
         return prog
@@ -250,6 +252,16 @@ class Parser:
             methods.append(self.parse_method())
         self.eat("}")
         return HandlerDecl(name, base, methods)
+
+    def parse_namespace(self) -> NamespaceDecl:
+        self.eat("namespace")
+        name = self.eat_id()
+        self.eat("{")
+        funcs = []
+        while not self.at("}"):
+            funcs.append(self.parse_method())
+        self.eat("}")
+        return NamespaceDecl(name, funcs)
 
     def parse_func(self) -> FuncDecl:
         self.eat("func")
