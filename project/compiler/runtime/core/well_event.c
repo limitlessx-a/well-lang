@@ -137,6 +137,60 @@ static int g_thread_count = 0;
 
 #define QMAP_TOMB ((WellOidQueue *)-1)
 
+/* Small object pools for the hot enqueue/dispatch path. They are capped and
+ * guarded by g_sched_mutex; leftovers are process-lifetime (bounded). */
+#define WELL_NODE_POOL_MAX 256
+#define WELL_QUEUE_POOL_MAX 256
+static WellEventNode *g_node_pool = NULL;
+static int g_node_pool_n = 0;
+static WellOidQueue *g_queue_pool = NULL;
+static int g_queue_pool_n = 0;
+
+/* Caller holds g_sched_mutex. */
+static WellEventNode *node_pool_take(void) {
+    WellEventNode *n = g_node_pool;
+    if (!n) return NULL;
+    g_node_pool = n->next;
+    g_node_pool_n--;
+    return n;
+}
+
+/* Caller holds g_sched_mutex. */
+static void node_pool_put(WellEventNode *n) {
+    if (!n) return;
+    if (g_node_pool_n >= WELL_NODE_POOL_MAX) {
+        free(n);
+        return;
+    }
+    n->event = NULL;
+    n->next = g_node_pool;
+    g_node_pool = n;
+    g_node_pool_n++;
+}
+
+/* Caller holds g_sched_mutex. */
+static WellOidQueue *queue_pool_take(void) {
+    WellOidQueue *q = g_queue_pool;
+    if (!q) return NULL;
+    g_queue_pool = q->ready_next;
+    g_queue_pool_n--;
+    memset(q, 0, sizeof(WellOidQueue));
+    return q;
+}
+
+/* Caller holds g_sched_mutex. */
+static void queue_pool_put(WellOidQueue *q) {
+    if (!q) return;
+    if (g_queue_pool_n >= WELL_QUEUE_POOL_MAX) {
+        free(q);
+        return;
+    }
+    memset(q, 0, sizeof(WellOidQueue));
+    q->ready_next = g_queue_pool;
+    g_queue_pool = q;
+    g_queue_pool_n++;
+}
+
 void well_event_init(void) {
     if (g_sched_inited) return;
     well_mutex_init(&g_sched_mutex);
@@ -245,8 +299,11 @@ static WellOidQueue *qmap_create(long long oid) {
         if (s == QMAP_TOMB && tomb < 0) tomb = (int)h;
         h = (h + 1) & mask;
     }
-    q = (WellOidQueue *)calloc(1, sizeof(WellOidQueue));
-    if (!q) well_panic("out of memory (oid queue)");
+    q = queue_pool_take();
+    if (!q) {
+        q = (WellOidQueue *)calloc(1, sizeof(WellOidQueue));
+        if (!q) well_panic("out of memory (oid queue)");
+    }
     q->oid = oid;
     g_qmap[h] = q;
     g_qmap_used++;
@@ -261,7 +318,7 @@ static void qmap_remove(WellOidQueue *q) {
         g_qmap_used--;
         g_qmap_tomb++;
     }
-    free(q);
+    queue_pool_put(q);
     if (g_qmap_cap &&
         (g_qmap_used + g_qmap_tomb) * 10 >= g_qmap_cap * 7)
         qmap_rehash(g_qmap_cap);
@@ -470,8 +527,15 @@ void well_emit_event(void *event, long long channel) {
     if (ev->oid == 0) ev->oid = well_id_util_get_id();
     well_event_init();
     well_event_pin_payload(event);
-    n = (WellEventNode *)malloc(sizeof(WellEventNode));
-    if (!n) well_panic("out of memory (event queue)");
+    well_retain(event);
+    well_mutex_lock(&g_sched_mutex);
+    n = node_pool_take();
+    if (!n) {
+        well_mutex_unlock(&g_sched_mutex);
+        n = (WellEventNode *)malloc(sizeof(WellEventNode));
+        if (!n) well_panic("out of memory (event queue)");
+        well_mutex_lock(&g_sched_mutex);
+    }
     n->channel = channel;
     n->event = event;
     n->kind = 0;
@@ -479,8 +543,6 @@ void well_emit_event(void *event, long long channel) {
     n->task_done = NULL;
     n->task_arg = NULL;
     n->next = NULL;
-    well_retain(event);
-    well_mutex_lock(&g_sched_mutex);
     q = qmap_get(ev->oid);
     if (!q) q = qmap_create(ev->oid);
     {
@@ -503,8 +565,14 @@ void well_schedule_task(long long oid, WellTaskFn fn, void *arg, WellTaskDone do
     if (!fn) well_panic("schedule_task(null)");
     if (oid == 0) oid = well_id_util_get_id();
     well_event_init();
-    n = (WellEventNode *)malloc(sizeof(WellEventNode));
-    if (!n) well_panic("out of memory (task queue)");
+    well_mutex_lock(&g_sched_mutex);
+    n = node_pool_take();
+    if (!n) {
+        well_mutex_unlock(&g_sched_mutex);
+        n = (WellEventNode *)malloc(sizeof(WellEventNode));
+        if (!n) well_panic("out of memory (task queue)");
+        well_mutex_lock(&g_sched_mutex);
+    }
     n->channel = 0;
     n->event = NULL;
     n->kind = 1;
@@ -512,7 +580,6 @@ void well_schedule_task(long long oid, WellTaskFn fn, void *arg, WellTaskDone do
     n->task_done = done;
     n->task_arg = arg;
     n->next = NULL;
-    well_mutex_lock(&g_sched_mutex);
     q = qmap_get(oid);
     if (!q) q = qmap_create(oid);
     {
@@ -597,6 +664,7 @@ static void dispatch_task(long long oid, WellEventNode *node) {
 static void sched_worker_loop(int wid, int is_main) {
     for (;;) {
         WellOidQueue *q;
+        WellEventNode *node;
 
         well_model_cleanup_if_due();
 
@@ -621,7 +689,7 @@ static void sched_worker_loop(int wid, int is_main) {
         }
         q->running = 1;
         {
-            WellEventNode *node = q->head;
+            node = q->head;
             q->head = node->next;
             if (!q->head) q->tail = NULL;
             well_mutex_unlock(&g_sched_mutex);
@@ -631,10 +699,10 @@ static void sched_worker_loop(int wid, int is_main) {
                 dispatch_event(node);
                 well_release(node->event);
             }
-            free(node);
         }
 
         well_mutex_lock(&g_sched_mutex);
+        node_pool_put(node);
         q->running = 0;
         if (q->head) {
             if (!q->scheduled) ready_push(q);

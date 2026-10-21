@@ -280,6 +280,7 @@ typedef struct WellStore {
 - 队列空即从 map 移除；
 - handler 内 `emit` 会入对应 oid 队列；同一 oid 若正在执行则不重复调度；
 - **work stealing**：默认 `WELL_WORKERS=1`（兼容确定性测试），可设为 2..64；主线程 id=0 也参与；
+- **对象池**（热路径）：事件/任务节点 `WellEventNode` 与 oid 队列 `WellOidQueue` 各有一个上限 256 的空闲链表，入队/出队时复用，避免每个事件一次 malloc/free 与堆锁竞争；
 - 平台线程/锁封装在 `well_thread.c`；Windows 用 `CRITICAL_SECTION` + 事件，POSIX 用 pthread；
 - `print` 语句通过 runtime 锁串行化。
 
@@ -350,6 +351,7 @@ typedef struct WellStore {
 - handler 在 worker 线程执行（每请求一个 task，run-to-completion）；handler 内可 `emit` 业务事件，由另一个 oid 的 handler 稍后响应；
 - `Http.respond(reqId, status, body)` 可在任意 oid/handler 中调用，首个响应生效：认领 `responded` 后写响应（`Connection: keep-alive/close` 按请求决定），置 `written` 通知 reader；后续调用为空操作；
 - 引用计数：请求（list + 连接线程 + task）、连接（list + 每个在飞请求），各自最后引用释放时销毁；
+- 请求对象引用计数：请求（list + 连接线程 + task）；请求结构体本身有上限 64 的对象池，避免每请求 calloc/free；
 - 超时清扫线程：`WELL_HTTP_TIMEOUT_MS`（5s）内无人响应则返回 504 并关闭该连接；
 - 路由按 method + path 精确匹配，未命中返回 404；
 - 自写 parser：request line、headers、Content-Length、body；

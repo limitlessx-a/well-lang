@@ -64,6 +64,9 @@ static int g_http_thread_started = 0;
 static int g_http_service_held = 0;
 static WellHttpRequest *g_requests = NULL;
 static WellHttpConn *g_conns = NULL;
+#define WELL_HTTP_REQ_POOL_MAX 64
+static WellHttpRequest *g_req_pool = NULL;
+static int g_req_pool_n = 0;
 static WellThread g_http_sweep_thread;
 static int g_http_sweep_started = 0;
 static int g_http_sweep_stop = 0;
@@ -340,11 +343,37 @@ static void http_req_map_del(long long id) {
 }
 
 static void http_req_free(WellHttpRequest *req) {
+    if (!req) return;
     if (req->method) well_release(req->method);
     if (req->path) well_release(req->path);
     if (req->query) well_release(req->query);
     if (req->body) well_release(req->body);
-    free(req);
+    http_lock_init();
+    well_mutex_lock(&g_http_lock);
+    if (g_req_pool_n < WELL_HTTP_REQ_POOL_MAX) {
+        memset(req, 0, sizeof(WellHttpRequest));
+        req->next = g_req_pool;
+        g_req_pool = req;
+        g_req_pool_n++;
+        req = NULL;
+    }
+    well_mutex_unlock(&g_http_lock);
+    if (req) free(req);
+}
+
+static WellHttpRequest *http_req_alloc(void) {
+    WellHttpRequest *req = NULL;
+    http_lock_init();
+    well_mutex_lock(&g_http_lock);
+    if (g_req_pool) {
+        req = g_req_pool;
+        g_req_pool = req->next;
+        g_req_pool_n--;
+    }
+    well_mutex_unlock(&g_http_lock);
+    if (!req) return (WellHttpRequest *)calloc(1, sizeof(WellHttpRequest));
+    memset(req, 0, sizeof(WellHttpRequest));
+    return req;
 }
 
 /* Caller holds g_http_lock. Unlinks on the last ref; returns the orphan to free. */
@@ -597,7 +626,7 @@ static void *http_conn_thread(void *arg) {
             break;
         }
         route = http_find_route(method, path);
-        req = (WellHttpRequest *)calloc(1, sizeof(WellHttpRequest));
+        req = http_req_alloc();
         if (!req) well_panic("out of memory (HTTP request)");
         req->id = well_id_util_get_id();
         req->method = well_string_new(method ? method : "");

@@ -86,6 +86,22 @@ build/bench_well.exe
 - keep-alive 后每请求 ~67 µs，其中 C 解析器 ≈0.75 µs；换成优化后的 Well 解析器（9 µs）也只占约 13%，仍在可接受范围；
 - 结论：**连接处理（keep-alive / 单连接多请求）对吞吐的影响远大于解析器实现语言**。
 
+## 4.2 C 客户端测量与对象池优化（2026-10-22 第三轮）
+
+Python 客户端自身开销会掩盖优化，故补一个 C 压测客户端（单连接顺序 keep-alive 请求，`QueryPerformanceCounter` 计时，5000 次），并写一个等价的 **raw C echo server**（每连接一线程、阻塞 recv/send）作为机器基线。
+
+| 实现 | req/s | µs/req |
+|---|---|---|
+| raw C echo server（机器/线程切换基线） | 29k–40k | 25–34 |
+| Well HTTP server（对象池优化前） | ≈15.3k | 65.4 |
+| **Well HTTP server（对象池优化后）** | **≈23k–28k** | **35–43** |
+
+优化内容：
+- 调度器：`WellEventNode` / `WellOidQueue` 空闲链表池（上限 256），消除每次 enqueue/dispatch 的一次 malloc/free；
+- HTTP：请求结构体对象池（上限 64）。
+
+结果：Well 服务器每请求 65.4 → ~38 µs（约 **1.8×**），已接近 raw C 基线（差距约 10 µs/请求，主要是 4 个请求字段字符串分配 + 任务派发/线程切换）。
+
 ## 5. 附带改动
 
 - `WellString` 增加 `len` 字段缓存字节长度：`s.length`、`s[i]`、`trim/startsWith/endsWith/split` 从 O(n) 降到 O(1)，避免解析循环里的 O(n²)。
