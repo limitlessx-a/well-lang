@@ -1,0 +1,33 @@
+module demo.timerinhandler;
+
+event GoEvent extends Event {
+    n: int;
+}
+
+event TickEvent extends Event {
+    id: long;
+    interval: long;
+    fires: long;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(GoEvent, GoHandler);
+        emit(new GoEvent(0) { n: 1 });
+    }
+}
+
+handler GoHandler extends Handler {
+    onEvent(e: GoEvent) {
+        print("go");
+        Timer.once(20, TickHandler);
+    }
+}
+
+handler TickHandler extends Handler {
+    onEvent(e: TickEvent) {
+        print("tick ", e.fires);
+    }
+}
+
+entry MainController;

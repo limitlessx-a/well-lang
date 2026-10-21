@@ -169,9 +169,11 @@ handler UserHandler extends Handler {
 }
 
 #工具类 其中全是静态方法 UserTool.add(1,2);
-tool UserTool {
+funcs UserTool {
 	add(a:int,b:int):int{
 		return a+b;
+	}
+	sub(id:ing){
 	}
 }
 
