@@ -350,8 +350,9 @@ typedef struct WellStore {
 - 空闲连接超过 `WELL_HTTP_IDLE_TIMEOUT_MS`（15s）没有新请求则关闭（`SO_RCVTIMEO`）；
 - handler 在 worker 线程执行（每请求一个 task，run-to-completion）；handler 内可 `emit` 业务事件，由另一个 oid 的 handler 稍后响应；
 - `Http.respond(reqId, status, body)` 可在任意 oid/handler 中调用，首个响应生效：认领 `responded` 后写响应（`Connection: keep-alive/close` 按请求决定），置 `written` 通知 reader；后续调用为空操作；
-- 引用计数：请求（list + 连接线程 + task）、连接（list + 每个在飞请求），各自最后引用释放时销毁；
-- 请求对象引用计数：请求（list + 连接线程 + task）；请求结构体本身有上限 64 的对象池，避免每请求 calloc/free；
+- 同步响应快速路径：http task 在进入 handler 前把当前请求记录到线程局部（TLS），`Http.respond` 命中同一 reqId 时直接使用该指针，跳过全局请求表锁；异步响应（业务 oid）仍走哈希表；
+- 引用计数：请求（list + 连接线程 + task）、连接（list + 每个在飞请求），各自最后引用释放时销毁；响应者（handler/清扫线程）只写响应、不释放请求引用，请求引用统一由连接线程在 `written` 后释放；
+- 请求结构体本身有上限 64 的对象池，避免每请求 calloc/free；
 - 超时清扫线程：`WELL_HTTP_TIMEOUT_MS`（5s）内无人响应则返回 504 并关闭该连接；
 - 路由按 method + path 精确匹配，未命中返回 404；
 - 自写 parser：request line、headers、Content-Length、body；

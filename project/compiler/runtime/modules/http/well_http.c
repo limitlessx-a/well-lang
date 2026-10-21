@@ -64,6 +64,9 @@ static int g_http_thread_started = 0;
 static int g_http_service_held = 0;
 static WellHttpRequest *g_requests = NULL;
 static WellHttpConn *g_conns = NULL;
+/* Request whose handler is running on this thread: lets Http.respond skip the
+ * global request-hash lock for the common synchronous-response case. */
+static WELL_THREAD_LOCAL WellHttpRequest *g_current_req = NULL;
 #define WELL_HTTP_REQ_POOL_MAX 64
 static WellHttpRequest *g_req_pool = NULL;
 static int g_req_pool_n = 0;
@@ -419,21 +422,12 @@ static WellHttpRequest *http_req_unref_locked(WellHttpRequest *req) {
 }
 
 /* First response wins: whoever claims `responded` writes. The reader thread
- * waits for `written` before reading the next request on a keep-alive socket. */
-void well_http_respond(long long req_id, int status, const char *body) {
-    WellHttpRequest *req;
-    WellHttpRequest *dead;
-    WellHttpConn *conn;
-    http_lock_init();
-    well_mutex_lock(&g_http_lock);
-    req = http_req_map_find(req_id);
-    if (!req) {
-        well_mutex_unlock(&g_http_lock);
-        return;
-    }
-    conn = req->conn;
+ * waits for `written` before reading the next request on a keep-alive socket.
+ * Request references are dropped by the connection thread, so this function
+ * never touches the global request table on the synchronous fast path. */
+static void http_respond_claimed(WellHttpRequest *req, int status, const char *body) {
+    WellHttpConn *conn = req->conn;
     well_mutex_lock(&conn->lock);
-    well_mutex_unlock(&g_http_lock);
     if (req->responded) {
         well_mutex_unlock(&conn->lock);
         return;
@@ -448,11 +442,20 @@ void well_http_respond(long long req_id, int status, const char *body) {
     if (!req->keep_alive) conn->closed = 1;
     well_cond_signal(&conn->cond);
     well_mutex_unlock(&conn->lock);
+}
 
-    well_mutex_lock(&g_http_lock);
-    dead = http_req_unref_locked(req);
-    well_mutex_unlock(&g_http_lock);
-    if (dead) http_req_free(dead);
+void well_http_respond(long long req_id, int status, const char *body) {
+    WellHttpRequest *req = NULL;
+    if (g_current_req && g_current_req->id == req_id) {
+        req = g_current_req;
+    } else {
+        http_lock_init();
+        well_mutex_lock(&g_http_lock);
+        req = http_req_map_find(req_id);
+        well_mutex_unlock(&g_http_lock);
+    }
+    if (!req) return;
+    http_respond_claimed(req, status, body);
 }
 
 void well_http_route(const char *path, const char *method, WellHttpRouteFn fn) {
@@ -610,7 +613,10 @@ typedef struct HttpTaskCtx {
 
 static void http_task_entry(WellCtx *ctx, void *arg) {
     HttpTaskCtx *t = (HttpTaskCtx *)arg;
+    WellHttpRequest *prev = g_current_req;
+    g_current_req = t->req;
     if (t->route && t->route->fn) t->route->fn(ctx, t->req);
+    g_current_req = prev;
 }
 
 static void http_task_done(void *arg) {
@@ -699,6 +705,7 @@ static void *http_conn_thread(void *arg) {
 
         well_mutex_lock(&g_http_lock);
         deadreq = http_req_unref_locked(req); /* this thread's reference */
+        if (!deadreq) deadreq = http_req_unref_locked(req); /* list reference */
         deadconn = http_conn_unref_locked(conn); /* request's reference on the conn */
         well_mutex_unlock(&g_http_lock);
         if (deadreq) http_req_free(deadreq);
@@ -755,17 +762,13 @@ static void *http_sweeper_thread(void *arg) {
         for (i = 0; i < n; i++) {
             WellHttpRequest *req = expired[i];
             WellHttpConn *c = req->conn;
-            WellHttpRequest *dead;
             http_write_response(req, 504, "gateway timeout");
             well_mutex_lock(&c->lock);
             req->written = 1;
             c->closed = 1;
             well_cond_signal(&c->cond);
             well_mutex_unlock(&c->lock);
-            well_mutex_lock(&g_http_lock);
-            dead = http_req_unref_locked(req);
-            well_mutex_unlock(&g_http_lock);
-            if (dead) http_req_free(dead);
+            /* references are dropped by the connection thread */
         }
     }
     return NULL;
