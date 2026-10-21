@@ -656,7 +656,21 @@ static void *http_conn_thread(void *arg) {
             http_send_all(fd, bad, strlen(bad));
             break;
         }
-        route = http_find_route(method, path);
+        route = NULL;
+        if (conn->cache_valid) {
+            if (strcmp(conn->cache_method, method) == 0 && strcmp(conn->cache_path, path) == 0)
+                route = (HttpRoute *)conn->cache_route;
+        }
+        if (!route) {
+            route = http_find_route(method, path);
+            if (route && strlen(method) < sizeof(conn->cache_method) &&
+                strlen(path) < sizeof(conn->cache_path)) {
+                strcpy(conn->cache_method, method);
+                strcpy(conn->cache_path, path);
+                conn->cache_route = (void *)route;
+                conn->cache_valid = 1;
+            }
+        }
         req = http_req_alloc();
         if (!req) well_panic("out of memory (HTTP request)");
         req->id = well_id_util_get_id();

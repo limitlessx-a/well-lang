@@ -25,6 +25,12 @@ struct WellHttpConn {
     WellCond cond;
     int closed;
     int refs;
+    /* last resolved route (method+path -> route pointer), avoids taking the
+     * module lock for repeated requests on a keep-alive connection */
+    char cache_method[16];
+    char cache_path[256];
+    void *cache_route;
+    int cache_valid;
     struct WellHttpConn *next;
 };
 

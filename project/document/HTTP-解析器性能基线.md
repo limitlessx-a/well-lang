@@ -131,6 +131,14 @@ Python 客户端自身开销会掩盖优化，故补一个 C 压测客户端（�
 - 本轮优化"同步响应快速路径"：http task 用 TLS 记录当前请求，`Http.respond` 直接使用该指针（跳过全局请求表锁），并把请求引用统一交给连接线程释放；4 客户端聚合从约 37k 提升到 **42–58k**；
 - 调度器 per-worker 锁 / 更精细的唤醒属于后续结构优化（待确认）。
 
+## 4.5 连接级路由缓存（2026-10-22 第六轮）
+
+每次请求原本都要拿模块全局锁做 `method+path -> route` 扫描。keep-alive 连接上通常反复访问同一路径，因此**每条连接缓存上一次的 method/path/route**，命中就完全跳过全局锁。
+
+- 实现：`WellHttpConn` 增加 `cache_method[16] / cache_path[256] / cache_route / cache_valid`；连接线程先查缓存，未命中再走 `http_find_route` 并回填；
+- 4 客户端聚合（workers=1）：**58.3k / 60.1k / 59.1k req/s**（上一轮 42–58k，约 +15%）；单客户端不变（21–25k，噪声内）；
+- 单客户端延迟仍受字段分配与线程切换限制（§4.3），路由锁不是主要成本，收益集中体现在并发连接场景。
+
 ## 5. 附带改动
 
 - `WellString` 增加 `len` 字段缓存字节长度：`s.length`、`s[i]`、`trim/startsWith/endsWith/split` 从 O(n) 降到 O(1)，避免解析循环里的 O(n²)。

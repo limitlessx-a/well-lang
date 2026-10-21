@@ -354,7 +354,7 @@ typedef struct WellStore {
 - 引用计数：请求（list + 连接线程 + task）、连接（list + 每个在飞请求），各自最后引用释放时销毁；响应者（handler/清扫线程）只写响应、不释放请求引用，请求引用统一由连接线程在 `written` 后释放；
 - 请求结构体本身有上限 64 的对象池，避免每请求 calloc/free；
 - 超时清扫线程：`WELL_HTTP_TIMEOUT_MS`（5s）内无人响应则返回 504 并关闭该连接；
-- 路由按 method + path 精确匹配，未命中返回 404；
+- 路由按 method + path 精确匹配，未命中返回 404；连接级缓存上一次的 `method+path -> route`，keep-alive 下命中即跳过模块锁；
 - 自写 parser：request line、headers、Content-Length、body；
 - 限制：header 16KB、body 1MB；
 - Handler 通过 `HttpRequestEvent` 接收 `reqId/method/path/query/body`；
