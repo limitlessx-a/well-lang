@@ -1,7 +1,7 @@
 # Well 线程模型与 Java 虚拟线程对比
 
 > 本文描述当前 Well 运行时的多线程实现，并与 Java Virtual Threads 做对比。
-> 当前基线：67 个 .we 用例 + C 测试通过。
+> 当前基线：69 个 .we 用例 + C 测试通过。
 
 ---
 
@@ -153,9 +153,9 @@ handler 是 **run-to-completion**：
 - 对象池：池锁；
 - 活动表：`g_act_lock`。
 
-### 2.6 HTTP / WebSocket 的线程现状
+### 2.6 HTTP / WebSocket / Timer 的线程现状
 
-HTTP 与 WS 都已接入 oid 调度器，MySQL 尚未接入：
+HTTP、WS、Timer 都已接入 oid 调度器，MySQL 尚未接入：
 
 ```text
 HTTP listener thread
@@ -170,6 +170,10 @@ WS listener thread
   -> accept，每个连接一个 reader thread（握手 + 收帧）
   -> well_schedule_task(conn.oid, handler_fn) // open / message / close 都是 task
 
+Timer thread（core，懒启动）
+  -> 约 5ms 轮询到期 timer
+  -> well_schedule_task(timer.id, handler_fn) // 每次到期一个 task
+
 worker（oid runner）
   -> handler（run-to-completion）
   -> 可 emit 业务事件，由另一个 oid 的 handler 调用 Http.respond / Ws.send 完成回写
@@ -177,10 +181,11 @@ worker（oid runner）
 
 因此：
 
-- HTTP/WS handler 都跑在 worker 池，遵守同 oid 单 runner；
+- HTTP/WS/Timer handler 都跑在 worker 池，遵守同 oid 单 runner；
 - listener 只做 accept，连接之间完全并行（`59_http_concurrent` / `61_ws_concurrent` 覆盖）；
 - HTTP 连接支持 keep-alive（HTTP/1.1 默认，15s 空闲关闭），同一连接上的请求串行、连接之间并行；
 - `Http.respond`、`Ws.send/close` 可从任意 handler/线程调用；HTTP 首个响应生效，WS 按连接表查 clientId；
+- Timer 到期以 timer id 为 oid 投递 task；有 timer 时 timer 线程持有 service 计数，进程不会提前退出；
 - 5s 内无人响应的 HTTP 请求由清扫线程返回 504 并关闭连接；
 - 每连接/每请求都有引用计数与 service 计数，run loop 不会在连接仍存活时退出；
 - 每连接一个线程：高并发连接数受线程数限制（后续可换 I/O 多路复用）；

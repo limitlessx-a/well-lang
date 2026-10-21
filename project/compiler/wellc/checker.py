@@ -772,6 +772,34 @@ class Checker:
             e.ty = "long"
             e.builtin = "idutil_get"
             return
+        # Timer.once(ms, Handler) / Timer.loop(ms, Handler) / Timer.cancel(id)
+        if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name == "Timer":
+            name = e.func.name
+            if name in ("once", "loop"):
+                if len(e.args) != 2:
+                    self.err(f"Timer.{name}(ms, Handler) expects 2 arguments")
+                if self.check_expr(e.args[0], env) not in ("int", "long"):
+                    self.err(f"Timer.{name}: delay must be int/long (ms)")
+                h = e.args[1]
+                if not isinstance(h, Ident) or h.name not in self.handlers:
+                    self.err(f"Timer.{name}: second argument must be a handler")
+                ev = self.handler_event[h.name].name
+                e.ty = "long"
+                e.builtin = "timer_" + name
+                e.timer_index = len(self.p.timer_calls)
+                e.timer_handler = h.name
+                e.timer_event = ev
+                self.p.timer_calls.append({"event": ev, "handler": h.name, "op": name})
+                return
+            if name == "cancel":
+                if len(e.args) != 1:
+                    self.err("Timer.cancel(id) expects 1 argument")
+                if self.check_expr(e.args[0], env) not in ("int", "long"):
+                    self.err("Timer.cancel: id must be int/long")
+                e.ty = "void"
+                e.builtin = "timer_cancel"
+                return
+            self.err(f"unknown Timer method {name}")
         # String.fromByte(code)
         if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name == "String":
             if e.func.name == "fromByte":

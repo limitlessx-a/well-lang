@@ -1,0 +1,24 @@
+module demo.timerloop;
+
+event TickEvent extends Event {
+    id: long;
+    interval: long;
+    fires: long;
+}
+
+controller MainController extends Controller {
+    run() {
+        Timer.loop(10, TickHandler);
+    }
+}
+
+handler TickHandler extends Handler {
+    onEvent(e: TickEvent) {
+        print("tick ", e.fires, " every ", e.interval);
+        if (e.fires >= 3) {
+            Timer.cancel(e.id);
+        }
+    }
+}
+
+entry MainController;

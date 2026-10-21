@@ -239,6 +239,7 @@ class Program:
     uses_http: bool = False
     uses_ws: bool = False
     uses_mysql: bool = False
+    timer_calls: list = field(default_factory=list)  # {"event","handler","op"}
 
     # lookup helpers filled by checker
     structs: dict = field(default_factory=dict)

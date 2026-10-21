@@ -1,0 +1,3 @@
+tick 1 every 10
+tick 2 every 10
+tick 3 every 10

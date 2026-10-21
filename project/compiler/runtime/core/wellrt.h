@@ -310,6 +310,18 @@ typedef void (*WellTaskFn)(WellCtx *ctx, void *arg);
 typedef void (*WellTaskDone)(void *arg);
 void well_schedule_task(long long oid, WellTaskFn fn, void *arg, WellTaskDone done);
 
+/* Timers: fire a task after `ms`; info carries id/interval/fires. */
+typedef struct WellTimerInfo {
+    long long id;
+    long long interval;
+    long long fires;
+} WellTimerInfo;
+typedef void (*WellTimerFn)(WellCtx *ctx, void *info);
+long long well_timer_once(long long ms, WellTimerFn fn);
+long long well_timer_loop(long long ms, WellTimerFn fn);
+void well_timer_cancel(long long id);
+void well_timer_shutdown(void);
+
 void well_run_loop(void);
 void well_owner_push(int owner);
 void well_owner_pop(void);

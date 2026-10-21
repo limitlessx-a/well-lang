@@ -363,6 +363,11 @@ class CodeGen:
             return f"(({ty}*)well_json_parse(T_{ty}, well_string_cstr({arg}), ctx->oid))"
         if getattr(e, "builtin", None) == "idutil_get":
             return "well_id_util_get_id()"
+        if getattr(e, "builtin", None) in ("timer_once", "timer_loop"):
+            callee = "well_timer_once" if e.builtin == "timer_once" else "well_timer_loop"
+            return f"{callee}((long long)({self.gen_expr(e.args[0])}), timer_fire_{e.timer_index})"
+        if getattr(e, "builtin", None) == "timer_cancel":
+            return f"well_timer_cancel((long long)({self.gen_expr(e.args[0])}))"
         if getattr(e, "builtin", None) == "str_from_byte":
             return f"well_str_from_byte((int)({self.gen_expr(e.args[0])}))"
         if getattr(e, "builtin", None) == "str_from_int":
@@ -972,6 +977,7 @@ class CodeGen:
         self.gen_prototypes()
         self.gen_http_routes()
         self.gen_ws_routes()
+        self.gen_timer_wrappers()
         self.gen_user_funcs()
         self.gen_controllers()
         self.gen_handlers()
@@ -1185,6 +1191,29 @@ class CodeGen:
     def end_frame_temp(self, name: str, old):
         self.w(f"well_temp_release_to({name});")
         self.temp_mark = old
+
+    def gen_timer_wrappers(self):
+        for i, c in enumerate(getattr(self.p, "timer_calls", [])):
+            ev = c["event"]
+            h = c["handler"]
+            fields = set()
+            if ev in self.p.structs:
+                fields = {f.name for f in self.p.structs[ev]["fields"]}
+            self.w(f"static void timer_fire_{i}(WellCtx* ctx, void* arg) {{")
+            self.ind += 1
+            self.w("WellTimerInfo* ti = (WellTimerInfo*)arg;")
+            self.w(f"{ev}* e = new_{ev}(ctx, ti->id);")
+            if "id" in fields:
+                self.w("e->id = ti->id;")
+            if "interval" in fields:
+                self.w("e->interval = ti->interval;")
+            if "fires" in fields:
+                self.w("e->fires = ti->fires;")
+            self.w(f"{h}_onEvent(ctx, (void*)e);")
+            self.w("well_release((void*)e);")
+            self.ind -= 1
+            self.w("}")
+            self.w("")
 
     def gen_user_funcs(self):
         for name, f in self.p.funcs.items():

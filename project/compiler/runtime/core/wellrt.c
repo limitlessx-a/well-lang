@@ -1094,6 +1094,7 @@ WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx) {
 
 void well_shutdown(void) {
     if (getenv("WELL_TYPE_DEBUG")) well_type_debug_dump();
+    well_timer_shutdown();
     well_module_shutdown_all();
     well_model_shutdown();
     well_event_shutdown();

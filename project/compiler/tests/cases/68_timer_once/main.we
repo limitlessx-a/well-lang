@@ -1,0 +1,30 @@
+module demo.timeronce;
+
+event TickEvent extends Event {
+    id: long;
+    interval: long;
+    fires: long;
+}
+
+controller MainController extends Controller {
+    run() {
+        var cancelled: long = Timer.once(1000, LaterHandler);
+        Timer.cancel(cancelled);
+        var t: long = Timer.once(20, TickHandler);
+        print("scheduled ", t != 0);
+    }
+}
+
+handler TickHandler extends Handler {
+    onEvent(e: TickEvent) {
+        print("tick ", e.fires);
+    }
+}
+
+handler LaterHandler extends Handler {
+    onEvent(e: TickEvent) {
+        print("cancelled fired");
+    }
+}
+
+entry MainController;

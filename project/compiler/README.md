@@ -36,6 +36,7 @@
 - **File/Host API**：`File.read/write/exists/remove`、`Host.nowMs/env/log`
 - **HTTP/1.1 服务器**：`Http.route/listen/respond/stop`；非阻塞 listener + 每连接 reader 线程（**keep-alive**，HTTP/1.1 默认开，15s 空闲关闭）+ 每请求 task 派发（handler 在 worker 上运行，可 emit 业务事件后由其他 oid 响应）+ 首响应生效 + 5s 超时 504；自写受限 parser；Windows Winsock 动态加载，Linux POSIX socket
 - **WebSocket**：`Ws.route/listen/send/close/stop`；非阻塞 listener + 每连接 reader 线程，open/message/close handler 作为 task 在连接 oid 上串行执行；`Ws.send/close` 可从任意 handler 按 clientId 调用；握手、text frame、ping/pong、close；独立端口
+- **Timer**：`Timer.once(ms, Handler): long`、`Timer.loop(ms, Handler): long`、`Timer.cancel(id)`；到期以 timer id 为 oid 投递 task，handler 在 worker 上执行；有 timer 时进程保持运行
 - **MySQL 客户端（最小）**：自实现 wire protocol；`mysql_native_password` + `COM_QUERY`；`Mysql.connect/exec/queryJson/close`
 - **MySQL 连接池**：`Mysql.pool/execPool/queryJsonPool/closePool`；`WellMysqlPool` acquire/release
 - **oid exec_ref**：handler/event 执行引用租约；Cache TTL 由 Cache.get/set 更新；oid 过期后回收 Cache 行
@@ -53,7 +54,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（67 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（69 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```

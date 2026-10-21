@@ -24,6 +24,7 @@ RUNTIME_SOURCES = [
     "core/well_store.c",
     "core/well_containers.c",
     "core/well_event.c",
+    "core/well_timer.c",
     "core/well_serialize.c",
     "core/well_json.c",
     "core/well_file.c",

@@ -133,8 +133,9 @@ Bytes（可变字节缓冲）：
 | `Json.parse(Type, String)` | 按元数据解析 JSON 为 struct/event；嵌套对象、容器、ref、字符串转义/Unicode |
 | `File.read/write/exists/remove` | 文件读写/存在/删除；失败 panic |
 | `Host.nowMs/env/log` | 当前毫秒时间、环境变量、stderr 日志 |
-| `Http.route/listen/respond/stop` | HTTP/1.1 最小服务器；同步 handler 响应 |
+| `Http.route/listen/respond/stop` | HTTP/1.1 服务器：多连接、keep-alive、handler 在 worker 上异步响应 |
 | `Ws.route/listen/send/close/stop` | WebSocket 独立端口、握手、text frame |
+| `Timer.once(ms, Handler)` / `Timer.loop(ms, Handler)` / `Timer.cancel(id)` | 定时器：到期把 handler 作为 task 投递到 timer id 的 oid；返回 timer id |
 | `Mysql.connect/exec/queryJson/close` | 最小 MySQL 客户端；native auth + COM_QUERY |
 | `new Array<T>()` / `new Map<T>()` / `new Linked<T>()` | 空容器；Array/Map 也可用 `[]` / `{}` 字面量 |
 | `l.pushHead(v)` / `l.pushTail(v)` / `l.popHead()` / `l.popTail()` | Linked 首尾增删 O(1) |
@@ -405,6 +406,16 @@ typedef struct WellStore {
 - 核心不再直接调用 HTTP/WS/MySQL shutdown；
 - `driver` 按程序使用的 `Http/Ws/Mysql` API 选择模块源文件；生成 main 只注册用到的模块；模块头文件只在使用时 include。
 
+### 3.17 定时器（Timer）
+
+- API：`Timer.once(ms, Handler): long`、`Timer.loop(ms, Handler): long`、`Timer.cancel(id)`；
+- 实现在 `core/well_timer.c`：一个 timer 线程（懒启动，`well_shutdown` 时 join），链表保存 timer，约 5ms 轮询到期项（cond 精度限制）；
+- 定时器到期后按 timer id 作为 oid 投递一个 task（`well_schedule_task`），handler 因此跑在普通 worker 上并遵守同 oid 串行；
+- payload 是 `WellTimerInfo { id, interval, fires }`；codegen 为每个 `Timer.*` 调用生成 `timer_fire_N` wrapper：构造 handler 声明的事件类型，按字段名回填 `id/interval/fires`（字段不存在则跳过），再调用 handler；
+- `Timer.loop` 到期后 `deadline = now + interval`（落后时跳过错过的周期，不补发）；`Timer.cancel` 可在任意 handler 内调用；
+- 生命周期：有 timer 注册时 timer 线程持有一个 service 计数，全部 timer 结束/取消后释放，`well_run_loop` 才会退出；
+- 精度：受 cond 轮询（Windows 10ms）与 timer 线程 5ms 睡眠影响，实际误差约 5–15ms（MVP 可接受）。
+
 ## 4. 代码生成要点
 
 - 每个 struct/event 生成 `typedef struct T T;`、`struct T { WellObj hdr; ... }`、`#define T_T <id>`。
@@ -430,7 +441,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（67 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（69 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 
