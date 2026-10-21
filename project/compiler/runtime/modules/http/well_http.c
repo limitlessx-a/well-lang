@@ -28,10 +28,13 @@ static int (*psetsockopt)(WellSocket, int, int, const char *, int);
 static int (*pclosesocket)(WellSocket);
 #define WELL_SOL_SOCKET 0xFFFF
 #define WELL_SO_RCVTIMEO 0x1006
+#define WELL_IPPROTO_TCP 6
+#define WELL_TCP_NODELAY 0x0001
 #else
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 #include <signal.h>
 typedef int WellSocket;
@@ -115,6 +118,10 @@ static int http_set_recv_timeout(WellSocket s, int ms) {
     DWORD tv = (DWORD)ms;
     return psetsockopt(s, WELL_SOL_SOCKET, WELL_SO_RCVTIMEO, (const char *)&tv, (int)sizeof(tv));
 }
+static void http_set_nodelay(WellSocket s) {
+    int one = 1;
+    psetsockopt(s, WELL_IPPROTO_TCP, WELL_TCP_NODELAY, (const char *)&one, (int)sizeof(one));
+}
 static unsigned short http_htons(unsigned short v) { return (unsigned short)((v << 8) | (v >> 8)); }
 #else
 static void load_winsock(void) {
@@ -133,6 +140,10 @@ static int http_set_recv_timeout(WellSocket s, int ms) {
     tv.tv_sec = ms / 1000;
     tv.tv_usec = (long)(ms % 1000) * 1000;
     return setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+}
+static void http_set_nodelay(WellSocket s) {
+    int one = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
 }
 static unsigned short http_htons(unsigned short v) { return htons(v); }
 #endif
@@ -183,6 +194,7 @@ static const char *http_reason(int status) {
 static void http_write_response(WellHttpRequest *req, int status, const char *body) {
     char head[320];
     size_t blen = body ? strlen(body) : 0;
+    size_t hn;
     const char *ch = req->keep_alive ? "keep-alive" : "close";
     int n = snprintf(head, sizeof(head),
                      "HTTP/1.1 %d %s\r\nContent-Type: text/plain; charset=utf-8\r\n"
@@ -192,8 +204,18 @@ static void http_write_response(WellHttpRequest *req, int status, const char *bo
     if (n < 0) return;
     fd = req->conn ? req->conn->fd : WELL_INVALID_SOCKET;
     if (fd == WELL_INVALID_SOCKET) return;
-    http_send_all(fd, head, strlen(head));
-    if (blen) http_send_all(fd, body, blen);
+    hn = strlen(head);
+    if (blen <= 3800) {
+        /* one send for the common small response (avoids an extra syscall and
+         * gives the client the complete response in one segment) */
+        char buf[4096];
+        memcpy(buf, head, hn);
+        if (blen) memcpy(buf + hn, body, blen);
+        http_send_all(fd, buf, hn + blen);
+    } else {
+        http_send_all(fd, head, hn);
+        if (blen) http_send_all(fd, body, blen);
+    }
 }
 
 /* ---------- connection lifetime (all refcount ops hold g_http_lock) ---------- */
@@ -720,6 +742,7 @@ static void *http_listener_thread(void *arg) {
         well_mutex_init(&conn->lock);
         well_cond_init(&conn->cond);
         http_set_recv_timeout(s, WELL_HTTP_IDLE_TIMEOUT_MS);
+        http_set_nodelay(s);
         well_service_hold(); /* keep the run loop alive while the client is connected */
         well_mutex_lock(&g_http_lock);
         conn->next = g_conns;

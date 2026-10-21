@@ -94,7 +94,7 @@ String 方法（全部字节语义）：
 | `s.substring(a, b)` / `s.slice(a, b)` | 区间 `[a, b)`；越界自动 clamp |
 | `s.indexOf(x)` / `s.indexOf(x, from)` | 子串位置，未找到 `-1` |
 | `s.contains(x)` / `s.startsWith(x)` / `s.endsWith(x)` | `bool` |
-| `s.trim()` | 去首尾 ASCII 空白，返回新 String |
+| `s.trim()` | 去首尾 ASCII 空白，返回新 String；无空白时直接返回原引用（retain，不复制） |
 | `s.toLower()` / `s.toUpper()` | ASCII 大小写转换，返回新 String |
 | `s.split(sep)` | `Array<String>`；`sep` 为空串时不切分 |
 | `String.fromByte(n)` | 取低 8 位构造单字节 String |
@@ -357,6 +357,7 @@ typedef struct WellStore {
 - Handler 通过 `HttpRequestEvent` 接收 `reqId/method/path/query/body`；
 - codegen 为每个 route 生成 wrapper，构造事件并直接调用 handler；
 - handler panic 在 worker 线程用 setjmp 捕获隔离；
+- 写响应：`TCP_NODELAY` 关闭 Nagle；小响应（头+体 ≤4KB）合并成一次 send，减少系统调用与分段；
 - 当前限制：每连接同一时刻一个在飞请求（不支持 pipelining 并发）；无 chunked/TLS；每连接一个线程，高并发连接数受线程数限制；
 - Windows：动态加载 `ws2_32.dll`（TCC 无 winsock 头）；Linux：POSIX socket。
 

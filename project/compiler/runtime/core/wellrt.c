@@ -1059,10 +1059,19 @@ static int str_is_space(char c) {
 }
 
 WellString *well_str_trim(WellString *s) {
-    const char *d = s ? s->data : "";
-    size_t a = 0, b = (size_t)well_string_len(s);
+    const char *d;
+    size_t a = 0, b, n;
+    if (!s) return well_string_lit("");
+    d = s->data;
+    n = (size_t)s->len;
+    b = n;
     while (a < b && str_is_space(d[a])) a++;
     while (b > a && str_is_space(d[b - 1])) b--;
+    if (a == 0 && b == n) {
+        /* nothing to trim: share the original instead of copying */
+        well_retain(s);
+        return s;
+    }
     return string_alloc_n(d + a, b - a);
 }
 

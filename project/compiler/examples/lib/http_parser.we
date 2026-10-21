@@ -96,7 +96,11 @@ func parseRequest(raw: String): ParsedReq {
     if (contentLength > raw.length - pos) {
         return r;
     }
-    r.body = raw.substring(pos, pos + contentLength);
+    if (contentLength == 0) {
+        r.body = "";
+    } else {
+        r.body = raw.substring(pos, pos + contentLength);
+    }
     r.ok = true;
     return r;
 }
