@@ -162,7 +162,7 @@ WellString *well_array_join(WellArray *a, WellString *sep) {
     WellString *out;
     for (i = 0; i < n; i++) {
         WellString *s = (WellString *)a->items[i].p;
-        total += strlen(s ? s->data : "");
+        total += (size_t)(s ? s->len : 0);
         if (i) total += spl;
     }
     buf = (char *)malloc(total + 1);
@@ -171,7 +171,7 @@ WellString *well_array_join(WellArray *a, WellString *sep) {
     for (i = 0; i < n; i++) {
         WellString *s = (WellString *)a->items[i].p;
         const char *d = s ? s->data : "";
-        size_t l = strlen(d);
+        size_t l = (size_t)(s ? s->len : 0);
         if (i) { memcpy(p, sp, spl); p += spl; }
         memcpy(p, d, l);
         p += l;

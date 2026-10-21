@@ -737,6 +737,7 @@ static WellString *string_alloc_n(const char *src, size_t n) {
     s->hdr.reg_prev = NULL;
     s->hdr.alloc_size = sizeof(WellString);
     s->hash = hash_bytes(s->data, n);
+    s->len = (long long)n;
     g_live++;
     return s;
 }
@@ -792,6 +793,7 @@ WellString *well_string_concat(WellString *a, WellString *b) {
     s->hdr.reg_prev = NULL;
     s->hdr.alloc_size = sizeof(WellString);
     string_set_hash(s);
+    s->len = (long long)(la + lb);
     g_live++;
     return s;
 }
@@ -808,7 +810,7 @@ int well_string_eq(WellString *a, WellString *b) {
 }
 
 long long well_string_len(WellString *s) {
-    return (long long)strlen(s ? s->data : "");
+    return s ? s->len : 0;
 }
 
 /* ---------- Bytes: mutable byte buffer ---------- */
@@ -987,8 +989,7 @@ int well_str_ends_with_take(WellString *s, WellString *suffix) {
 
 
 long long well_str_byte_at(WellString *s, long long i) {
-    long long n = well_string_len(s);
-    if (!s || i < 0 || i >= n) return -1;
+    if (!s || i < 0 || i >= s->len) return -1;
     return (long long)(unsigned char)s->data[i];
 }
 
@@ -1028,17 +1029,17 @@ int well_str_contains(WellString *s, WellString *needle) {
 int well_str_starts_with(WellString *s, WellString *prefix) {
     const char *d = s ? s->data : "";
     const char *p = prefix ? prefix->data : "";
-    size_t pn = strlen(p);
-    if (strlen(d) < pn) return 0;
-    return memcmp(d, p, pn) == 0;
+    long long pn = prefix ? prefix->len : 0;
+    if (well_string_len(s) < pn) return 0;
+    return memcmp(d, p, (size_t)pn) == 0;
 }
 
 int well_str_ends_with(WellString *s, WellString *suffix) {
     const char *d = s ? s->data : "";
     const char *p = suffix ? suffix->data : "";
-    size_t dn = strlen(d), pn = strlen(p);
+    long long dn = well_string_len(s), pn = suffix ? suffix->len : 0;
     if (dn < pn) return 0;
-    return memcmp(d + dn - pn, p, pn) == 0;
+    return memcmp(d + dn - pn, p, (size_t)pn) == 0;
 }
 
 static int str_is_space(char c) {
@@ -1047,7 +1048,7 @@ static int str_is_space(char c) {
 
 WellString *well_str_trim(WellString *s) {
     const char *d = s ? s->data : "";
-    size_t a = 0, b = strlen(d);
+    size_t a = 0, b = (size_t)well_string_len(s);
     while (a < b && str_is_space(d[a])) a++;
     while (b > a && str_is_space(d[b - 1])) b--;
     return string_alloc_n(d + a, b - a);
@@ -1059,12 +1060,14 @@ WellString *well_str_from_int(long long v) {
     return well_string_new(buf);
 }
 
-WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx) {    WellArray *a = well_array_new(ctx, 1);
+WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx) {
+    WellArray *a = well_array_new(ctx, 1);
     const char *d = s ? s->data : "";
     const char *sp = sep ? sep->data : "";
-    size_t spl = strlen(sp);
+    size_t spl = sep ? (size_t)sep->len : 0;
     WellValue v;
     const char *p = d;
+    const char *end = d + well_string_len(s);
     if (spl == 0) {
         v.p = well_string_new(d);
         well_array_push(a, v, ctx);
@@ -1073,13 +1076,16 @@ WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx) {    Wel
     }
     for (;;) {
         const char *hit = strstr(p, sp);
-        size_t n = hit ? (size_t)(hit - p) : strlen(p);
+        size_t n;
+        if (hit && hit >= end) hit = NULL;
+        n = hit ? (size_t)(hit - p) : (size_t)(end - p);
         WellString *part = string_alloc_n(p, n);
         v.p = part;
         well_array_push(a, v, ctx);
         well_release(part);
         if (!hit) break;
         p = hit + spl;
+        if (p > end) break;
     }
     return a;
 }

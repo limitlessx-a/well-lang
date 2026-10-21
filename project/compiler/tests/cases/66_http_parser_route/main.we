@@ -1,6 +1,6 @@
 module demo.httpparserroute;
 
-import "http_parser";
+import "../../../examples/lib/http_parser";
 
 event HttpRequestEvent extends Event {
     reqId: long;

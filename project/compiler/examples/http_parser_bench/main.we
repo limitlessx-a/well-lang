@@ -1,0 +1,41 @@
+module demo.benchparser;
+
+import "../lib/http_parser";
+
+func buildRequest(): String {
+    var b: Bytes = new Bytes();
+    b.appendStr("GET /index.html?a=1&b=2 HTTP/1.1\r\n");
+    b.appendStr("Host: example.com\r\n");
+    b.appendStr("User-Agent: well\r\n");
+    b.appendStr("Accept: */*\r\n");
+    b.appendStr("Content-Length: 11\r\n");
+    b.appendStr("\r\n");
+    b.appendStr("hello world");
+    return b.toString();
+}
+
+controller BenchController extends Controller {
+    run() {
+        var raw: String = buildRequest();
+        var iters: long = 20000;
+        var warm: long = 0;
+        for (var w: int = 0; w < 500; w = w + 1) {
+            var rw: ParsedReq = parseRequest(raw);
+            warm = warm + rw.headerCount;
+        }
+        var t0: long = Host.nowMs();
+        var acc: long = 0;
+        for (var i: long = 0; i < iters; i = i + 1) {
+            var r: ParsedReq = parseRequest(raw);
+            acc = acc + r.headerCount;
+        }
+        var elapsed: long = Host.nowMs() - t0;
+        print("iters ", iters);
+        print("total_ms ", elapsed);
+        print("us_per_parse ", elapsed * 1000 / iters);
+        print("parses_per_sec ", iters * 1000 / (elapsed + 1));
+        print("checksum ", acc + warm);
+    }
+}
+
+entry BenchController;

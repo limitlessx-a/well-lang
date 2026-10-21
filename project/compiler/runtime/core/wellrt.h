@@ -46,6 +46,7 @@ typedef struct WellString {
     WellObj hdr;
     char *data;
     unsigned long long hash;
+    long long len; /* cached byte length: len(s) is used in parsing loops */
 } WellString;
 
 /* Mutable byte buffer: build binary/text payloads without O(n^2) concatenation. */

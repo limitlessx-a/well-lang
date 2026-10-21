@@ -72,7 +72,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 ### 2.2 类型
 
 `bool / int / long / float / double / String / Bytes / void / null`、用户 struct/event，以及 `Array<T>` / `Map<T>` / `Linked<T>`（同质；`Map` 键为 String）。
-- `String` 是引用类型（`WellString*`），默认 `""`，不可变，字面量驻留；长度与下标都按 **字节**（与 `String.length` 一致）。
+- `String` 是引用类型（`WellString*`），默认 `""`，不可变，字面量驻留；长度与下标都按 **字节**（与 `String.length` 一致）；字节长度缓存在 `WellString.len`，`s.length` / `s[i]` / `trim/startsWith/endsWith/split` 的长度计算为 O(1)（解析循环里不会退化成 O(n²)）。
 - `Bytes` 是可变字节缓冲（`WellBytes*`），`new Bytes()` 创建；不是容器类型、不参与 oid 写入检查，用于增量拼装文本/二进制负载（避免 String `+` 的 O(n²)）。
 - `int`/`bool` → C `int`；`long` → `long long`；`double`/`float` → `double`；`Bytes` → `WellBytes*`。
 - `Array<T>` → `WellArray*`；`Map<T>` → `WellMap*`；`Linked<T>` → `WellLinked*`；三者是引用类型，带 oid。
