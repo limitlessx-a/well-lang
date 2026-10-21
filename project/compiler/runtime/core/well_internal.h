@@ -35,6 +35,8 @@ void well_cond_broadcast(WellCond *c);
 
 int well_thread_start(WellThread *t, void *(*fn)(void *), void *arg);
 void well_thread_join(WellThread t);
+/* Fire-and-forget: the thread cleans itself up when it returns. */
+void well_thread_detach(WellThread t);
 void well_sleep_ms(int ms);
 
 /* Cross-module hooks. Public API stays in wellrt.h. */

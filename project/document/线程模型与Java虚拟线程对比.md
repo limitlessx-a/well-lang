@@ -1,7 +1,7 @@
 # Well 线程模型与 Java 虚拟线程对比
 
 > 本文描述当前 Well 运行时的多线程实现，并与 Java Virtual Threads 做对比。
-> 当前基线：59 个 .we 用例 + C 测试通过。
+> 当前基线：61 个 .we 用例 + C 测试通过。
 
 ---
 
@@ -155,25 +155,30 @@ handler 是 **run-to-completion**：
 
 ### 2.6 HTTP / WebSocket 的线程现状
 
-HTTP 已接入 oid 调度器，WS / MySQL 尚未接入：
+HTTP 与 WS 都已接入 oid 调度器，MySQL 尚未接入：
 
 ```text
 HTTP listener thread
   -> accept + 解析
   -> well_schedule_task(req.oid, route_fn)   // 投递到请求 oid 的队列后立即回到 accept
 
+WS listener thread
+  -> accept，每个连接一个 reader thread（握手 + 收帧）
+  -> well_schedule_task(conn.oid, handler_fn) // open / message / close 都是 task
+
 worker（oid runner）
-  -> route handler（run-to-completion）
-  -> 可 emit 业务事件，由另一个 oid 的 handler 调用 Http.respond 完成响应
+  -> handler（run-to-completion）
+  -> 可 emit 业务事件，由另一个 oid 的 handler 调用 Http.respond / Ws.send 完成回写
 ```
 
 因此：
 
-- HTTP handler 跑在 worker 池，遵守同 oid 单 runner；
-- listener 不再被 handler 阻塞，连接之间不再串行（`59_http_concurrent` 覆盖）；
-- `Http.respond` 可从任意 handler/线程调用，首个响应生效，响应后关闭连接；
-- 5s 内无人响应的请求由清扫线程返回 504；
-- WS / MySQL 仍在各自线程同步执行，是当前多线程模型剩余缺口。
+- HTTP/WS handler 都跑在 worker 池，遵守同 oid 单 runner；
+- listener 不再被 handler 阻塞，连接之间不再串行（`59_http_concurrent` / `61_ws_concurrent` 覆盖）；
+- `Http.respond`、`Ws.send/close` 可从任意 handler/线程调用；HTTP 首个响应生效，WS 按连接表查 clientId；
+- 5s 内无人响应的 HTTP 请求由清扫线程返回 504；
+- 每连接/每请求都有引用计数与 service 计数，run loop 不会在连接仍存活时退出；
+- MySQL 仍是同步调用，是当前多线程模型剩余缺口。
 
 ### 2.7 当前没有的能力
 
@@ -359,7 +364,8 @@ Java 虚拟线程会在阻塞点让出 carrier。
 ### P0：HTTP/WS 接入 oid 调度器
 
 - HTTP：已完成。listener 只负责解析/收发；handler 作为 task 入 oid 调度器；`Http.respond` 线程安全（首个生效）；同 oid 单 runner。
-- WS：待做。listener 只负责握手/收发；open/msg/close handler 作为 task 入 oid 调度器；`Ws.send` 线程安全。
+- WS：已完成。listener 只负责 accept，每连接一个 reader 线程负责握手/收帧；open/msg/close handler 作为 task 入 oid 调度器；`Ws.send/close` 线程安全（按 clientId 查表）。
+- MySQL：待做。当前是同步调用，会阻塞 worker。
 
 ### P1：调度指标
 

@@ -326,12 +326,17 @@ typedef struct WellStore {
 ### 3.13 WebSocket
 
 - API：`Ws.route(path, OpenHandler, MessageHandler, CloseHandler)`、`Ws.listen`、`Ws.send`、`Ws.close`、`Ws.stop`；
-- 独立端口；`Ws.listen` 阻塞 controller；
+- `Ws.listen` 非阻塞：启动监听线程并 `well_service_hold()`；主线程进入 `well_run_loop`，`Ws.stop()` 后返回；
+- listener 只做 accept，每连接交给独立 reader 线程完成握手与收帧，因此已有连接不会阻塞新连接；
+- 每个连接是一个 oid；open/message/close handler 作为 task 投递到该 oid 队列（同 oid 单 runner，消息 FIFO）；
+- `Ws.send/Ws.close(clientId, ...)` 按 clientId 查连接表，可从任意 handler（含业务 oid）调用；写帧在模块锁内完成；
+- 连接对象引用计数（连接表 + 每个 task）；reader 退出后由最后一个引用释放；
+- 每连接持有一个 service 计数：连接未关闭时 run loop 不会退出；
+- `Ws.stop` 对连接调用 `shutdown()` 而非 `close()`：reader 线程正阻塞在 recv 上，由它自己关闭 socket，避免 RST 丢掉刚发出的帧；
 - 握手：SHA1 + Base64 `Sec-WebSocket-Accept`；
 - frame：text、ping/pong、close；客户端必须 mask；不支持分片/二进制；
-- 每连接一个 reader；单连接串行；
-- handler panic 关闭连接（1011）；
-- v1 限制：无 TLS、无压缩、无同端口 HTTP Upgrade、无背压。
+- handler panic 由调度器 setjmp 隔离，连接保持；
+- v1 限制：无 TLS、无压缩、无同端口 HTTP Upgrade、无背压、无空闲超时。
 
 ### 3.14 MySQL 客户端与连接池
 
@@ -390,7 +395,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（59 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（61 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

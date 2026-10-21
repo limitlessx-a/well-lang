@@ -26,66 +26,162 @@ def norm(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").strip().split("\n"))
 
 
-def ws_recv_frame(s):
-    h = s.recv(2)
-    if len(h) < 2:
-        raise OSError("short frame")
-    op = h[0] & 0x0F
-    n = h[1] & 0x7F
-    if n == 126:
-        n = struct.unpack(">H", s.recv(2))[0]
-    elif n == 127:
-        n = struct.unpack(">Q", s.recv(8))[0]
-    mask = s.recv(4) if (h[1] & 0x80) else None
-    data = b""
-    while len(data) < n:
-        data += s.recv(n - len(data))
-    if mask:
-        data = bytes(x ^ mask[i % 4] for i, x in enumerate(data))
-    return op, data
+class WsClient:
+    """Buffered WebSocket client.
+
+    The 101 response and the first frames can share one TCP segment, so the
+    bytes after the handshake must be kept for the frame reader.
+    """
+
+    def __init__(self, port: int):
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=2)
+        self.sock.settimeout(5)
+        self.buf = b""
+
+    def _read(self, n: int) -> bytes:
+        while len(self.buf) < n:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise OSError("socket closed")
+            self.buf += chunk
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def handshake(self, path: str = "/chat"):
+        key = base64.b64encode(os.urandom(16)).decode()
+        req = ("GET " + path + " HTTP/1.1\r\nHost: test\r\nUpgrade: websocket\r\n"
+               "Connection: Upgrade\r\nSec-WebSocket-Key: " + key +
+               "\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        self.sock.sendall(req.encode())
+        while b"\r\n\r\n" not in self.buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise OSError("handshake closed")
+            self.buf += chunk
+        head, self.buf = self.buf.split(b"\r\n\r\n", 1)
+        if b"101" not in head.split(b"\r\n")[0]:
+            raise OSError("handshake failed")
+        return self
+
+    def recv_frame(self):
+        h = self._read(2)
+        op = h[0] & 0x0F
+        n = h[1] & 0x7F
+        if n == 126:
+            n = struct.unpack(">H", self._read(2))[0]
+        elif n == 127:
+            n = struct.unpack(">Q", self._read(8))[0]
+        mask = self._read(4) if (h[1] & 0x80) else None
+        data = self._read(n) if n else b""
+        if mask:
+            data = bytes(x ^ mask[i % 4] for i, x in enumerate(data))
+        return op, data
+
+    def send_text(self, text: str):
+        data = text.encode()
+        mask = os.urandom(4)
+        h = bytes([0x81, 0x80 | len(data)]) + mask
+        self.sock.sendall(h + bytes(x ^ mask[i % 4] for i, x in enumerate(data)))
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
 
 
-def ws_send_text(s, text):
-    data = text.encode()
-    mask = os.urandom(4)
-    h = bytes([0x81, 0x80 | len(data)]) + mask
-    s.sendall(h + bytes(x ^ mask[i % 4] for i, x in enumerate(data)))
+def run_ws_concurrent_case(name: str, d: str, exe: str) -> bool:
+    """The listener must keep accepting while a connection is already open."""
+    port = int(open(os.path.join(d, "ws_port.txt"), encoding="utf-8").read().strip())
+    p = subprocess.Popen([exe], cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    a = b = None
+    latency = 0.0
+    frames = []
+    try:
+        for _ in range(50):
+            if p.poll() is not None:
+                out, err = p.communicate()
+                print(f"FAIL {name}: server exited early\n{out.decode(errors='replace')}\n{err.decode(errors='replace')}")
+                return False
+            try:
+                a = WsClient(port).handshake()
+                break
+            except OSError:
+                time.sleep(0.1)
+        if a is None:
+            p.kill()
+            print(f"FAIL {name}: server did not listen on {port}")
+            return False
+        a.recv_frame()  # welcome
+        started = time.time()
+        b = WsClient(port).handshake()
+        b.recv_frame()  # welcome for the second connection
+        latency = time.time() - started
+        a.send_text("hi")
+        try:
+            for _ in range(8):
+                op, data = a.recv_frame()
+                frames.append((op, data))
+                if op == 0x8:
+                    break
+        except OSError:
+            # Ws.stop may close the socket without a close frame; the echo is
+            # what this case checks.
+            pass
+    except OSError as e:
+        p.kill()
+        p.communicate()
+        print(f"FAIL {name}: WebSocket client error: {e}")
+        return False
+    finally:
+        if a is not None:
+            a.close()
+        if b is not None:
+            b.close()
+    try:
+        out, err = p.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        print(f"FAIL {name}: server did not stop")
+        return False
+    if p.returncode != 0:
+        print(f"FAIL {name}: exit={p.returncode}\n{err.decode(errors='replace')}")
+        return False
+    texts = [x[1].decode("utf-8", errors="replace") for x in frames if x[0] == 1]
+    if "hi" not in texts:
+        print(f"FAIL {name}: echo missing, got {texts}")
+        return False
+    if latency > 1.5:
+        print(f"FAIL {name}: listener blocked (second connection took {latency:.2f}s)")
+        return False
+    print(f"PASS {name} (concurrent {latency:.2f}s)")
+    return True
 
 
 def run_ws_case(name: str, d: str, exe: str) -> bool:
     port = int(open(os.path.join(d, "ws_port.txt"), encoding="utf-8").read().strip())
     p = subprocess.Popen([exe], cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    s = None
-    for _ in range(50):
-        if p.poll() is not None:
-            out, err = p.communicate()
-            print(f"FAIL {name}: server exited early\n{out.decode(errors='replace')}\n{err.decode(errors='replace')}")
-            return False
-        try:
-            s = socket.create_connection(("127.0.0.1", port), timeout=0.2)
-            break
-        except OSError:
-            time.sleep(0.1)
-    if s is None:
-        p.kill()
-        print(f"FAIL {name}: server did not listen on {port}")
-        return False
+    c = None
+    frames = []
     try:
-        s.settimeout(5)
-        key = base64.b64encode(os.urandom(16)).decode()
-        req = ("GET /chat HTTP/1.1\r\nHost: test\r\nUpgrade: websocket\r\n"
-               "Connection: Upgrade\r\nSec-WebSocket-Key: " + key +
-               "\r\nSec-WebSocket-Version: 13\r\n\r\n")
-        s.sendall(req.encode())
-        resp = b""
-        while b"\r\n\r\n" not in resp:
-            resp += s.recv(4096)
-        if b"101" not in resp.split(b"\r\n")[0]:
-            raise OSError("handshake failed")
-        ws_send_text(s, "hi")
-        frames = []
+        for _ in range(50):
+            if p.poll() is not None:
+                out, err = p.communicate()
+                print(f"FAIL {name}: server exited early\n{out.decode(errors='replace')}\n{err.decode(errors='replace')}")
+                return False
+            try:
+                c = WsClient(port).handshake()
+                break
+            except OSError:
+                time.sleep(0.1)
+        if c is None:
+            p.kill()
+            print(f"FAIL {name}: server did not listen on {port}")
+            return False
+        c.send_text("hi")
         for _ in range(8):
-            op, data = ws_recv_frame(s)
+            op, data = c.recv_frame()
             frames.append((op, data))
             if op == 0x8:
                 break
@@ -95,7 +191,8 @@ def run_ws_case(name: str, d: str, exe: str) -> bool:
         print(f"FAIL {name}: WebSocket client error: {e}")
         return False
     finally:
-        s.close()
+        if c is not None:
+            c.close()
     try:
         out, err = p.communicate(timeout=5)
     except subprocess.TimeoutExpired:
@@ -275,6 +372,8 @@ def run_case(name: str) -> bool:
         return False
 
     if os.path.isfile(os.path.join(d, "ws_port.txt")):
+        if os.path.isfile(os.path.join(d, "ws_concurrent.txt")):
+            return run_ws_concurrent_case(name, d, exe)
         return run_ws_case(name, d, exe)
     if os.path.isfile(os.path.join(d, "http_port.txt")):
         if os.path.isfile(os.path.join(d, "http_concurrent.txt")):

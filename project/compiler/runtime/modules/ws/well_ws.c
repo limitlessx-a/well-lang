@@ -19,6 +19,7 @@ static int (*plisten)(WsSocket, int);
 static WsSocket (*paccept)(WsSocket, void *, int *);
 static int (*precv)(WsSocket, char *, int, int);
 static int (*psend)(WsSocket, const char *, int, int);
+static int (*pshutdown)(WsSocket, int);
 static int (*pclosesocket)(WsSocket);
 #else
 #include <sys/socket.h>
@@ -43,13 +44,25 @@ static WellMutex g_ws_lock;
 static WellCond g_ws_cond;
 static int g_ws_inited = 0;
 static int g_ws_running = 0;
-static int g_ws_done = 0;
 static WsSocket g_ws_listen_fd = WS_INVALID_SOCKET;
 static WellThread g_ws_thread;
 static int g_ws_thread_started = 0;
-static long long g_ws_current_id = 0;
-static WsSocket g_ws_current_fd = WS_INVALID_SOCKET;
-static int g_ws_current_closed = 0;
+
+/* One entry per live connection; guarded by g_ws_lock. */
+typedef struct WsConn {
+    long long id;
+    WsSocket fd;
+    WsRoute *route;
+    WellWsClient client;
+    int closed;
+    int close_requested;
+    int close_code;
+    WellString *close_reason;
+    int refs; /* list reference + one per scheduled task */
+    struct WsConn *next;
+} WsConn;
+
+static WsConn *g_ws_conns = NULL;
 
 static void ws_lock_init(void) {
     if (g_ws_inited) return;
@@ -70,9 +83,10 @@ static void ws_load(void) {
     paccept = (WsSocket (*)(WsSocket, void *, int *))GetProcAddress(g_wsm, "accept");
     precv = (int (*)(WsSocket, char *, int, int))GetProcAddress(g_wsm, "recv");
     psend = (int (*)(WsSocket, const char *, int, int))GetProcAddress(g_wsm, "send");
+    pshutdown = (int (*)(WsSocket, int))GetProcAddress(g_wsm, "shutdown");
     pclosesocket = (int (*)(WsSocket))GetProcAddress(g_wsm, "closesocket");
     if (!pWSAStartup || !psocket || !pbind || !plisten || !paccept ||
-        !precv || !psend || !pclosesocket)
+        !precv || !psend || !pshutdown || !pclosesocket)
         well_panic("WebSocket: ws2_32 exports missing");
     {
         char wsa[512];
@@ -87,6 +101,7 @@ static WsSocket ws_accept(WsSocket s) { return paccept(s, NULL, NULL); }
 static int ws_recv(WsSocket s, char *b, int n) { return precv(s, b, n, 0); }
 static int ws_send_socket(WsSocket s, const char *b, int n) { return psend(s, b, n, 0); }
 static void ws_close_socket(WsSocket s) { if (s != WS_INVALID_SOCKET) pclosesocket(s); }
+static void ws_shutdown_socket(WsSocket s) { if (s != WS_INVALID_SOCKET) pshutdown(s, 2); }
 static unsigned short ws_htons(unsigned short v) { return (unsigned short)((v << 8) | (v >> 8)); }
 #else
 static void ws_load(void) { signal(SIGPIPE, SIG_IGN); }
@@ -97,6 +112,7 @@ static WsSocket ws_accept(WsSocket s) { return accept(s, NULL, NULL); }
 static int ws_recv(WsSocket s, char *b, int n) { return (int)recv(s, b, (size_t)n, 0); }
 static int ws_send_socket(WsSocket s, const char *b, int n) { return (int)send(s, b, (size_t)n, 0); }
 static void ws_close_socket(WsSocket s) { if (s >= 0) close(s); }
+static void ws_shutdown_socket(WsSocket s) { if (s >= 0) shutdown(s, SHUT_RDWR); }
 static unsigned short ws_htons(unsigned short v) { return htons(v); }
 #endif
 
@@ -344,16 +360,71 @@ static void ws_send_frame(WsSocket fd, int opcode, const unsigned char *data, si
     if (n) ws_send_all(fd, (const char *)data, n);
 }
 
+/* ---------- connection lifetime (all refcount ops hold g_ws_lock) ---------- */
+
+static WsConn *ws_conn_find_locked(long long id) {
+    WsConn *c;
+    for (c = g_ws_conns; c; c = c->next)
+        if (c->id == id) return c;
+    return NULL;
+}
+
+static void ws_conn_free(WsConn *c) {
+    if (c->client.path) well_release(c->client.path);
+    if (c->client.query) well_release(c->client.query);
+    if (c->close_reason) well_release(c->close_reason);
+    free(c);
+}
+
+/* Caller holds g_ws_lock. Unlinks on the last ref; returns the orphan to free. */
+static WsConn *ws_conn_unref_locked(WsConn *c) {
+    WsConn **pp;
+    c->refs--;
+    if (c->refs > 0) return NULL;
+    pp = &g_ws_conns;
+    while (*pp) {
+        if (*pp == c) {
+            *pp = c->next;
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+    return c;
+}
+
+static void ws_conn_unref(WsConn *c) {
+    WsConn *dead;
+    well_mutex_lock(&g_ws_lock);
+    dead = ws_conn_unref_locked(c);
+    well_mutex_unlock(&g_ws_lock);
+    if (dead) ws_conn_free(dead);
+}
+
 void well_ws_send(long long client_id, const char *text) {
-    if (client_id != g_ws_current_id || g_ws_current_fd == WS_INVALID_SOCKET || g_ws_current_closed) return;
-    ws_send_frame(g_ws_current_fd, 0x1, (const unsigned char *)(text ? text : ""),
+    WsConn *c;
+    ws_lock_init();
+    well_mutex_lock(&g_ws_lock);
+    c = ws_conn_find_locked(client_id);
+    if (!c || c->closed || c->fd == WS_INVALID_SOCKET) {
+        well_mutex_unlock(&g_ws_lock);
+        return;
+    }
+    ws_send_frame(c->fd, 0x1, (const unsigned char *)(text ? text : ""),
                   text ? strlen(text) : 0);
+    well_mutex_unlock(&g_ws_lock);
 }
 
 void well_ws_close(long long client_id, int code, const char *reason) {
     unsigned char p[128];
+    WsConn *c;
     size_t n = 0;
-    if (client_id != g_ws_current_id || g_ws_current_closed) return;
+    ws_lock_init();
+    well_mutex_lock(&g_ws_lock);
+    c = ws_conn_find_locked(client_id);
+    if (!c || c->closed || c->fd == WS_INVALID_SOCKET) {
+        well_mutex_unlock(&g_ws_lock);
+        return;
+    }
     p[n++] = (unsigned char)(code >> 8);
     p[n++] = (unsigned char)code;
     if (reason) {
@@ -362,8 +433,13 @@ void well_ws_close(long long client_id, int code, const char *reason) {
         memcpy(p + n, reason, rl);
         n += rl;
     }
-    ws_send_frame(g_ws_current_fd, 0x8, p, n);
-    g_ws_current_closed = 1;
+    ws_send_frame(c->fd, 0x8, p, n);
+    c->closed = 1;
+    c->close_requested = 1;
+    c->close_code = code;
+    if (c->close_reason) well_release(c->close_reason);
+    c->close_reason = well_string_new(reason ? reason : "");
+    well_mutex_unlock(&g_ws_lock);
 }
 
 /* ---------- routes / dispatch ---------- */
@@ -393,139 +469,176 @@ void well_ws_route(const char *path, WellWsOpenFn open_fn,
     well_mutex_unlock(&g_ws_lock);
 }
 
-static int ws_run_open(WellWsOpenFn call, WellWsClient *c, long long oid) {
-    WellCtx ctx;
-    jmp_buf jb;
-    jmp_buf *old;
-    volatile int failed = 0;
-    well_ctx_init(&ctx, oid);
-    old = well_panic_push(&jb);
-    if (setjmp(jb) == 0) {
-        call(&ctx, c);
-        well_panic_pop(old);
+/* ---------- handler dispatch: one task per event, serialized per client oid ---------- */
+
+typedef struct WsTask {
+    WsConn *conn;
+    int kind; /* 0 open, 1 message, 2 close */
+    WellString *text;
+    int code;
+    WellString *reason;
+} WsTask;
+
+static void ws_task_run(WellCtx *ctx, void *arg) {
+    WsTask *t = (WsTask *)arg;
+    WsRoute *r = t->conn->route;
+    if (!r) return;
+    if (t->kind == 0) {
+        if (r->open_fn) r->open_fn(ctx, &t->conn->client);
+    } else if (t->kind == 1) {
+        if (r->msg_fn) r->msg_fn(ctx, &t->conn->client, t->text);
     } else {
-        failed = 1;
-        well_panic_pop(old);
+        if (r->close_fn) r->close_fn(ctx, &t->conn->client, t->code, t->reason);
     }
-    well_ctx_clear(&ctx);
-    return failed;
 }
 
-static int ws_run_close(WellWsCloseFn call, WellWsClient *c, int code,
-                        WellString *reason, long long oid) {
-    WellCtx ctx;
-    jmp_buf jb;
-    jmp_buf *old;
-    volatile int failed = 0;
-    well_ctx_init(&ctx, oid);
-    old = well_panic_push(&jb);
-    if (setjmp(jb) == 0) {
-        call(&ctx, c, code, reason);
-        well_panic_pop(old);
-    } else {
-        failed = 1;
-        well_panic_pop(old);
-    }
-    well_ctx_clear(&ctx);
-    return failed;
+static void ws_task_done(void *arg) {
+    WsTask *t = (WsTask *)arg;
+    WsConn *c = t->conn;
+    if (t->text) well_release(t->text);
+    if (t->reason) well_release(t->reason);
+    free(t);
+    ws_conn_unref(c);
 }
 
-static void ws_serve_conn(WsSocket fd) {
+/* Handler panics are isolated by the scheduler (setjmp in dispatch_task). */
+static void ws_dispatch(WsConn *c, int kind, WellString *text, int code,
+                        WellString *reason) {
+    WsTask *t = (WsTask *)calloc(1, sizeof(WsTask));
+    if (!t) well_panic("out of memory (WebSocket task)");
+    t->conn = c;
+    t->kind = kind;
+    t->text = text;
+    t->code = code;
+    t->reason = reason;
+    well_mutex_lock(&g_ws_lock);
+    c->refs++;
+    well_mutex_unlock(&g_ws_lock);
+    well_schedule_task(c->id, ws_task_run, t, ws_task_done);
+}
+
+static void *ws_reader_thread(void *arg) {
+    WsConn *c = (WsConn *)arg;
+    WsSocket fd;
     char *path = NULL;
-    WsRoute *route;
-    WellWsClient client;
-    if (ws_handshake(fd, &path) != 0) { if (path) free(path); return; }
+    WsRoute *route = NULL;
+    int want_close = 0;
+    int code = 1006;
+    WellString *reason = NULL;
+
+    well_mutex_lock(&g_ws_lock);
+    fd = c->fd;
+    well_mutex_unlock(&g_ws_lock);
+
+    if (ws_handshake(fd, &path) != 0) goto finish;
     route = ws_find_route(path);
     if (!route) {
         const char *nf = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         ws_send_all(fd, nf, strlen(nf));
-        free(path);
-        return;
+        goto finish;
     }
-    client.id = well_id_util_get_id();
-    client.path = well_string_new(path);
-    client.query = well_string_new("");
-    free(path);
-    g_ws_current_id = client.id;
-    g_ws_current_fd = fd;
-    g_ws_current_closed = 0;
-    if (route->open_fn && ws_run_open(route->open_fn, &client, client.id)) {
-        well_ws_close(client.id, 1011, "handler panic");
-    }
-    while (!g_ws_current_closed) {
+    well_mutex_lock(&g_ws_lock);
+    c->route = route;
+    c->client.path = well_string_new(path);
+    c->client.query = well_string_new("");
+    well_mutex_unlock(&g_ws_lock);
+    ws_dispatch(c, 0, NULL, 0, NULL);
+
+    for (;;) {
         int opcode;
         unsigned char *payload = NULL;
         size_t plen = 0;
         if (ws_read_frame(fd, &opcode, &payload, &plen) != 0) break;
         if (opcode == 0x1) {
             WellString *text = well_string_new((const char *)payload);
-            if (route->msg_fn) {
-                WellCtx ctx;
-                jmp_buf jb;
-                jmp_buf *old;
-                volatile int failed = 0;
-                well_ctx_init(&ctx, client.id);
-                old = well_panic_push(&jb);
-                if (setjmp(jb) == 0) {
-                    route->msg_fn(&ctx, &client, text);
-                    well_panic_pop(old);
-                } else {
-                    failed = 1;
-                    well_panic_pop(old);
-                }
-                well_ctx_clear(&ctx);
-                if (failed) well_ws_close(client.id, 1011, "handler panic");
-            }
-            well_release(text);
+            ws_dispatch(c, 1, text, 0, NULL);
         } else if (opcode == 0x8) {
-            if (route->close_fn) {
-                int code = 1000;
-                WellString *reason = NULL;
-                if (plen >= 2) {
-                    code = (payload[0] << 8) | payload[1];
-                    if (plen > 2) {
-                        char *r = (char *)malloc(plen - 2 + 1);
-                        if (r) { memcpy(r, payload + 2, plen - 2); r[plen-2] = '\0'; reason = well_string_new(r); free(r); }
+            want_close = 1;
+            code = 1000;
+            if (plen >= 2) {
+                code = (payload[0] << 8) | payload[1];
+                if (plen > 2) {
+                    char *r = (char *)malloc(plen - 2 + 1);
+                    if (r) {
+                        memcpy(r, payload + 2, plen - 2);
+                        r[plen - 2] = '\0';
+                        reason = well_string_new(r);
+                        free(r);
                     }
                 }
-                (void)ws_run_close(route->close_fn, &client, code, reason, client.id);
-                if (reason) well_release(reason);
             }
+            ws_send_frame(fd, 0x8, payload, plen);
+            free(payload);
             break;
         } else if (opcode == 0x9) {
             ws_send_frame(fd, 0xA, payload, plen);
-        } else if (opcode == 0xA) {
-            /* pong */
-        } else {
-            free(payload);
-            break;
         }
         free(payload);
     }
-    ws_close_socket(fd);
-    g_ws_current_fd = WS_INVALID_SOCKET;
-    g_ws_current_id = 0;
-    g_ws_current_closed = 1;
-    well_release(client.path);
-    well_release(client.query);
+
+finish:
+    {
+        WsSocket to_close;
+        well_mutex_lock(&g_ws_lock);
+        c->closed = 1;
+        if (c->close_requested && !want_close) {
+            want_close = 1;
+            code = c->close_code;
+            reason = c->close_reason;
+            c->close_reason = NULL;
+            c->close_requested = 0;
+        }
+        to_close = c->fd;
+        c->fd = WS_INVALID_SOCKET;
+        well_mutex_unlock(&g_ws_lock);
+        if (to_close != WS_INVALID_SOCKET) ws_close_socket(to_close);
+        if (route && route->close_fn) ws_dispatch(c, 2, NULL, code, reason);
+        else if (reason) well_release(reason);
+    }
+    free(path);
+    ws_conn_unref(c); /* list reference; the close task keeps it alive if scheduled */
+    well_service_release();
+    return NULL;
 }
 
 static void *ws_listener_thread(void *arg) {
+    WsSocket fd = WS_INVALID_SOCKET;
     (void)arg;
     for (;;) {
-        WsSocket s, fd;
+        WsSocket s;
+        WsConn *c;
+        WellThread th;
         well_mutex_lock(&g_ws_lock);
-        if (!g_ws_running) { well_mutex_unlock(&g_ws_lock); break; }
+        if (!g_ws_running) {
+            well_mutex_unlock(&g_ws_lock);
+            break;
+        }
         fd = g_ws_listen_fd;
         well_mutex_unlock(&g_ws_lock);
         s = ws_accept(fd);
         if (s == WS_INVALID_SOCKET) break;
-        ws_serve_conn(s);
+        c = (WsConn *)calloc(1, sizeof(WsConn));
+        if (!c) well_panic("out of memory (WebSocket connection)");
+        c->id = well_id_util_get_id();
+        c->client.id = c->id;
+        c->fd = s;
+        c->refs = 1; /* list reference */
+        well_service_hold(); /* keeps the run loop alive while the client is connected */
+        well_mutex_lock(&g_ws_lock);
+        c->next = g_ws_conns;
+        g_ws_conns = c;
+        well_mutex_unlock(&g_ws_lock);
+        if (well_thread_start(&th, ws_reader_thread, c) != 0)
+            well_panic("WebSocket: cannot start reader thread");
+        well_thread_detach(th);
     }
     well_mutex_lock(&g_ws_lock);
-    g_ws_done = 1;
-    well_cond_signal(&g_ws_cond);
+    g_ws_running = 0;
+    fd = g_ws_listen_fd;
+    g_ws_listen_fd = WS_INVALID_SOCKET;
     well_mutex_unlock(&g_ws_lock);
+    if (fd != WS_INVALID_SOCKET) ws_close_socket(fd);
+    well_service_release();
     return NULL;
 }
 
@@ -541,34 +654,52 @@ void well_ws_listen(int port) {
     if (g_ws_listen_fd == WS_INVALID_SOCKET) well_panic("Ws.listen: socket failed");
     if (ws_bind(g_ws_listen_fd, &addr) != 0) well_panic("Ws.listen: bind failed");
     if (ws_listen_socket(g_ws_listen_fd) != 0) well_panic("Ws.listen: listen failed");
-    g_ws_running = 1; g_ws_done = 0;
+    g_ws_running = 1;
     if (well_thread_start(&g_ws_thread, ws_listener_thread, NULL) != 0)
         well_panic("Ws.listen: cannot start thread");
     g_ws_thread_started = 1;
-    well_mutex_lock(&g_ws_lock);
-    while (!g_ws_done) well_cond_wait(&g_ws_cond, &g_ws_lock);
-    well_mutex_unlock(&g_ws_lock);
-    if (g_ws_thread_started) { well_thread_join(g_ws_thread); g_ws_thread_started = 0; }
-    ws_close_socket(g_ws_listen_fd);
-    g_ws_listen_fd = WS_INVALID_SOCKET;
-    g_ws_running = 0;
+    well_service_hold();
+    /* 非阻塞：listener 与 worker 生命周期由 well_run_loop 管理。 */
 }
 
 void well_ws_stop(void) {
     WsSocket fd;
+    WsConn *c;
     ws_lock_init();
     well_mutex_lock(&g_ws_lock);
     g_ws_running = 0;
     fd = g_ws_listen_fd;
     g_ws_listen_fd = WS_INVALID_SOCKET;
+    for (c = g_ws_conns; c; c = c->next) {
+        c->closed = 1;
+        /* shutdown(), not close(): the reader thread is blocked in recv() and
+         * owns the socket. Closing it from here aborts the connection with RST
+         * and can discard responses that were just sent. */
+        if (c->fd != WS_INVALID_SOCKET) ws_shutdown_socket(c->fd);
+    }
     well_cond_signal(&g_ws_cond);
     well_mutex_unlock(&g_ws_lock);
-    ws_close_socket(fd);
+    if (fd != WS_INVALID_SOCKET) ws_close_socket(fd);
 }
 
 void well_ws_shutdown(void) {
+    WsConn *c;
     if (g_ws_running) well_ws_stop();
+    if (g_ws_thread_started) {
+        well_thread_join(g_ws_thread);
+        g_ws_thread_started = 0;
+    }
+    /* Each connection holds a service count, so the run loop can only return
+     * after every reader thread has exited; close leftovers defensively. */
+    well_mutex_lock(&g_ws_lock);
+    for (c = g_ws_conns; c; c = c->next) {
+        if (c->fd != WS_INVALID_SOCKET) {
+            WsSocket f = c->fd;
+            c->fd = WS_INVALID_SOCKET;
+            ws_close_socket(f);
+        }
+    }
+    well_mutex_unlock(&g_ws_lock);
 }
 
 WellModule well_ws_module = { "ws", NULL, NULL, NULL, well_ws_shutdown };
-

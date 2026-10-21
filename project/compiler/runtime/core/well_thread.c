@@ -53,6 +53,8 @@ void well_thread_join(WellThread t) {
     CloseHandle(t);
 }
 
+void well_thread_detach(WellThread t) { CloseHandle(t); }
+
 void well_sleep_ms(int ms) { Sleep((DWORD)ms); }
 #else
 void well_mutex_init(WellMutex *m) { pthread_mutex_init(m, NULL); }
@@ -71,6 +73,7 @@ int well_thread_start(WellThread *t, void *(*fn)(void *), void *arg) {
 }
 
 void well_thread_join(WellThread t) { pthread_join(t, NULL); }
+void well_thread_detach(WellThread t) { pthread_detach(t); }
 void well_sleep_ms(int ms) {
     struct timespec ts;
     ts.tv_sec = ms / 1000;

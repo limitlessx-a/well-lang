@@ -1,0 +1,46 @@
+module demo.wsconcurrent;
+
+event WsOpenEvent extends Event {
+    clientId: long;
+    path: String;
+    query: String;
+}
+
+event WsMessageEvent extends Event {
+    clientId: long;
+    text: String;
+}
+
+event WsCloseEvent extends Event {
+    clientId: long;
+    code: int;
+    reason: String;
+}
+
+controller WsController extends Controller {
+    run() {
+        Ws.route("/chat", WsOpenHandler, WsMessageHandler, WsCloseHandler);
+        Ws.listen(18087);
+    }
+}
+
+handler WsOpenHandler extends Handler {
+    onEvent(e: WsOpenEvent) {
+        Ws.send(e.clientId, "welcome");
+    }
+}
+
+handler WsMessageHandler extends Handler {
+    onEvent(e: WsMessageEvent) {
+        Ws.send(e.clientId, e.text);
+        Ws.stop();
+    }
+}
+
+handler WsCloseHandler extends Handler {
+    onEvent(e: WsCloseEvent) {
+        print("closed ", e.code);
+    }
+}
+
+entry WsController;

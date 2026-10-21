@@ -30,7 +30,7 @@
 - **JSON 解析**：`Json.parse(Type, String)` 按 Struct 元数据解析为 struct/event，支持嵌套对象、Array/Map/Linked、String 转义/Unicode、ref
 - **File/Host API**：`File.read/write/exists/remove`、`Host.nowMs/env/log`
 - **HTTP/1.1 服务器**：`Http.route/listen/respond/stop`；非阻塞 listener + 每请求 task 派发（handler 在 worker 上运行，可 emit 业务事件后由其他 oid 响应）+ 首响应生效 + 5s 超时 504；自写受限 parser；Windows Winsock 动态加载，Linux POSIX socket
-- **WebSocket**：`Ws.route/listen/send/close/stop`；握手、text frame、ping/pong、close；独立端口
+- **WebSocket**：`Ws.route/listen/send/close/stop`；非阻塞 listener + 每连接 reader 线程，open/message/close handler 作为 task 在连接 oid 上串行执行；`Ws.send/close` 可从任意 handler 按 clientId 调用；握手、text frame、ping/pong、close；独立端口
 - **MySQL 客户端（最小）**：自实现 wire protocol；`mysql_native_password` + `COM_QUERY`；`Mysql.connect/exec/queryJson/close`
 - **MySQL 连接池**：`Mysql.pool/execPool/queryJsonPool/closePool`；`WellMysqlPool` acquire/release
 - **oid exec_ref**：handler/event 执行引用租约；Cache TTL 由 Cache.get/set 更新；oid 过期后回收 Cache 行
@@ -48,7 +48,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（59 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（61 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```

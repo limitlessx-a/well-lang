@@ -1,0 +1,59 @@
+module demo.wsbizoid;
+
+event WsOpenEvent extends Event {
+    clientId: long;
+    path: String;
+    query: String;
+}
+
+event WsMessageEvent extends Event {
+    clientId: long;
+    text: String;
+}
+
+event WsCloseEvent extends Event {
+    clientId: long;
+    code: int;
+    reason: String;
+}
+
+event WsBusinessEvent extends Event {
+    clientId: long;
+    text: String;
+}
+
+controller WsController extends Controller {
+    run() {
+        on(WsBusinessEvent, WsBizHandler);
+        Ws.route("/chat", WsOpenHandler, WsMessageHandler, WsCloseHandler);
+        Ws.listen(18086);
+    }
+}
+
+handler WsOpenHandler extends Handler {
+    onEvent(e: WsOpenEvent) {
+        Ws.send(e.clientId, "welcome");
+    }
+}
+
+handler WsMessageHandler extends Handler {
+    onEvent(e: WsMessageEvent) {
+        emit(new WsBusinessEvent(0) { clientId: e.clientId, text: e.text });
+    }
+}
+
+handler WsBizHandler extends Handler {
+    onEvent(e: WsBusinessEvent) {
+        Ws.send(e.clientId, e.text);
+        Ws.close(e.clientId, 1000, "bye");
+        Ws.stop();
+    }
+}
+
+handler WsCloseHandler extends Handler {
+    onEvent(e: WsCloseEvent) {
+        print("closed ", e.code);
+    }
+}
+
+entry WsController;
