@@ -1,0 +1,18 @@
+len 3
+len2 4
+a1 2
+oob 0
+a1b 20
+get0 9
+mx 7
+missing 0
+mz 9
+mget 70
+has true
+has2 false
+size 2
+sum 36
+key x
+key y
+inferred 6
+inferred map 3

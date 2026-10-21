@@ -1,0 +1,42 @@
+module demo.modelset;
+
+struct ItemVo extends Vo {
+    value: int;
+}
+
+event CreateEvent extends Event {
+    n: int;
+}
+
+event UpdateEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(CreateEvent, CreateHandler);
+        on(UpdateEvent, UpdateHandler);
+        emit(new CreateEvent(1) { n: 1 });
+        emit(new UpdateEvent(2) { n: 2 });
+    }
+}
+
+handler CreateHandler extends Handler {
+    onEvent(e: CreateEvent) {
+        var item: ItemVo = new ItemVo();
+        item.value = 10;
+        Model.set(item);
+        print("item created");
+    }
+}
+
+handler UpdateHandler extends Handler {
+    onEvent(e: UpdateEvent) {
+        var item: ItemVo = Model.get(ItemVo, 1);
+        print("updating foreign item");
+        Model.set(item);
+        print("should not reach here");
+    }
+}
+
+entry MainController;

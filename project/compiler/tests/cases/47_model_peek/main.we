@@ -1,0 +1,20 @@
+module demo.modelpeek;
+
+struct ItemVo extends Vo {
+    v: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        var a = new ItemVo() { v: 7 };
+        Model.set(a);
+
+        var b = Model.peek(ItemVo, 0);
+        print(b.v);
+
+        var c = Model.peek(ItemVo, 1);
+        print(c == null);
+    }
+}
+
+entry MainController;

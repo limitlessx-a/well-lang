@@ -1,0 +1,9 @@
+module demo.badcontainer;
+
+controller MainController extends Controller {
+    run() {
+        var a: Array<int> = [1, "x"];
+    }
+}
+
+entry MainController;

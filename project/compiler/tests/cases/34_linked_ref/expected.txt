@@ -1,0 +1,6 @@
+len 2
+headn 1
+tailn 0
+popn 1
+popn2 0
+len2 0

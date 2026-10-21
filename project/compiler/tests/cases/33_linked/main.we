@@ -1,0 +1,30 @@
+module demo.linked;
+
+controller MainController extends Controller {
+    run() {
+        var l: Linked<int> = new Linked<int>();
+
+        l.pushTail(1);
+        l.pushTail(2);
+        l.pushHead(0);
+
+        print("len ", l.length);
+        print("head ", l.head());
+        print("tail ", l.tail());
+
+        print("popHead ", l.popHead());
+        print("popTail ", l.popTail());
+        print("get0 ", l.get(0));
+
+        l.pushHead(5);
+        l.pushTail(6);
+
+        var sum: int = 0;
+        for (var x of l) {
+            sum = sum + x;
+        }
+        print("sum ", sum);
+    }
+}
+
+entry MainController;

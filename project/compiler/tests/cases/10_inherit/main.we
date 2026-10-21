@@ -1,0 +1,27 @@
+module demo.inherit;
+
+struct BaseVo extends Vo {
+    a: int;
+}
+
+struct ChildVo extends BaseVo {
+    b: String;
+}
+
+event ChildEvent extends Event {
+    child: ChildVo;
+}
+
+controller MainController extends Controller {
+    run() {
+        var c: ChildVo = new ChildVo();
+        c.a = 7;
+        c.b = "kid";
+        var e: ChildEvent = new ChildEvent(3) {
+            child: c
+        };
+        print("child a =", c.a, ", b =", c.b);
+    }
+}
+
+entry MainController;

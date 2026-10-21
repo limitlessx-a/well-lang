@@ -1,0 +1,38 @@
+module demo.typetevent;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+event PongEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        on(PongEvent, PongHandler);
+        once(PongEvent, OnceHandler);
+        emit(new PongEvent(7) { n: 2 });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("should not print ping");
+    }
+}
+
+handler PongHandler extends Handler {
+    onEvent(e: PongEvent) {
+        print("pong ", e.n);
+    }
+}
+
+handler OnceHandler extends Handler {
+    onEvent(e: PongEvent) {
+        print("once ", e.n);
+    }
+}
+
+entry MainController;

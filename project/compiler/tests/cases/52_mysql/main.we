@@ -1,0 +1,13 @@
+module demo.mysql;
+
+controller MysqlController extends Controller {
+    run() {
+        Mysql.connect("127.0.0.1", 3306, "root", "db@root", "mysql");
+        Mysql.exec("SET @well_x = 1");
+        var json: String = Mysql.queryJson("SELECT 1 AS x UNION ALL SELECT 2 AS x");
+        print(json);
+        Mysql.close();
+    }
+}
+
+entry MysqlController;

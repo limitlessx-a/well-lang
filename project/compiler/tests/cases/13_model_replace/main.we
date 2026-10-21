@@ -1,0 +1,47 @@
+module demo.replace;
+
+struct ItemVo extends Vo {
+    value: int;
+}
+
+event MakeEvent extends Event {
+    n: int;
+}
+
+event ReplaceEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(MakeEvent, MakeHandler);
+        on(ReplaceEvent, ReplaceHandler);
+        emit(new MakeEvent(1) { n: 1 });
+        emit(new ReplaceEvent(1) { n: 1 });
+    }
+}
+
+handler MakeHandler extends Handler {
+    onEvent(e: MakeEvent) {
+        var item: ItemVo = new ItemVo();
+        item.value = 1;
+        Model.set(item);
+        print("first set");
+    }
+}
+
+handler ReplaceHandler extends Handler {
+    onEvent(e: ReplaceEvent) {
+        var item: ItemVo = Model.get(ItemVo, e.n);
+        if (item != null) {
+            print("old value:", item.value);
+        }
+        var fresh: ItemVo = new ItemVo();
+        fresh.value = 2;
+        Model.set(fresh);
+        var check: ItemVo = Model.get(ItemVo, e.n);
+        print("new value:", check.value);
+    }
+}
+
+entry MainController;

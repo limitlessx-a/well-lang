@@ -1,0 +1,42 @@
+module demo.oidcheck;
+
+struct ItemVo extends Vo {
+    value: int;
+}
+
+event MakeEvent extends Event {
+    n: int;
+}
+
+event TouchEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(MakeEvent, MakeHandler);
+        on(TouchEvent, TouchHandler);
+        emit(new MakeEvent(1) { n: 1 });
+        emit(new TouchEvent(2) { n: 2 });
+    }
+}
+
+handler MakeHandler extends Handler {
+    onEvent(e: MakeEvent) {
+        var item: ItemVo = new ItemVo();
+        item.value = 100;
+        Model.set(item);
+        print("created item for oid", e.n);
+    }
+}
+
+handler TouchHandler extends Handler {
+    onEvent(e: TouchEvent) {
+        var item: ItemVo = Model.get(ItemVo, 1);
+        print("trying to write oid 1 from handler oid", e.n);
+        item.value = 200;
+        print("should not reach here");
+    }
+}
+
+entry MainController;

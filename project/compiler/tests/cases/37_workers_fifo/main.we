@@ -1,0 +1,22 @@
+module demo.workers;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        for (var i: int = 1; i <= 20; i = i + 1) {
+            emit(new PingEvent(1) { n: i });
+        }
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print(e.n);
+    }
+}
+
+entry MainController;

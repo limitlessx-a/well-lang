@@ -1,0 +1,50 @@
+module demo.containers;
+
+controller MainController extends Controller {
+    run() {
+        var a: Array<int> = [1, 2, 3];
+        print("len ", a.length);
+
+        a.push(4);
+        print("len2 ", a.length);
+        print("a1 ", a[1]);
+        print("oob ", a[99]);
+
+        a[1] = 20;
+        print("a1b ", a[1]);
+
+        a.set(0, 9);
+        print("get0 ", a.get(0));
+
+        var m: Map<int> = { "x": 7, "y": 8 };
+        print("mx ", m["x"]);
+        print("missing ", m["z"]);
+
+        m["z"] = 9;
+        print("mz ", m["z"]);
+        m.set("x", 70);
+        print("mget ", m.get("x"));
+        print("has ", m.has("z"));
+        m.delete("z");
+        print("has2 ", m.has("z"));
+        print("size ", m.size);
+
+        var sum: int = 0;
+        for (var x of a) {
+            sum = sum + x;
+        }
+        print("sum ", sum);
+
+        for (var k in m) {
+            print("key ", k);
+        }
+
+        var inferred = [5, 6];
+        print("inferred ", inferred[1]);
+
+        var inferredMap = { "k": 3 };
+        print("inferred map ", inferredMap["k"]);
+    }
+}
+
+entry MainController;

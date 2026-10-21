@@ -1,0 +1,25 @@
+module demo.httppost;
+
+event HttpRequestEvent extends Event {
+    reqId: long;
+    method: String;
+    path: String;
+    query: String;
+    body: String;
+}
+
+controller HttpController extends Controller {
+    run() {
+        Http.route("/echo", "POST", EchoHandler);
+        Http.listen(18081);
+    }
+}
+
+handler EchoHandler extends Handler {
+    onEvent(e: HttpRequestEvent) {
+        Http.respond(e.reqId, 200, e.body);
+        Http.stop();
+    }
+}
+
+entry HttpController;

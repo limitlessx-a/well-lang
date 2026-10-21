@@ -1,0 +1,87 @@
+module demo.features;
+
+struct CounterVo extends Vo {
+    value: int;
+    label: String;
+}
+
+event PingEvent extends Event {
+    n: int;
+}
+
+event PongEvent extends Event {
+    n: int;
+}
+
+event OnceEvent extends Event {
+    n: int;
+}
+
+func greet(name: String): String {
+    return "hello, " + name;
+}
+
+func add(a: int, b: int): int {
+    return a + b;
+}
+
+controller ChildController extends Controller {
+    run() {
+        on(PingEvent, ChildPingHandler);
+        print("child controller started");
+    }
+}
+
+controller MainController extends Controller {
+    run() {
+        print("main controller started");
+        start(ChildController);
+
+        on(PingEvent, PingHandler);
+        once(OnceEvent, OnceHandler);
+
+        var sum: int = 0;
+        for (var i: int = 0; i < 3; i = i + 1) {
+            sum = add(sum, i);
+        }
+        print("sum =", sum);
+
+        var ev: PingEvent = new PingEvent(7) {
+            n: 7
+        };
+        emit(ev);
+
+        emit(new OnceEvent(7) { n: 1 });
+        emit(new OnceEvent(7) { n: 2 });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("ping handler:", e.n);
+        var c: CounterVo = Model.get(CounterVo, e.n);
+        if (c == null) {
+            c = new CounterVo();
+            c.value = add(1, 2);
+            c.label = greet("well");
+            Model.set(c);
+            print("counter created:", c.label);
+        } else {
+            print("counter exists");
+        }
+    }
+}
+
+handler ChildPingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("child ping handler:", e.n);
+    }
+}
+
+handler OnceHandler extends Handler {
+    onEvent(e: OnceEvent) {
+        print("once handler fired:", e.n);
+    }
+}
+
+entry MainController;

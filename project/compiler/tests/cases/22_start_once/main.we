@@ -1,0 +1,36 @@
+module demo.startonce;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller ChildController extends Controller {
+    run() {
+        print("child started");
+        on(PingEvent, ChildHandler);
+    }
+}
+
+controller MainController extends Controller {
+    run() {
+        start(ChildController);
+        start(ChildController);
+        on(PingEvent, MainHandler);
+        emit(new PingEvent(1) { n: 1 });
+        print("main done");
+    }
+}
+
+handler ChildHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("child ", e.n);
+    }
+}
+
+handler MainHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("main ", e.n);
+    }
+}
+
+entry MainController;

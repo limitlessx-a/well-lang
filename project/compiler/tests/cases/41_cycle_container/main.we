@@ -1,0 +1,28 @@
+module demo.cyclecontainer;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+struct ItemVo extends Vo {
+    arr: Array<ItemVo>;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        emit(new PingEvent(1) { n: 1 });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        var arr: Array<ItemVo> = [];
+        var item = new ItemVo();
+        item.arr = arr;      // item -> arr
+        arr.push(item);      // arr -> item => cycle
+        print("cycle allowed");
+    }
+}
+
+entry MainController;

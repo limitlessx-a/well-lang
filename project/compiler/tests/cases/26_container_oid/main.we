@@ -1,0 +1,28 @@
+module demo.containeroid;
+
+event PingEvent extends Event {
+    foreign: ItemVo;
+}
+
+struct ItemVo extends Vo {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        var f = new ItemVo();
+        f.n = 1;
+        emit(new PingEvent(2) { foreign: f });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        var a: Array<ItemVo> = [];
+        a.push(e.foreign);
+        print("should not print");
+    }
+}
+
+entry MainController;

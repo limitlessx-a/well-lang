@@ -1,0 +1,24 @@
+module demo.eventoid;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        emit(new PingEvent(0) { n: 1 });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        if (oid == 0) {
+            print("bad");
+        } else {
+            print("event oid ok");
+        }
+    }
+}
+
+entry MainController;

@@ -1,0 +1,5 @@
+module app.item;
+
+struct ItemVo extends Vo {
+    value: int;
+}

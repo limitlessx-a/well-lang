@@ -1,0 +1,21 @@
+module demo.once;
+
+event AEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        once(AEvent, HandlerA);
+        emit(new AEvent(1) { n: 1 });
+        emit(new AEvent(1) { n: 2 });
+    }
+}
+
+handler HandlerA extends Handler {
+    onEvent(e: AEvent) {
+        print("once ", e.n);
+    }
+}
+
+entry MainController;

@@ -1,0 +1,25 @@
+# SVN metadata
+.svn/
+
+# build artifacts
+project/compiler/build/
+**/*.exe
+**/*.obj
+**/*.dll
+**/*.pdb
+**/*.ilk
+
+# temp/tool outputs
+tool_ai/
+project/tool_ai/
+
+# python
+__pycache__/
+*.pyc
+
+# editor
+.vscode/
+.idea/
+
+# logs
+*.log

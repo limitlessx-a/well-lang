@@ -1,0 +1,27 @@
+module demo.loopscope;
+
+struct Temp extends Vo {
+    n: int;
+}
+
+event PingEvent extends Event {
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        emit(new PingEvent());
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        for (var i: int = 0; i < 1000; i = i + 1) {
+            var t = new Temp();
+            t.n = i;
+        }
+        print("loop scope ok");
+    }
+}
+
+entry MainController;

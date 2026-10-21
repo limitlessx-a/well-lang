@@ -1,0 +1,71 @@
+module demo.refcontainers;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+struct ItemVo extends Vo {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        emit(new PingEvent(1) { n: 1 });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        var a: Array<ItemVo> = [];
+        var v = new ItemVo();
+        v.n = 7;
+        a.push(v);
+        print("arr len ", a.length);
+        print("arr n ", a[0].n);
+        var popped: ItemVo = a.pop();
+        print("pop n ", popped.n);
+        print("pop len ", a.length);
+
+        var m: Map<String> = {};
+        m["k"] = "hello";
+        print("map k ", m["k"]);
+        print("map has ", m.has("k"));
+
+        var b: Array<int> = new Array<int>();
+        b.push(1);
+        print("new arr ", b[0]);
+
+        var empty: Array<ItemVo> = [];
+        var missing: ItemVo = empty[0];
+        if (missing == null) {
+            print("null ref");
+        }
+
+        var em: Map<ItemVo> = {};
+        if (em["none"] == null) {
+            print("null map ref");
+        }
+
+        var strs: Array<String> = ["a", "b"];
+        print("s0 ", strs[0]);
+
+        var nm: Map<int> = new Map<int>();
+        nm["a"] = 1;
+        print("new map ", nm["a"]);
+
+        var fresh: Array<ItemVo> = [new ItemVo()];
+        print("literal len ", fresh.length);
+
+        var c: Array<ItemVo> = [];
+        c.push(new ItemVo());
+        c.set(0, new ItemVo());
+        print("cget ", c.get(0).n);
+
+        var mm: Map<ItemVo> = {};
+        mm.set("x", new ItemVo());
+        print("mgetref ", mm.get("x").n);
+    }
+}
+
+entry MainController;

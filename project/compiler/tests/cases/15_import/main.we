@@ -1,0 +1,13 @@
+module app.main;
+
+import "lib/item.we";
+
+controller MainController extends Controller {
+    run() {
+        var item: ItemVo = new ItemVo();
+        item.value = 5;
+        print("imported ", item.value);
+    }
+}
+
+entry MainController;

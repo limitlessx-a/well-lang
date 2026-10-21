@@ -1,0 +1,12 @@
+well type 100 ChildVo event=0
+  v kind=int type=0 elem=?/0
+well type 101 MetaVo event=0
+  i kind=int type=0 elem=?/0
+  l kind=long type=0 elem=?/0
+  d kind=double type=0 elem=?/0
+  b kind=bool type=0 elem=?/0
+  s kind=String type=1 elem=?/0
+  child kind=ref type=100 elem=?/0
+  arr kind=Array type=2 elem=ref/100
+  map kind=Map type=3 elem=String/1
+  link kind=Linked type=4 elem=ref/100

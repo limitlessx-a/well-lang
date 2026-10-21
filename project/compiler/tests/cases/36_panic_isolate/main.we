@@ -1,0 +1,29 @@
+module demo.panicisolate;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+struct ItemVo extends Vo {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        emit(new PingEvent(1) { n: 1 });
+        emit(new PingEvent(1) { n: 2 });
+        emit(new PingEvent(1) { n: 3 });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        if (e.n == 1) {
+            Model.remove(ItemVo, oid + 1);   // panic: oid mismatch
+        }
+        print("ok ", e.n);
+    }
+}
+
+entry MainController;

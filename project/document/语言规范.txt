@@ -1,0 +1,185 @@
+新语言
+
+名字 well
+
+扩展名 .we
+经过编译器编译成 c 语言
+面向对象语言, 
+
+
+控制器 controller 负责注册事件和启动子控制器;
+	start(UserNewController);//启动子控制器（幂等，单例）
+	on(UserLoginEvent,UserHandler);//监听 channel 0
+	once(UserLoginEvent,UserHandler);//只执行一次,执行一次后取消监听
+	off(UserLoginEvent,UserHandler);//取消监听
+	on(UserLoginEvent,AuditHandler,ALL);//通配所有 channel
+	emit(new UserLoginEvent());//发送到 channel 0
+	emit(new UserLoginEvent(), 1);//发送到 channel 1
+
+执行器 handler
+	程序所有逻辑在 handler 中执行, handler 中有 oid, 执行时 oid 相同的 handler 排队执行, oid 不相同的并发执行;
+	oid 是 long, 由 IdUtil.getId() 生成: serverId + timestamp + sequence; WELL_SERVER_ID 0..1023, 部署时保证唯一;
+	Json.parse(Type, text) 按 struct 字段名解析 JSON 为 Type 对象; 支持嵌套对象/Array/Map/Linked/String/数字/布尔/null, 解析错误 panic;
+	File.read(path):String; File.write(path,text); File.exists(path):bool; File.remove(path); 失败 panic;
+	Host.nowMs():long; Host.env(name):String; Host.log(...) 写入 stderr;
+	Http.route(path,method,Handler); Http.listen(port) 阻塞启动服务器; Http.respond(reqId,status,body); Http.stop();
+	Ws.route(path,OpenHandler,MessageHandler,CloseHandler); Ws.listen(port); Ws.send(clientId,text); Ws.close(clientId,code,reason); Ws.stop();
+	Mysql.pool(host,port,user,password,db,min,max); Mysql.execPool(sql):int; Mysql.queryJsonPool(sql):String; Mysql.closePool();
+	Mysql.connect(host,port,user,password,db); Mysql.exec(sql):int; Mysql.queryJson(sql):String; Mysql.close(); 仅 mysql_native_password.
+	复杂对象 Array,Map,struct‌ 等都有 oid , oid 是对象持有者 , object.oid == handler.oid 才能修改;
+	因此同 oid 的数据 object.oid == handler.oid 可读写, object.oid != handler.oid, 可读不可写;
+	复杂对象 不能存储 oid 不相同的对象
+
+数据缓存 Model
+	Model 是以表的形式存储对象, 其中的所有对象都有 oid, 用来标识数据是谁的. 
+	Model.get(Vo,oid); 取数据 Vo 是 struct, oid 数据持有者, 优先查 Cache, 未命中从 Store 回源并写入 Cache; 未命中返回 null.
+	Model.peek(Vo,oid); 只查 Cache, 不访问 Store.
+	Model.findByOid(Vo,oid); 兼容接口, 语义同 Model.get.
+	Model.set(); 设置数据, 需要 oid 校验; 写穿 Store + Cache
+	不活跃 oid 清理由 WELL_MODEL_TTL_MS 控制(默认关闭); 只驱逐空闲且 rc==1 的 Cache 行, Store 保留.
+	Model.remove(); 移除数据, 需要 oid 校验
+	所有长期数据(内存)只保存在 Model 中. controller,handler,都不保存任何属性或数据,是无状态的;
+
+关于垃圾回收
+	对象被 handler 持有时,引用+1, handler执行结束引用-1;
+	对象被Event 持有时,引用+1, handler执行结束引用-1;
+	Model.remove(); 执行后 如果 引用=0 则移到垃圾桶, 垃圾桶会定时查看其中的对象是否已经引用=0; =0内存释放, 垃圾桶为独立进程;
+	由此设计,对象不需要复杂的垃圾回收器.使用引用计数即可.
+
+关于属性读取
+	例:
+	struct‌ AVo extends Vo {
+		b:BVo=null;
+	}
+	struct‌ BVo extends Vo {
+		c:int;//不复制默认=0;
+	}
+	var avo = new AVo();
+	avo.b.c; //这里 avo.b = null, 但 avo.b.c 不报错直接返回 int 的默认值 0;
+
+对象引用计数
+	handlr中的引用计数:
+		var vo = new UserVo();// vo计数+1, vo.ref=1;
+		Model.set(vo);// vo计数+1;, vo.ref=2;
+
+		var vo2 = Model.get(UserVo,1);// vo2计数+1, vo2.ref=2;(之前就在Model里,原来vo2.ref=1;取出后vo2.ref++,vo2.ref=2)
+		vo.userVo = vo2;// vo2 计数+1;
+
+		Model.remove(vo);//vo计数-1, vo.ref=1;
+		handler执行结束 vo计数-1, vo2计数-1; vo.ref=0; vo2.ref=1; vo回收, vo2不回收
+
+	event中的引用计数:
+		event.userVo = vo;//vo计数+1;
+		emit(event) 后, 所有匹配 channel 的事件执行结束后, event 销毁, vo计数-1;
+
+	对象图禁止成环（DAG）（编译期/运行期检测）
+
+	Model.set 的重复计数：对象已在 Model 中时再次 set，应该幂等（不重复 +1）, 替换同一 key 的旧对象时，旧行 -1
+
+热更新
+	因为所有逻辑在 handler 中,handler 是固定的结构, 所以 handler 逻辑可热更新, controller , struct‌, event 变更需要重启服务
+
+
+
+
+
+
+#数据类型=============================================
+
+#基本数据类型
+bool 默认 false;
+char 默认 0;
+short 默认 0
+int 默认 0
+long 默认 0
+float 默认 0
+double 默认 0
+
+#复杂数据类型
+String 默认 ""
+Array<T> 默认 null; 数组内置 oid, 创建时自动写入; 字面量 [], 元素同质; 修改需要 array.oid == handler.oid
+  读取: a[i] 或 a.get(i); 写入: a[i]=v 或 a.set(i,v)
+Map<T>   默认 null; 对象内置 oid, 创建时自动写入; 字面量 {}, 键为 String, 值同质; 修改需要 map.oid == handler.oid
+  读取: m["k"] 或 m.get(k); 写入: m["k"]=v 或 m.set(k,v)
+  越界/缺失: 值类型返回默认值, 引用类型返回 null;
+
+#特殊类型
+null 
+void
+
+#枚举
+enum UserType {
+	a:int = 0;
+	b:int = 1;
+}
+
+#结构体,结构体没有方法, 结构体可继承
+#extends Vo 可省略, 省略时默认继承 Vo
+#所有结构体内置 oid, 即每个结构体都有归属id,该字段为内置字段,可读不可写,结构体在创建时自动写入
+#结构体内的字段再写入时需要 检查oid, 只有 struct.oid == handler.oid 才可写;
+#赋值 userVo1 = userVo2; 只是引用赋值, 不是拷贝关系
+struct‌ UserVo extends Vo {
+	id:int = 0;
+	userName:String = 0;
+}
+
+#事件 事件内置 oid（目标 oid，构造时指定）, 可继承; 事件类型本身即事件身份
+#extends Event 可省略, 省略时默认继承 Event
+event UserEvent extends Event{
+	id:int = 0;
+	userName:String = 0;
+	userVo:UserVo;
+}
+
+#控制器,控制器没有属性, 可继承
+#extends Controller 可省略, 省略时默认继承 Controller
+controller UserController extends Controller {
+	run(){
+		super.run();
+		start(UserNewController);//启动子控制器
+		
+		on(UserEvent,UserHandler);//监听 channel 0
+		once(UserEvent,UserHandler);//只执行一次,一次后卸载
+		off(UserEvent,UserHandler);//取消监听
+		emit(new UserEvent());//发送到 channel 0
+	}
+}
+
+#事件处理句柄 handler,是执行逻辑的基本单位, 其中默认含有 oid, 是执行当前程序的归属id,如果在 handler 中创建 Vo, vo.oid =  handler.oid;
+#extends Handler 可省略, 省略时默认继承 Handler
+handler UserHandler extends Handler {
+	handler(event:UserEvent){
+		var id = event.id;
+		var userName = event.userName;
+
+		var userVo:UserVo = Model.get(UserVo, id);
+		if(userVo == void){
+			userVo = new UserVo();
+			userVo.id = id;
+			userVo.userName = userName;
+			Model.set(userVo);
+		}
+		
+		var userEvent = new UserEvent();
+		userEvent.id = id;
+		userEvent.userName = "呱呱";
+		userEvent.userVo = userVo;
+		emit(userEvent);//发送到 channel 0
+	}
+}
+
+#工具类 其中全是静态方法 UserTool.add(1,2);
+tool UserTool {
+	add(a:int,b:int):int{
+		return a+b;
+	}
+}
+
+#Model 由 get,set 方法, 
+
+var userVo:UserVo = Model.get(UserVo, oid);
+Model.get(Vo, oid) Vo:Vo的类名,如果没有查到返回 void;
+Model.set(Vo,vo) 设置vo , key = vo.oid
+Model.remove(Vo) 移除当前 key = handler.oid 的Vo
+
+

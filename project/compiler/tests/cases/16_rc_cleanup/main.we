@@ -1,0 +1,30 @@
+module demo.rc;
+
+struct TempVo extends Vo {
+    value: int;
+}
+
+event TickEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(TickEvent, TickHandler);
+        emit(new TickEvent(1) { n: 1 });
+    }
+}
+
+handler TickHandler extends Handler {
+    onEvent(e: TickEvent) {
+        var t: TempVo = new TempVo();
+        t.value = 1;
+        Model.set(t);
+        var g: TempVo = Model.get(TempVo, 1);
+        print("value", g.value);
+        Model.remove(TempVo, 1);
+        print("ok");
+    }
+}
+
+entry MainController;

@@ -1,0 +1,22 @@
+module demo.filehost;
+
+controller MainController extends Controller {
+    run() {
+        var path: String = "build/well_file_host_test.txt";
+
+        File.write(path, "hello");
+        print(File.exists(path));
+
+        var text: String = File.read(path);
+        print(text);
+
+        print(Host.env("WELL_TEST_MISSING_ENV_12345") == null);
+        print(Host.nowMs() > 0);
+        Host.log("log ok ", 1);
+
+        File.remove(path);
+        print(File.exists(path));
+    }
+}
+
+entry MainController;

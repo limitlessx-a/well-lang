@@ -1,0 +1,98 @@
+# Well 语言 MVP 编译器
+
+`wellc` 把 `.we` 源码编译为 C99，再由 C 编译器生成可执行文件。当前是可工作的 MVP，已打通：
+
+- `module` / `import`（本地相对/点路径解析，声明合并）
+- `const` / `enum`（int、String；enum 不再承担事件名）
+- `struct`（单继承字段展平）、`event`（事件类型即身份，无 `bind`）
+- 根类型继承可省略：`struct S` ≡ `extends Vo`，`event E` ≡ `extends Event`，`controller C` ≡ `extends Controller`，`handler H` ≡ `extends Handler`
+- `controller`（`on/once/off/start/stop/emit/run`）；`start(C)` 单例幂等，`stop(C)` 注销该 controller 类型的订阅并允许重新 start
+- `handler`（`onEvent` 事件处理、无字段）
+- `func` 函数
+- **事件路由**：`on(EventType, H)` / `on(EventType, H, channel)`；`emit(event)` / `emit(event, channel)`
+  - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
+- 基础类型：`int / long / bool / double / String / void / null`
+- 容器：`Array<T>`（`[]`）、`Map<T>`（`{}`，String 键、值同质）、`Linked<T>`（双向链表）
+  - `a.push/pop`、`a.get/set`、`a[i]`、`a.length`、`for (x of a)`
+  - `m.get/set`、`m.has/delete`、`m["k"]`、`m.size`、`for (k in m)`
+  - `l.pushHead/pushTail/popHead/popTail`、`l.head/tail/get`、`l.length`、`for (x of l)`
+  - 越界/缺失：值类型返回默认值，引用类型返回 `null`
+  - 写容器要求 `container.oid == ctx.oid`，插入引用元素要求 `element.oid == container.oid`
+  - `Map` 使用 FNV-1a 64 位字符串 hash + 开放寻址（保留插入序）；`Linked` 首尾 O(1)、get O(n)
+- 语句：`var`、赋值、`if/else`、`while`、`for`、`return`、`break/continue`
+- 表达式：算术/比较/逻辑、字符串拼接、`String.length`、成员访问、`new`、对象初始化
+- oid 写入检查、Model `get/set/remove`（64 分片哈希表 + spinlock）、引用计数（A 方案，原子 RC）、事件队列、订阅表 spinlock + 快照派发、按 oid 队列 + N worker 线程池、线程局部 handler panic 隔离、print 串行化
+- **成环策略**：允许成环，运行时不做 DFS 检查；环随 oid 过期由 registry 强制整组回收（见 `IMPLEMENTATION §3.15`）
+- **Struct 元数据**：每个 struct/event 生成 `WellTypeDesc`/`WellFieldDesc`（字段名、偏移、类型、容器元素类型），运行时可查询/遍历
+- **Model facade**：Cache（64 分片）+ `Store` 接口 + 默认 `MemoryStore`；`Model.get` 为 Cache→Store→Cache，`Model.peek` 只查 Cache，`set/remove` 写穿
+- **不活跃 oid 清理**：`WELL_MODEL_TTL_MS` 开启（默认关闭）；oid 空闲且 `exec_ref==0` 时整组强制回收（含环）+ 丢弃 Cache 行，Store 保留，下次访问自动回源
+- **行级二进制序列化**：`well_encode` / `well_decode`，支持标量、String、Array/Map/Linked、ref（type_id+oid）；ref 可用 resolver 恢复
+- **JSON 解析**：`Json.parse(Type, String)` 按 Struct 元数据解析为 struct/event，支持嵌套对象、Array/Map/Linked、String 转义/Unicode、ref
+- **File/Host API**：`File.read/write/exists/remove`、`Host.nowMs/env/log`
+- **HTTP/1.1 服务器**：`Http.route/listen/respond/stop`；自写受限 parser；Windows Winsock 动态加载，Linux POSIX socket
+- **WebSocket**：`Ws.route/listen/send/close/stop`；握手、text frame、ping/pong、close；独立端口
+- **MySQL 客户端（最小）**：自实现 wire protocol；`mysql_native_password` + `COM_QUERY`；`Mysql.connect/exec/queryJson/close`
+- **MySQL 连接池**：`Mysql.pool/execPool/queryJsonPool/closePool`；`WellMysqlPool` acquire/release
+- **oid exec_ref**：handler/event 执行引用租约；Cache TTL 由 Cache.get/set 更新；oid 过期后回收 Cache 行
+- **oid registry + 强制清理**：按 oid 枚举全部对象；exec_ref==0 时整图强制回收（含环）
+- **固定大小对象池**：struct/event 回收后复用；`WELL_POOL_TTL_MS` 到期真正释放；`WELL_POOL_MAX_MB` 上限
+- **局部作用域释放**：loop body / block / function / return / break / continue 结束释放局部引用；配合 `well_ctx_replace` 覆盖赋值释放
+
+- `IdUtil.getId(): long`：`serverId + timestamp + sequence`，线程安全，`WELL_SERVER_ID` 配置 0..1023
+
+## 目录
+
+```
+compiler/
+  wellc.py          # CLI 入口
+  wellc/            # lexer / parser / checker / codegen / driver
+  runtime/          # wellrt / well_model / well_containers / well_event（C99）
+  examples/         # 示例 .we
+  tests/            # 端到端测试（57 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  docs/             # 实现说明
+  build/            # 生成的 C / 可执行文件（构建产物）
+```
+
+## 使用
+
+需要 Python 3 和一个 C 编译器。本机已验证 TinyCC 0.9.27（仓库内 `tool_ai/tools/tcc/`）。
+
+```powershell
+cd compiler
+
+python wellc.py run examples\hello.we
+python wellc.py build examples\features.we -o build\features.exe
+python wellc.py emit-c examples\hello.we -o build\hello.c
+```
+
+运行测试：
+
+```powershell
+python tests\run_tests.py
+```
+
+编译器查找顺序：环境变量 `WELL_CC` → PATH 中的 `tcc`/`gcc`/`clang` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`。
+
+调试引用计数：
+
+```powershell
+$env:WELL_RC_DEBUG = "1"
+.\build\features.exe   # stderr: well: live objects at shutdown = 0
+```
+
+## 说明（MVP 边界）
+
+- 线程池 + 每 oid 队列：默认 `WELL_WORKERS=1`，可用环境变量开多 worker；per-worker local deque + work stealing；同 oid 严格 FIFO，异 oid 可并行。
+- handler panic 会隔离并继续调度；controller/装配期 panic 仍会退出进程。
+- `print` 语句通过 runtime 锁串行化，避免多线程输出交错。
+- 没有实现 Array/Map 的完整 JS 方法（`shift/unshift/slice/concat/join/indexOf/includes`、Map `keys/values/entries`），也没有 `map/filter/forEach`（需要 lambda）。
+- 没有实现泛型（除内置 Array/Map）、接口、异常、`switch`、通用 `for-in`（只支持 Map 键迭代）、持久化、热更新；`invoke` 已从语言中删除（D-21），不是遗漏。
+- 允许成环：不立即释放，随 oid 过期整组回收；长寿命/热点 oid 的环需要显式回收或子 oid 拆分。
+- 字段引用写入同时校验 `target.oid == ctx.oid` 与 `value.oid == target.oid`；event 构造豁免。
+- controller 的 `ctx.oid = 0`：不要在 controller 里创建业务数据；业务数据应在 handler（目标 oid）中创建。
+- `String.length` 按 UTF-8 字节数（设计稿要求码点）。
+- 生成 C 使用 C99（兼容 TinyCC）；线程/调度已实现（Windows CreateThread / POSIX pthread）。
+- HTTP/1.1 为最小实现：单连接、无 keep-alive、无 TLS/HTTP2/chunked；`Http.listen` 阻塞 controller，handler 在 HTTP 线程同步执行。
+- Model 已拆为 Cache + Store（默认 MemoryStore，字节行）；MySQL/FileStore 尚未接入。
+
+详细实现、运行时设计、扩展指引见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)。

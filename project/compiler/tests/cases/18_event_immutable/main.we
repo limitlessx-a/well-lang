@@ -1,0 +1,22 @@
+module demo.eventimmutable;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, Handler);
+        emit(new PingEvent(1) { n: 1 });
+    }
+}
+
+handler Handler extends Handler {
+    onEvent(e: PingEvent) {
+        print("before:", e.n);
+        e.n = 2;
+        print("should not reach here");
+    }
+}
+
+entry MainController;

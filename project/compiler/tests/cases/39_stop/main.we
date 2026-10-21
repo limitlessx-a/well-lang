@@ -1,0 +1,30 @@
+module demo.stop;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller ChildController extends Controller {
+    run() {
+        print("child start");
+        on(PingEvent, PingHandler);
+    }
+}
+
+controller MainController extends Controller {
+    run() {
+        start(ChildController);
+        emit(new PingEvent(1) { n: 1 });
+        stop(ChildController);
+        start(ChildController);
+        emit(new PingEvent(2) { n: 2 });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("h ", e.n);
+    }
+}
+
+entry MainController;

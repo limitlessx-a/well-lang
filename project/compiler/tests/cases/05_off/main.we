@@ -1,0 +1,22 @@
+module demo.off;
+
+event AEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(AEvent, HandlerA);
+        off(AEvent, HandlerA);
+        emit(new AEvent(1) { n: 1 });
+        print("done");
+    }
+}
+
+handler HandlerA extends Handler {
+    onEvent(e: AEvent) {
+        print("should not print");
+    }
+}
+
+entry MainController;

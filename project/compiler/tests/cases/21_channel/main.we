@@ -1,0 +1,36 @@
+module demo.channel;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, GlobalHandler);
+        on(PingEvent, ChannelOneHandler, 1);
+        on(PingEvent, AllHandler, ALL);
+
+        emit(new PingEvent(42) { n: 1 });
+        emit(new PingEvent(43) { n: 2 }, 1);
+    }
+}
+
+handler GlobalHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("global ", e.n);
+    }
+}
+
+handler ChannelOneHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("channel1 ", e.n);
+    }
+}
+
+handler AllHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("all ", e.n);
+    }
+}
+
+entry MainController;

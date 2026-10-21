@@ -1,0 +1,20 @@
+module demo.strings;
+
+func join(a: String, b: String): String {
+    return a + "|" + b;
+}
+
+controller MainController extends Controller {
+    run() {
+        var s: String = join("a", "b");
+        print(s);
+        print(s.length);
+        if (s == "a|b") {
+            print("eq");
+        }
+        var t: String = "x" + "y";
+        print(t.length);
+    }
+}
+
+entry MainController;

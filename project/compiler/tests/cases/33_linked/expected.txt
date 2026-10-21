@@ -1,0 +1,7 @@
+len 3
+head 0
+tail 2
+popHead 0
+popTail 2
+get0 1
+sum 12

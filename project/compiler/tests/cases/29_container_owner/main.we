@@ -1,0 +1,32 @@
+module demo.containerowner;
+
+event PingEvent extends Event {
+    arr: Array<ItemVo>;
+    item: ItemVo;
+}
+
+struct ItemVo extends Vo {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+
+        var a: Array<ItemVo> = [];
+        var it = new ItemVo();
+        it.n = 1;
+        a.push(it);   // controller ctx.oid = 0
+
+        emit(new PingEvent(2) { arr: a, item: it });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        e.arr.push(e.item);   // ctx.oid = 2, arr.oid = 0 -> must panic
+        print("should not print");
+    }
+}
+
+entry MainController;

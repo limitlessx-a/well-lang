@@ -1,0 +1,32 @@
+module demo.linkedowner;
+
+event PingEvent extends Event {
+    l: Linked<ItemVo>;
+    item: ItemVo;
+}
+
+struct ItemVo extends Vo {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+
+        var l: Linked<ItemVo> = new Linked<ItemVo>();
+        var it = new ItemVo();
+        it.n = 1;
+        l.pushTail(it);
+
+        emit(new PingEvent(2) { l: l, item: it });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        e.l.pushTail(e.item);   // ctx.oid = 2, l.oid = 0 -> must panic
+        print("should not print");
+    }
+}
+
+entry MainController;

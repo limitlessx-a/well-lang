@@ -1,0 +1,25 @@
+module demo.jsonerror;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+struct TinyVo extends Vo {
+    x: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        emit(new PingEvent(1) { n: 1 });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        var u: TinyVo = Json.parse(TinyVo, "{\"x\":}");
+        print("should not print ", u.x);
+    }
+}
+
+entry MainController;

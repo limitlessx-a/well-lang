@@ -1,0 +1,35 @@
+module demo.json;
+
+struct AddrVo extends Vo {
+    city: String;
+    zip: int;
+}
+
+struct UserVo extends Vo {
+    id: long;
+    name: String;
+    age: int;
+    active: bool;
+    score: double;
+    addr: AddrVo;
+    addrs: Array<AddrVo>;
+    tags: Array<String>;
+    counts: Map<int>;
+    list: Linked<int>;
+}
+
+controller MainController extends Controller {
+    run() {
+        var text: String = "{\"id\":123,\"name\":\"alice\",\"age\":30,\"active\":true,\"score\":1.5,\"addr\":{\"city\":\"NY\",\"zip\":10001},\"addrs\":[{\"city\":\"LA\",\"zip\":2},{\"city\":\"SF\",\"zip\":3}],\"tags\":[\"a\",\"b\"],\"counts\":{\"x\":7,\"y\":8},\"list\":[10,20]}";
+        var u: UserVo = Json.parse(UserVo, text);
+
+        print(u.id, " ", u.name, " ", u.age, " ", u.active, " ", u.score);
+        print(u.addr.city, " ", u.addr.zip);
+        print(u.addrs.length, " ", u.addrs.get(0).city, " ", u.addrs.get(1).zip);
+        print(u.tags.length, " ", u.tags.get(0), " ", u.tags.get(1));
+        print(u.counts.size, " ", u.counts.get("x"));
+        print(u.list.length, " ", u.list.get(0));
+    }
+}
+
+entry MainController;

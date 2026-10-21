@@ -1,0 +1,7 @@
+main controller started
+child controller started
+sum =3
+child ping handler:7
+ping handler:7
+counter created:hello, well
+once handler fired:1

@@ -1,0 +1,25 @@
+module demo.http;
+
+event HttpRequestEvent extends Event {
+    reqId: long;
+    method: String;
+    path: String;
+    query: String;
+    body: String;
+}
+
+controller HttpController extends Controller {
+    run() {
+        Http.route("/hello", "GET", HelloHandler);
+        Http.listen(18080);
+    }
+}
+
+handler HelloHandler extends Handler {
+    onEvent(e: HttpRequestEvent) {
+        Http.respond(e.reqId, 200, "hello");
+        Http.stop();
+    }
+}
+
+entry HttpController;

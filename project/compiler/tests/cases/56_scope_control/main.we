@@ -1,0 +1,48 @@
+module demo.scopecontrol;
+
+struct Temp extends Vo {
+    n: int;
+}
+
+event PingEvent extends Event {
+}
+
+func makeTemp(n: int): Temp {
+    var t = new Temp();
+    t.n = n;
+    return t;
+}
+
+func early(n: int): int {
+    var t = new Temp();
+    t.n = n;
+    if (n > 0) {
+        return n;
+    }
+    return 0;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        emit(new PingEvent());
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        for (var i: int = 0; i < 10; i = i + 1) {
+            if (i == 3) {
+                continue;
+            }
+            if (i > 7) {
+                break;
+            }
+            var t = makeTemp(i);
+            var x = early(i);
+        }
+        print("scope control ok");
+    }
+}
+
+entry MainController;

@@ -1,0 +1,475 @@
+#include "wellrt.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+    const char *s;
+    size_t len;
+    size_t pos;
+    int depth;
+} JsonParser;
+
+typedef struct {
+    char *p;
+    size_t len;
+    size_t cap;
+} JsonStr;
+
+static void jerr(JsonParser *p, const char *msg) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "JSON parse error at %lu: %s",
+             (unsigned long)p->pos, msg);
+    well_panic(buf);
+}
+
+static void jskip_ws(JsonParser *p) {
+    while (p->pos < p->len) {
+        char c = p->s[p->pos];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') p->pos++;
+        else break;
+    }
+}
+
+static int jpeek(JsonParser *p) {
+    jskip_ws(p);
+    return p->pos < p->len ? (unsigned char)p->s[p->pos] : -1;
+}
+
+static void jexpect(JsonParser *p, char c) {
+    if (jpeek(p) != (unsigned char)c) {
+        char msg[32];
+        snprintf(msg, sizeof(msg), "expected '%c'", c);
+        jerr(p, msg);
+    }
+    p->pos++;
+}
+
+static void jstr_push(JsonStr *b, char c) {
+    if (b->len + 1 >= b->cap) {
+        size_t ncap = b->cap ? b->cap * 2 : 32;
+        char *np = (char *)realloc(b->p, ncap);
+        if (!np) well_panic("out of memory (JSON string)");
+        b->p = np;
+        b->cap = ncap;
+    }
+    b->p[b->len++] = c;
+}
+
+static void jstr_utf8(JsonStr *b, unsigned cp) {
+    if (cp <= 0x7F) {
+        jstr_push(b, (char)cp);
+    } else if (cp <= 0x7FF) {
+        jstr_push(b, (char)(0xC0 | (cp >> 6)));
+        jstr_push(b, (char)(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0xFFFF) {
+        jstr_push(b, (char)(0xE0 | (cp >> 12)));
+        jstr_push(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+        jstr_push(b, (char)(0x80 | (cp & 0x3F)));
+    } else {
+        jstr_push(b, (char)(0xF0 | (cp >> 18)));
+        jstr_push(b, (char)(0x80 | ((cp >> 12) & 0x3F)));
+        jstr_push(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+        jstr_push(b, (char)(0x80 | (cp & 0x3F)));
+    }
+}
+
+static unsigned jhex4(JsonParser *p) {
+    unsigned v = 0;
+    int i;
+    for (i = 0; i < 4; i++) {
+        int c;
+        if (p->pos >= p->len) jerr(p, "truncated \\u escape");
+        c = (unsigned char)p->s[p->pos++];
+        if (c >= '0' && c <= '9') c -= '0';
+        else if (c >= 'a' && c <= 'f') c = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') c = c - 'A' + 10;
+        else jerr(p, "bad \\u escape");
+        v = (v << 4) | (unsigned)c;
+    }
+    return v;
+}
+
+static char *jparse_string_alloc(JsonParser *p) {
+    JsonStr b;
+    memset(&b, 0, sizeof(b));
+    if (jpeek(p) != '"') jerr(p, "expected string");
+    p->pos++;
+    while (p->pos < p->len) {
+        unsigned char c = (unsigned char)p->s[p->pos++];
+        if (c == '"') {
+            jstr_push(&b, '\0');
+            return b.p;
+        }
+        if (c == '\\') {
+            unsigned char e;
+            if (p->pos >= p->len) jerr(p, "truncated escape");
+            e = (unsigned char)p->s[p->pos++];
+            switch (e) {
+            case '"': jstr_push(&b, '"'); break;
+            case '\\': jstr_push(&b, '\\'); break;
+            case '/': jstr_push(&b, '/'); break;
+            case 'b': jstr_push(&b, '\b'); break;
+            case 'f': jstr_push(&b, '\f'); break;
+            case 'n': jstr_push(&b, '\n'); break;
+            case 'r': jstr_push(&b, '\r'); break;
+            case 't': jstr_push(&b, '\t'); break;
+            case 'u': {
+                unsigned cp = jhex4(p);
+                if (cp >= 0xD800 && cp <= 0xDBFF) {
+                    unsigned lo;
+                    if (p->pos + 1 >= p->len || p->s[p->pos] != '\\' ||
+                        p->s[p->pos + 1] != 'u')
+                        jerr(p, "missing low surrogate");
+                    p->pos += 2;
+                    lo = jhex4(p);
+                    if (lo < 0xDC00 || lo > 0xDFFF)
+                        jerr(p, "bad low surrogate");
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                }
+                jstr_utf8(&b, cp);
+                break;
+            }
+            default: jerr(p, "bad escape");
+            }
+        } else {
+            if (c < 0x20) jerr(p, "control character in string");
+            jstr_push(&b, (char)c);
+        }
+    }
+    jerr(p, "unterminated string");
+    return NULL;
+}
+
+static int jmatch_lit(JsonParser *p, const char *lit) {
+    size_t n = strlen(lit);
+    if (p->pos + n > p->len) return 0;
+    if (memcmp(p->s + p->pos, lit, n) != 0) return 0;
+    p->pos += n;
+    return 1;
+}
+
+static double jparse_double(JsonParser *p) {
+    size_t start;
+    char *end = NULL;
+    char tmp[128];
+    double v;
+    jskip_ws(p);
+    start = p->pos;
+    while (p->pos < p->len) {
+        char c = p->s[p->pos];
+        if ((c >= '0' && c <= '9') || c == '-' || c == '+' ||
+            c == '.' || c == 'e' || c == 'E')
+            p->pos++;
+        else
+            break;
+    }
+    if (p->pos == start || p->pos - start >= sizeof(tmp))
+        jerr(p, "bad number");
+    memcpy(tmp, p->s + start, p->pos - start);
+    tmp[p->pos - start] = '\0';
+    v = strtod(tmp, &end);
+    if (!end || *end != '\0') jerr(p, "bad number");
+    return v;
+}
+
+static long long jparse_long(JsonParser *p) {
+    size_t start;
+    long long v = 0;
+    int neg = 0;
+    int digits = 0;
+    jskip_ws(p);
+    start = p->pos;
+    if (p->pos < p->len && p->s[p->pos] == '-') {
+        neg = 1;
+        p->pos++;
+    }
+    while (p->pos < p->len && p->s[p->pos] >= '0' && p->s[p->pos] <= '9') {
+        v = v * 10 + (p->s[p->pos] - '0');
+        p->pos++;
+        digits++;
+    }
+    if (!digits) {
+        p->pos = start;
+        jerr(p, "bad integer");
+    }
+    return neg ? -v : v;
+}
+
+static void jskip_value(JsonParser *p);
+
+static void jskip_object(JsonParser *p) {
+    jexpect(p, '{');
+    if (jpeek(p) == '}') { p->pos++; return; }
+    for (;;) {
+        char *k = jparse_string_alloc(p);
+        free(k);
+        jexpect(p, ':');
+        jskip_value(p);
+        if (jpeek(p) == ',') { p->pos++; continue; }
+        jexpect(p, '}');
+        return;
+    }
+}
+
+static void jskip_array(JsonParser *p) {
+    jexpect(p, '[');
+    if (jpeek(p) == ']') { p->pos++; return; }
+    for (;;) {
+        jskip_value(p);
+        if (jpeek(p) == ',') { p->pos++; continue; }
+        jexpect(p, ']');
+        return;
+    }
+}
+
+static void jskip_value(JsonParser *p) {
+    int c = jpeek(p);
+    if (c == '{') jskip_object(p);
+    else if (c == '[') jskip_array(p);
+    else if (c == '"') { free(jparse_string_alloc(p)); }
+    else if (c == 't') { if (!jmatch_lit(p, "true")) jerr(p, "bad true"); }
+    else if (c == 'f') { if (!jmatch_lit(p, "false")) jerr(p, "bad false"); }
+    else if (c == 'n') { if (!jmatch_lit(p, "null")) jerr(p, "bad null"); }
+    else if (c == '-' || (c >= '0' && c <= '9')) { (void)jparse_double(p); }
+    else jerr(p, "bad value");
+}
+
+typedef struct {
+    JsonParser *p;
+    long long oid;
+} JsonCtx;
+
+static void *jparse_object(JsonParser *p, const WellTypeDesc *d, long long oid);
+
+static void *jparse_ref(JsonParser *p, unsigned int type_id, long long oid) {
+    const WellTypeDesc *d;
+    if (jpeek(p) == 'n') {
+        if (!jmatch_lit(p, "null")) jerr(p, "bad null");
+        return NULL;
+    }
+    d = well_type_desc(type_id);
+    if (!d) jerr(p, "ref type has no metadata");
+    if (jpeek(p) != '{') jerr(p, "ref expects object");
+    return jparse_object(p, d, oid);
+}
+
+static WellValue jparse_elem(JsonParser *p, int kind, unsigned int type_id,
+                             long long oid, void **owned) {
+    WellValue v;
+    v.i = 0;
+    if (owned) *owned = NULL;
+    switch (kind) {
+    case WELL_FIELD_INT:
+    case WELL_FIELD_LONG:
+        v.i = jparse_long(p);
+        break;
+    case WELL_FIELD_BOOL: {
+        int c = jpeek(p);
+        if (c == 't') { if (!jmatch_lit(p, "true")) jerr(p, "bad true"); v.i = 1; }
+        else if (c == 'f') { if (!jmatch_lit(p, "false")) jerr(p, "bad false"); v.i = 0; }
+        else jerr(p, "expected bool");
+        break;
+    }
+    case WELL_FIELD_DOUBLE:
+        v.d = jparse_double(p);
+        break;
+    case WELL_FIELD_STRING: {
+        char *s = jparse_string_alloc(p);
+        WellString *ws = well_string_new(s);
+        free(s);
+        v.p = ws;
+        if (owned) *owned = ws;
+        break;
+    }
+    case WELL_FIELD_REF: {
+        void *r = jparse_ref(p, type_id, oid);
+        v.p = r;
+        if (owned) *owned = r;
+        break;
+    }
+    default:
+        jerr(p, "unsupported element type");
+    }
+    return v;
+}
+
+static void *jparse_container(JsonParser *p, int kind, int elem_kind,
+                              unsigned int elem_type_id, long long oid) {
+    WellCtx ctx;
+    int is_ref = (elem_kind == WELL_FIELD_STRING || elem_kind == WELL_FIELD_REF);
+    well_ctx_init(&ctx, oid);
+    if (kind == WELL_FIELD_ARRAY) {
+        WellArray *a = well_array_new(&ctx, is_ref);
+        jexpect(p, '[');
+        if (jpeek(p) == ']') { p->pos++; }
+        else {
+            for (;;) {
+                void *owned = NULL;
+                WellValue v = jparse_elem(p, elem_kind, elem_type_id, oid, &owned);
+                well_array_push(a, v, &ctx);
+                if (owned) well_release(owned);
+                if (jpeek(p) == ',') { p->pos++; continue; }
+                jexpect(p, ']');
+                break;
+            }
+        }
+        well_ctx_clear(&ctx);
+        return a;
+    }
+    if (kind == WELL_FIELD_MAP) {
+        WellMap *m = well_map_new(&ctx, is_ref);
+        jexpect(p, '{');
+        if (jpeek(p) == '}') { p->pos++; }
+        else {
+            for (;;) {
+                char *raw = jparse_string_alloc(p);
+                WellString *key = well_string_new(raw);
+                void *owned = NULL;
+                WellValue v;
+                free(raw);
+                jexpect(p, ':');
+                v = jparse_elem(p, elem_kind, elem_type_id, oid, &owned);
+                well_map_set(m, key, v, &ctx);
+                well_release(key);
+                if (owned) well_release(owned);
+                if (jpeek(p) == ',') { p->pos++; continue; }
+                jexpect(p, '}');
+                break;
+            }
+        }
+        well_ctx_clear(&ctx);
+        return m;
+    }
+    if (kind == WELL_FIELD_LINKED) {
+        WellLinked *l = well_linked_new(&ctx, is_ref);
+        jexpect(p, '[');
+        if (jpeek(p) == ']') { p->pos++; }
+        else {
+            for (;;) {
+                void *owned = NULL;
+                WellValue v = jparse_elem(p, elem_kind, elem_type_id, oid, &owned);
+                well_linked_push_tail(l, v, &ctx);
+                if (owned) well_release(owned);
+                if (jpeek(p) == ',') { p->pos++; continue; }
+                jexpect(p, ']');
+                break;
+            }
+        }
+        well_ctx_clear(&ctx);
+        return l;
+    }
+    well_ctx_clear(&ctx);
+    jerr(p, "unsupported container type");
+    return NULL;
+}
+
+static void jparse_field(JsonParser *p, WellObj *obj, const WellFieldDesc *f, long long oid) {
+    void *slot = (char *)obj + f->offset;
+    switch (f->kind) {
+    case WELL_FIELD_INT:
+        *(int *)slot = (int)jparse_long(p);
+        break;
+    case WELL_FIELD_LONG:
+        *(long long *)slot = jparse_long(p);
+        break;
+    case WELL_FIELD_BOOL: {
+        int c = jpeek(p);
+        if (c == 't') { if (!jmatch_lit(p, "true")) jerr(p, "bad true"); *(int *)slot = 1; }
+        else if (c == 'f') { if (!jmatch_lit(p, "false")) jerr(p, "bad false"); *(int *)slot = 0; }
+        else jerr(p, "expected bool");
+        break;
+    }
+    case WELL_FIELD_DOUBLE:
+        *(double *)slot = jparse_double(p);
+        break;
+    case WELL_FIELD_STRING: {
+        WellString *s;
+        char *raw;
+        if (jpeek(p) == 'n') {
+            if (!jmatch_lit(p, "null")) jerr(p, "bad null");
+            well_set_ref(obj, (void **)slot, NULL);
+            break;
+        }
+        raw = jparse_string_alloc(p);
+        s = well_string_new(raw);
+        free(raw);
+        well_set_ref(obj, (void **)slot, s);
+        well_release(s);
+        break;
+    }
+    case WELL_FIELD_REF: {
+        void *r = jparse_ref(p, f->type_id, oid);
+        well_set_ref(obj, (void **)slot, r);
+        if (r) well_release(r);
+        break;
+    }
+    case WELL_FIELD_ARRAY:
+    case WELL_FIELD_MAP:
+    case WELL_FIELD_LINKED: {
+        void *c = NULL;
+        if (jpeek(p) == 'n') {
+            if (!jmatch_lit(p, "null")) jerr(p, "bad null");
+            well_set_ref(obj, (void **)slot, NULL);
+            break;
+        }
+        c = jparse_container(p, f->kind, f->elem_kind, f->elem_type_id, oid);
+        well_set_ref(obj, (void **)slot, c);
+        well_release(c);
+        break;
+    }
+    default:
+        jerr(p, "unsupported field type");
+    }
+}
+
+static void *jparse_object(JsonParser *p, const WellTypeDesc *d, long long oid) {
+    WellObj *o;
+    if (++p->depth > 128) jerr(p, "nesting too deep");
+    o = (WellObj *)well_new(d->size, d->type_id, oid);
+    jexpect(p, '{');
+    if (jpeek(p) == '}') {
+        p->pos++;
+    } else {
+        for (;;) {
+            char *key = jparse_string_alloc(p);
+            const WellFieldDesc *f;
+            jexpect(p, ':');
+            f = well_type_field(d, key);
+            free(key);
+            if (f) jparse_field(p, o, f, oid);
+            else jskip_value(p);
+            if (jpeek(p) == ',') { p->pos++; continue; }
+            jexpect(p, '}');
+            break;
+        }
+    }
+    if (d->is_event) well_freeze(o);
+    p->depth--;
+    return o;
+}
+
+void *well_json_parse(unsigned int type_id, const char *text, long long oid) {
+    JsonParser p;
+    const WellTypeDesc *d;
+    void *obj;
+    if (!text) well_panic("Json.parse(null)");
+    d = well_type_desc(type_id);
+    if (!d) well_panic("Json.parse: unknown type");
+    p.s = text;
+    p.len = strlen(text);
+    p.pos = 0;
+    p.depth = 0;
+    if (jpeek(&p) == 'n') {
+        if (!jmatch_lit(&p, "null")) jerr(&p, "bad null");
+        jskip_ws(&p);
+        if (p.pos != p.len) jerr(&p, "trailing characters");
+        return NULL;
+    }
+    if (jpeek(&p) != '{') jerr(&p, "top-level value must be an object");
+    obj = jparse_object(&p, d, oid);
+    jskip_ws(&p);
+    if (p.pos != p.len) jerr(&p, "trailing characters");
+    return obj;
+}

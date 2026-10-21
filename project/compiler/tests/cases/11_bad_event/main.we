@@ -1,0 +1,19 @@
+module demo.badevent;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(MissingEvent, Handler);
+    }
+}
+
+handler Handler extends Handler {
+    onEvent(e: PingEvent) {
+        print("should not compile");
+    }
+}
+
+entry MainController;

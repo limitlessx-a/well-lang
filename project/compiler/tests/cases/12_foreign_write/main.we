@@ -1,0 +1,35 @@
+module demo.foreignwrite;
+
+struct ItemVo extends Vo {
+    value: int;
+}
+
+event ItemEvent extends Event {
+    item: ItemVo;
+}
+
+event TouchEvent extends Event {
+    item: ItemVo;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(TouchEvent, TouchHandler);
+        var item: ItemVo = new ItemVo();
+        item.value = 1;
+        var ev: TouchEvent = new TouchEvent(2) {
+            item: item
+        };
+        emit(ev);
+    }
+}
+
+handler TouchHandler extends Handler {
+    onEvent(e: TouchEvent) {
+        print("foreign item value:", e.item.value);
+        e.item.value = 99;
+        print("should not reach here");
+    }
+}
+
+entry MainController;

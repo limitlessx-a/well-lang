@@ -1,0 +1,4 @@
+child started
+main done
+child 1
+main 1

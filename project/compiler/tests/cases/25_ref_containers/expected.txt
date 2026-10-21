@@ -1,0 +1,14 @@
+arr len 1
+arr n 7
+pop n 7
+pop len 0
+map k hello
+map has true
+new arr 1
+null ref
+null map ref
+s0 a
+new map 1
+literal len 1
+cget 0
+mgetref 0

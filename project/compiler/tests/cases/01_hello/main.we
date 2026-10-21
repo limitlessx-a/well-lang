@@ -1,0 +1,50 @@
+module demo.hello;
+
+struct UserVo extends Vo {
+    id: int;
+    name: String;
+}
+
+event UserLoginEvent extends Event {
+    id: int;
+    name: String;
+}
+
+controller AppController extends Controller {
+    run() {
+        on(UserLoginEvent, UserHandler);
+
+        var ev: UserLoginEvent = new UserLoginEvent(42) {
+            id: 42,
+            name: "呱呱"
+        };
+        emit(ev);
+    }
+}
+
+handler UserHandler extends Handler {
+    onEvent(e: UserLoginEvent) {
+        print("handler oid =", e.id, ", name =", e.name);
+
+        var vo: UserVo = Model.get(UserVo, e.id);
+        if (vo == null) {
+            vo = new UserVo();
+            vo.id = e.id;
+            vo.name = e.name;
+            Model.set(vo);
+            print("created UserVo for oid", e.id);
+        } else {
+            print("UserVo already exists");
+        }
+
+        var again: UserVo = Model.get(UserVo, e.id);
+        if (again != null) {
+            print("read back:", again.name);
+        }
+
+        Model.remove(UserVo, e.id);
+        print("removed UserVo");
+    }
+}
+
+entry AppController;

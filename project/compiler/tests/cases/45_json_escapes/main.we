@@ -1,0 +1,14 @@
+module demo.jsonescapes;
+
+struct TextVo extends Vo {
+    text: String;
+}
+
+controller MainController extends Controller {
+    run() {
+        var v: TextVo = Json.parse(TextVo, "{\"text\":\"a\\nb\\u4f60\\u597d\"}");
+        print(v.text);
+    }
+}
+
+entry MainController;

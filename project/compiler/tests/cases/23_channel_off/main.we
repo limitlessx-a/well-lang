@@ -1,0 +1,31 @@
+module demo.channeloff;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, HandlerA, 1);
+        off(PingEvent, HandlerA, 1);
+
+        emit(new PingEvent(1) { n: 1 }, 1);
+
+        on(PingEvent, HandlerB);
+        emit(new PingEvent(2) { n: 2 });
+    }
+}
+
+handler HandlerA extends Handler {
+    onEvent(e: PingEvent) {
+        print("a ", e.n);
+    }
+}
+
+handler HandlerB extends Handler {
+    onEvent(e: PingEvent) {
+        print("b ", e.n);
+    }
+}
+
+entry MainController;

@@ -1,0 +1,39 @@
+module demo.linkedref;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+struct ItemVo extends Vo {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+        emit(new PingEvent(1) { n: 1 });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        var l: Linked<ItemVo> = new Linked<ItemVo>();
+
+        var a = new ItemVo();
+        a.n = 1;
+        l.pushHead(a);
+        l.pushTail(new ItemVo());
+
+        print("len ", l.length);
+        print("headn ", l.head().n);
+        print("tailn ", l.tail().n);
+
+        var p: ItemVo = l.popHead();
+        print("popn ", p.n);
+        var t: ItemVo = l.popTail();
+        print("popn2 ", t.n);
+        print("len2 ", l.length);
+    }
+}
+
+entry MainController;

@@ -1,0 +1,27 @@
+module demo.implicitroots;
+
+struct ItemVo {
+    n: int;
+}
+
+event PingEvent {
+    item: ItemVo;
+}
+
+controller MainController {
+    run() {
+        on(PingEvent, PingHandler);
+
+        var it = new ItemVo();
+        it.n = 7;
+        emit(new PingEvent(1) { item: it });
+    }
+}
+
+handler PingHandler {
+    onEvent(e: PingEvent) {
+        print("n ", e.item.n);
+    }
+}
+
+entry MainController;

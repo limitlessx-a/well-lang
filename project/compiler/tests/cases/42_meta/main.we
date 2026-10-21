@@ -1,0 +1,25 @@
+module demo.meta;
+
+struct ChildVo extends Vo {
+    v: int;
+}
+
+struct MetaVo extends Vo {
+    i: int;
+    l: long;
+    d: double;
+    b: bool;
+    s: String;
+    child: ChildVo;
+    arr: Array<ChildVo>;
+    map: Map<String>;
+    link: Linked<ChildVo>;
+}
+
+controller MainController extends Controller {
+    run() {
+        print("meta ok");
+    }
+}
+
+entry MainController;

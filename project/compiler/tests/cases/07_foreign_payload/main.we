@@ -1,0 +1,37 @@
+module demo.foreign;
+
+struct ItemVo extends Vo {
+    value: int;
+}
+
+event MakeEvent extends Event {
+}
+
+event ReadEvent extends Event {
+    item: ItemVo;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(MakeEvent, MakeHandler);
+        on(ReadEvent, ReadHandler);
+        emit(new MakeEvent(1));
+    }
+}
+
+handler MakeHandler extends Handler {
+    onEvent(e: MakeEvent) {
+        var item: ItemVo = new ItemVo();
+        item.value = 100;
+        Model.set(item);
+        emit(new ReadEvent(2) { item: item });
+    }
+}
+
+handler ReadHandler extends Handler {
+    onEvent(e: ReadEvent) {
+        print("foreign value:", e.item.value);
+    }
+}
+
+entry MainController;

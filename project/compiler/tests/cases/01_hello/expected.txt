@@ -1,0 +1,4 @@
+handler oid =42, name =呱呱
+created UserVo for oid42
+read back:呱呱
+removed UserVo

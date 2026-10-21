@@ -1,0 +1,13 @@
+module demo.emitall;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        emit(new PingEvent(1) { n: 1 }, ALL);
+    }
+}
+
+entry MainController;

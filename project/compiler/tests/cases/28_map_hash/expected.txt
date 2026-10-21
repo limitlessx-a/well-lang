@@ -1,0 +1,7 @@
+size 20
+k0 0
+k19 19
+size2 18
+count 18
+k6 6
+k10 0

@@ -1,0 +1,25 @@
+module demo.mapowner;
+
+event PingEvent extends Event {
+    m: Map<int>;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent, PingHandler);
+
+        var m: Map<int> = {};
+        m.set("k", 1);   // controller ctx.oid = 0
+
+        emit(new PingEvent(2) { m: m });
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        e.m.set("x", 2);   // ctx.oid = 2, m.oid = 0 -> must panic
+        print("should not print");
+    }
+}
+
+entry MainController;

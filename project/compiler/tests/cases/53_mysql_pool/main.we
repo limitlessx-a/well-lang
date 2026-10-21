@@ -1,0 +1,13 @@
+module demo.mysqlpool;
+
+controller PoolController extends Controller {
+    run() {
+        Mysql.pool("127.0.0.1", 3306, "root", "db@root", "mysql", 1, 4);
+        Mysql.execPool("SET @well_pool_x = 1");
+        var json: String = Mysql.queryJsonPool("SELECT 1 AS x UNION ALL SELECT 2 AS x");
+        print(json);
+        Mysql.closePool();
+    }
+}
+
+entry PoolController;
