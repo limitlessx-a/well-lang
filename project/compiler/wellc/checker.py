@@ -343,6 +343,14 @@ class Checker:
             e.ty = f"Map<{vt}>"
         elif isinstance(e, Index):
             ot = self.check_expr(e.obj, env)
+            if ot == "String":
+                it = self.check_expr(e.index, env)
+                if it not in ("int", "long"):
+                    self.err("String index must be int/long")
+                e.ty = "int"
+                e.str_index = True
+                e.str_obj = e.obj
+                return
             kind, et = self.container_info(ot)
             if kind == "array":
                 it = self.check_expr(e.index, env)
@@ -747,9 +755,24 @@ class Checker:
             e.ty = "long"
             e.builtin = "idutil_get"
             return
-        # container methods
+        # String.fromByte(code)
+        if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name == "String":
+            if e.func.name == "fromByte":
+                if len(e.args) != 1:
+                    self.err("String.fromByte(code) expects 1 argument")
+                it = self.check_expr(e.args[0], env)
+                if it not in ("int", "long"):
+                    self.err("String.fromByte: code must be int/long")
+                e.ty = "String"
+                e.builtin = "str_from_byte"
+                return
+            self.err(f"unknown String method {e.func.name}")
+        # container / String methods
         if isinstance(e.func, Member) and not (isinstance(e.func.obj, Ident) and e.func.obj.name == "Model"):
             ot = self.check_expr(e.func.obj, env)
+            if ot == "String":
+                self.check_string_method(e, env)
+                return
             kind, et = self.container_info(ot)
             if kind:
                 name = e.func.name
@@ -972,6 +995,64 @@ class Checker:
             self.err(f"unknown function {name}")
         # method calls unsupported
         self.err("unsupported call expression (only functions, Model.*, on/once/off/emit/start/print)")
+
+    def check_string_method(self, e, env):
+        name = e.func.name
+        if name in ("byteAt", "charCodeAt"):
+            if len(e.args) != 1:
+                self.err(f"String.{name}(index) expects 1 argument")
+            it = self.check_expr(e.args[0], env)
+            if it not in ("int", "long"):
+                self.err("String index must be int/long")
+            e.ty = "int"
+            e.method_op = "str_byte_at"
+        elif name in ("substring", "slice"):
+            if len(e.args) != 2:
+                self.err(f"String.{name}(start, end) expects 2 arguments")
+            for a in e.args:
+                if self.check_expr(a, env) not in ("int", "long"):
+                    self.err("String index must be int/long")
+            e.ty = "String"
+            e.method_op = "str_substring"
+        elif name == "indexOf":
+            if len(e.args) not in (1, 2):
+                self.err("String.indexOf(needle[, from]) expects 1 or 2 arguments")
+            if self.check_expr(e.args[0], env) != "String":
+                self.err("String.indexOf: needle must be String")
+            if len(e.args) == 2:
+                if self.check_expr(e.args[1], env) not in ("int", "long"):
+                    self.err("String.indexOf: from must be int/long")
+                e.method_op = "str_index_of_from"
+            else:
+                e.method_op = "str_index_of"
+            e.ty = "int"
+        elif name in ("contains", "startsWith", "endsWith"):
+            if len(e.args) != 1:
+                self.err(f"String.{name}(x) expects 1 argument")
+            if self.check_expr(e.args[0], env) != "String":
+                self.err(f"String.{name}: argument must be String")
+            e.ty = "bool"
+            e.method_op = {
+                "contains": "str_contains",
+                "startsWith": "str_starts_with",
+                "endsWith": "str_ends_with",
+            }[name]
+        elif name == "trim":
+            if e.args:
+                self.err("String.trim() takes no arguments")
+            e.ty = "String"
+            e.method_op = "str_trim"
+        elif name == "split":
+            if len(e.args) != 1:
+                self.err("String.split(sep) expects 1 argument")
+            if self.check_expr(e.args[0], env) != "String":
+                self.err("String.split: sep must be String")
+            e.ty = "Array<String>"
+            e.elem_ty = "String"
+            e.method_op = "str_split"
+        else:
+            self.err(f"unknown String method {name}")
+        e.method_obj = e.func.obj
 
     def resolve_event_type(self, e) -> str:
         if isinstance(e, Ident) and e.name in self.structs and self.structs[e.name]["kind"] == "event":

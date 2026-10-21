@@ -1,0 +1,32 @@
+module demo.strmethods;
+
+controller MainController extends Controller {
+    run() {
+        var s: String = "  Hello,World  ";
+        var t: String = s.trim();
+        print(t);
+        print(t.length);
+        print(t.substring(0, 5));
+        print(t.substring(6, 11));
+        print(t.indexOf("World"));
+        print(t.indexOf("o", 5));
+        print(t.indexOf("zzz"));
+        print(t.contains("Hello"));
+        print(t.startsWith("Hello"));
+        print(t.endsWith("World"));
+        print(t[0]);
+        print(t.byteAt(1));
+        print(t.byteAt(99));
+        print(String.fromByte(65));
+        var parts: Array<String> = t.split(",");
+        print(parts.length);
+        print(parts[0]);
+        print(parts[1]);
+        var empty: String = null;
+        print(empty.length);
+        print(empty.byteAt(0));
+        print(empty.substring(0, 5).length);
+    }
+}
+
+entry MainController;

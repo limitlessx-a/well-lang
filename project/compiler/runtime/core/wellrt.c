@@ -686,13 +686,13 @@ static void string_destroy(void *p) {
     free(s);
 }
 
-static WellString *string_alloc(const char *src) {
-    size_t n = strlen(src ? src : "");
+static WellString *string_alloc_n(const char *src, size_t n) {
     WellString *s = (WellString *)malloc(sizeof(WellString));
     if (!s) well_panic("out of memory (String)");
     s->data = (char *)malloc(n + 1);
     if (!s->data) well_panic("out of memory (String data)");
-    memcpy(s->data, src ? src : "", n + 1);
+    if (n && src) memcpy(s->data, src, n);
+    s->data[n] = 0;
     s->hdr.rc = 1;
     s->hdr.type_id = WELL_T_STRING;
     s->hdr.flags = 0;
@@ -702,9 +702,13 @@ static WellString *string_alloc(const char *src) {
     s->hdr.reg_next = NULL;
     s->hdr.reg_prev = NULL;
     s->hdr.alloc_size = sizeof(WellString);
-    string_set_hash(s);
+    s->hash = hash_bytes(s->data, n);
     g_live++;
     return s;
+}
+
+static WellString *string_alloc(const char *src) {
+    return string_alloc_n(src, strlen(src ? src : ""));
 }
 
 WellString *well_string_new(const char *src) {
@@ -772,6 +776,102 @@ int well_string_eq(WellString *a, WellString *b) {
 long long well_string_len(WellString *s) {
     return (long long)strlen(s ? s->data : "");
 }
+
+/* ---------- String helpers (byte oriented, matching String.length) ---------- */
+
+long long well_str_byte_at(WellString *s, long long i) {
+    long long n = well_string_len(s);
+    if (!s || i < 0 || i >= n) return -1;
+    return (long long)(unsigned char)s->data[i];
+}
+
+WellString *well_str_from_byte(int code) {
+    char c = (char)(unsigned char)(code & 0xFF);
+    return string_alloc_n(&c, 1);
+}
+
+WellString *well_str_substring(WellString *s, long long start, long long end) {
+    const char *d = s ? s->data : "";
+    long long n = well_string_len(s);
+    if (start < 0) start = 0;
+    if (end > n) end = n;
+    if (start > end) start = end;
+    return string_alloc_n(d + start, (size_t)(end - start));
+}
+
+long long well_str_index_of_from(WellString *s, WellString *needle, long long from) {
+    const char *d = s ? s->data : "";
+    const char *hit;
+    long long n = well_string_len(s);
+    if (from < 0) from = 0;
+    if (from > n) return -1;
+    if (!needle || needle->data[0] == 0) return from;
+    hit = strstr(d + from, needle->data);
+    return hit ? (long long)(hit - d) : -1;
+}
+
+long long well_str_index_of(WellString *s, WellString *needle) {
+    return well_str_index_of_from(s, needle, 0);
+}
+
+int well_str_contains(WellString *s, WellString *needle) {
+    return well_str_index_of(s, needle) >= 0;
+}
+
+int well_str_starts_with(WellString *s, WellString *prefix) {
+    const char *d = s ? s->data : "";
+    const char *p = prefix ? prefix->data : "";
+    size_t pn = strlen(p);
+    if (strlen(d) < pn) return 0;
+    return memcmp(d, p, pn) == 0;
+}
+
+int well_str_ends_with(WellString *s, WellString *suffix) {
+    const char *d = s ? s->data : "";
+    const char *p = suffix ? suffix->data : "";
+    size_t dn = strlen(d), pn = strlen(p);
+    if (dn < pn) return 0;
+    return memcmp(d + dn - pn, p, pn) == 0;
+}
+
+static int str_is_space(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+WellString *well_str_trim(WellString *s) {
+    const char *d = s ? s->data : "";
+    size_t a = 0, b = strlen(d);
+    while (a < b && str_is_space(d[a])) a++;
+    while (b > a && str_is_space(d[b - 1])) b--;
+    return string_alloc_n(d + a, b - a);
+}
+
+WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx) {
+    WellArray *a = well_array_new(ctx, 1);
+    const char *d = s ? s->data : "";
+    const char *sp = sep ? sep->data : "";
+    size_t spl = strlen(sp);
+    WellValue v;
+    const char *p = d;
+    if (spl == 0) {
+        v.p = well_string_new(d);
+        well_array_push(a, v, ctx);
+        well_release(v.p);
+        return a;
+    }
+    for (;;) {
+        const char *hit = strstr(p, sp);
+        size_t n = hit ? (size_t)(hit - p) : strlen(p);
+        WellString *part = string_alloc_n(p, n);
+        v.p = part;
+        well_array_push(a, v, ctx);
+        well_release(part);
+        if (!hit) break;
+        p = hit + spl;
+    }
+    return a;
+}
+
 
 
 void well_shutdown(void) {

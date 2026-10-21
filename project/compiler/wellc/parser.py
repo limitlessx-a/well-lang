@@ -521,6 +521,12 @@ class Parser:
         if t.kind == "id":
             self.i += 1
             return Ident(t.value)
+        # A type name is a keyword, but it can qualify a static call:
+        #   String.fromByte(65)
+        if t.kind == "kw" and t.value in ("String", "int", "long", "bool", "float", "double") \
+                and self.i + 1 < len(self.toks) and self.toks[self.i + 1].value == ".":
+            self.i += 1
+            return Ident(t.value)
         if t.value == "new":
             self.eat("new")
             ty = self.parse_type()

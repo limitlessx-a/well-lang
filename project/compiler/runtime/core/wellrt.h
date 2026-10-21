@@ -187,6 +187,18 @@ const char *well_string_cstr(WellString *s);
 int well_string_eq(WellString *a, WellString *b);
 long long well_string_len(WellString *s);
 
+/* String helpers, all byte oriented (consistent with String.length). */
+long long well_str_byte_at(WellString *s, long long i); /* -1 when out of range */
+WellString *well_str_from_byte(int code);               /* low 8 bits */
+WellString *well_str_substring(WellString *s, long long start, long long end);
+long long well_str_index_of(WellString *s, WellString *needle);
+long long well_str_index_of_from(WellString *s, WellString *needle, long long from);
+int well_str_contains(WellString *s, WellString *needle);
+int well_str_starts_with(WellString *s, WellString *prefix);
+int well_str_ends_with(WellString *s, WellString *suffix);
+WellString *well_str_trim(WellString *s);
+WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx);
+
 /* containers: Array<T> / Map<T> (homogeneous, String keys) */
 WellArray *well_array_new(WellCtx *ctx, int is_ref);
 WellMap *well_map_new(WellCtx *ctx, int is_ref);

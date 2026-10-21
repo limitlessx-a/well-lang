@@ -72,7 +72,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 ### 2.2 类型
 
 `bool / int / long / float / double / String / void / null`、用户 struct/event，以及 `Array<T>` / `Map<T>` / `Linked<T>`（同质；`Map` 键为 String）。
-- `String` 是引用类型（`WellString*`），默认 `""`，不可变，字面量驻留。
+- `String` 是引用类型（`WellString*`），默认 `""`，不可变，字面量驻留；长度与下标都按 **字节**（与 `String.length` 一致）。
 - `int`/`bool` → C `int`；`long` → `long long`；`double`/`float` → `double`。
 - `Array<T>` → `WellArray*`；`Map<T>` → `WellMap*`；`Linked<T>` → `WellLinked*`；三者是引用类型，带 oid。
 - 所有引用类型可为 `null`。
@@ -83,7 +83,19 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 
 ### 2.4 表达式
 
-字面量、标识符、成员访问、下标 `a[i]` / `m["k"]`、调用、`new T(...)`、对象初始化 `{ f: v }`、数组字面量 `[...]`、Map 字面量 `{ "k": v }`、算术/比较/逻辑、三元、字符串拼接、`String.length`。
+字面量、标识符、成员访问、下标 `a[i]` / `m["k"]` / `s[i]`（String 下标返回字节值 `int`，越界 `-1`）、调用、`new T(...)`、对象初始化 `{ f: v }`、数组字面量 `[...]`、Map 字面量 `{ "k": v }`、算术/比较/逻辑、三元、字符串拼接、`String.length`。
+
+String 方法（全部字节语义）：
+
+| 调用 | 语义 |
+|---|---|
+| `s.byteAt(i)` / `s.charCodeAt(i)` / `s[i]` | 第 i 个字节的无符号值；越界 `-1` |
+| `s.substring(a, b)` / `s.slice(a, b)` | 区间 `[a, b)`；越界自动 clamp |
+| `s.indexOf(x)` / `s.indexOf(x, from)` | 子串位置，未找到 `-1` |
+| `s.contains(x)` / `s.startsWith(x)` / `s.endsWith(x)` | `bool` |
+| `s.trim()` | 去首尾 ASCII 空白，返回新 String |
+| `s.split(sep)` | `Array<String>`；`sep` 为空串时不切分 |
+| `String.fromByte(n)` | 取低 8 位构造单字节 String |
 
 ### 2.5 内建调用
 
@@ -395,7 +407,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（61 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（62 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

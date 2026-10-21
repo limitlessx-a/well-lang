@@ -137,6 +137,10 @@ class CodeGen:
             return self.is_ref(getattr(e, "ty", ""))
         if isinstance(e, Call) and getattr(e, "method_op", None) in ("linked_popHead", "linked_popTail"):
             return self.is_ref(getattr(e, "ty", ""))
+        if isinstance(e, Call) and getattr(e, "method_op", None) in ("str_substring", "str_trim", "str_split"):
+            return True
+        if isinstance(e, Call) and getattr(e, "builtin", None) == "str_from_byte":
+            return True
         if isinstance(e, Binary) and e.op == "??":
             return self.is_owned(e.left) or self.is_owned(e.right)
         return False
@@ -192,6 +196,8 @@ class CodeGen:
             return f"({self.gen_expr(e.obj)})->{e.name}"
         if isinstance(e, Index):
             ot = getattr(e.obj, "ty", None)
+            if getattr(e, "str_index", False):
+                return f"well_str_byte_at({self.gen_expr(e.obj)}, (long long)({self.gen_expr(e.index)}))"
             kind, et = self.container_info(ot)
             obj = self.gen_expr(e.obj)
             idx = self.gen_expr(e.index)
@@ -304,6 +310,8 @@ class CodeGen:
             return f"(({ty}*)well_json_parse(T_{ty}, well_string_cstr({arg}), ctx->oid))"
         if getattr(e, "builtin", None) == "idutil_get":
             return "well_id_util_get_id()"
+        if getattr(e, "builtin", None) == "str_from_byte":
+            return f"well_str_from_byte((int)({self.gen_expr(e.args[0])}))"
         if getattr(e, "method_op", None):
             op = e.method_op
             obj = self.gen_expr(e.method_obj)
@@ -323,6 +331,26 @@ class CodeGen:
                 return f"well_map_set({obj}, {self.gen_expr(e.args[0])}, {self.box_value(self.gen_expr(e.args[1]), e.elem_ty)}, ctx)"
             if op == "map_delete":
                 return f"well_map_delete({obj}, {self.gen_expr(e.args[0])}, ctx)"
+            if op == "str_byte_at":
+                return f"well_str_byte_at({obj}, (long long)({self.gen_expr(e.args[0])}))"
+            if op == "str_substring":
+                return (f"well_str_substring({obj}, (long long)({self.gen_expr(e.args[0])}), "
+                        f"(long long)({self.gen_expr(e.args[1])}))")
+            if op == "str_index_of":
+                return f"well_str_index_of({obj}, {self.gen_expr(e.args[0])})"
+            if op == "str_index_of_from":
+                return (f"well_str_index_of_from({obj}, {self.gen_expr(e.args[0])}, "
+                        f"(long long)({self.gen_expr(e.args[1])}))")
+            if op == "str_contains":
+                return f"well_str_contains({obj}, {self.gen_expr(e.args[0])})"
+            if op == "str_starts_with":
+                return f"well_str_starts_with({obj}, {self.gen_expr(e.args[0])})"
+            if op == "str_ends_with":
+                return f"well_str_ends_with({obj}, {self.gen_expr(e.args[0])})"
+            if op == "str_trim":
+                return f"well_str_trim({obj})"
+            if op == "str_split":
+                return f"well_str_split({obj}, {self.gen_expr(e.args[0])}, ctx)"
             if op in ("linked_pushHead", "linked_pushTail"):
                 fn = "well_linked_push_head" if op.endswith("Head") else "well_linked_push_tail"
                 return f"{fn}({obj}, {self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}, ctx)"
