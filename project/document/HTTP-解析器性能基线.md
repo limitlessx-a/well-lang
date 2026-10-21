@@ -37,30 +37,37 @@ build/bench_well.exe
 | 实现 | µs / 次解析 | 解析/秒 | 相对 C |
 |---|---|---|---|
 | C 基线（手写，tcc） | 0.75 | ≈1,250,000 | 1× |
-| Well 完整解析器 | 13.3 | ≈75,000 | ≈18× 慢 |
+| Well 完整解析器（优化前） | 13.3 | ≈75,000 | ≈18× 慢 |
+| **Well 完整解析器（优化后）** | **9.0** | **≈105,000** | **≈12× 慢** |
 | Well：仅 request line | 1 | — | — |
 | Well：header 解析（不建 Map） | 6 | — | — |
 | Well：header + Map | 7 | — | — |
-| Well：完整（含 body/结构体） | 13 | — | — |
 | Well：纯字节扫描（无分配） | 1 | — | — |
 
 说明：C 版本用 `clock()`，20000 次约 15 ms；整数除法下单项 µs 会显示 0，表中数值由总时长换算。
 
+### 2.1 优化后（2026-10-22 第二轮）
+
+- header 解析不再先 `substring` 出整行：用绝对偏移直接在 raw 上切 name/value（每 header 少 2 次 malloc）；
+- 原生 `String.toLower()/toUpper()`（单次分配 + 刷新 hash），替代原先 `Bytes` 逐字节拼装（每 header 少约 5 次分配）；
+- 结果：13.3 → 9.0 µs/次（约 -32%）。
+
 ## 3. 归因
 
-完整解析器 ≈ 13 µs，主要成本不在"扫描字节"，而在**每字段多次分配**：
+优化后完整解析器 ≈ 9 µs，主要成本仍是**每字段分配**：
 
-- 每个 header 名：`substring`（2 次 malloc）→ `lowerAscii`（`Bytes` 新建 + 增长 + `toString` 2 次 malloc）→ 存入 `Map`（hash + 数组扩容）；
+- 每个 header 名：`substring` + `toLower`（各 2 次 malloc）+ `Map` 插入；
 - 每个 header 值：`substring` + `trim`（各 2 次 malloc）；
-- 4 个 header ≈ 30+ 次 malloc/free/次解析，而 C 基线约 8 次。
+- request line / target / path / query / body 各 1–2 次分配；
+- 4 个 header ≈ 24 次 malloc/free/次解析，而 C 基线约 8 次。
 
 纯字节扫描 100 字节只花 ≈1 µs（≈10 ns/字节，tcc 未内联的 `well_str_byte_at` 调用），说明**分配才是瓶颈**。
 
 ## 4. 结论
 
-1. 当前 Well 解析器（每字段分配字符串）比 C 慢约 **18×**，不适合直接替换生产路径的 C parser。
-2. 但把实现改为**按字节原地扫描 + 只物化最终需要的字段**后，预期可到 **3–5 µs/次**（≈4–6× C）：扫描 1 µs + 约 10 次结果字符串分配（~2–3 µs）。
-3. 与连接处理开销相比，这个量级可以接受：一次 HTTP 请求的 accept/读/任务派发/写/关闭 在毫秒级，13 µs 的解析占比 <2%；即使在优化后仍如此，解析器并非端到端瓶颈。
+1. 优化后的 Well 解析器（每字段分配字符串）比 C 慢约 **12×**，仍不适合直接替换生产路径的 C parser。
+2. 继续优化需要语言层支持 **字符串视图/切片**（不复制就能拿 name/value），否则每字段至少 2 次 malloc；在当前 API 下 9 µs 已接近下限（估算 6–9 µs）。
+3. 与连接处理开销相比，这个量级可以接受：keep-alive 下单请求约 67 µs，9 µs 约占 13%；解析器并非端到端瓶颈。
 4. 因此路线不变：
    - 短期继续用 C parser（成熟、快）；
    - 中期把"原地扫描的 Well 解析器"做成可选实现，用同一套 conformance 测试对照；
@@ -76,10 +83,10 @@ build/bench_well.exe
 | 单连接 keep-alive（新行为） | **≈15,000** | 0.067 |
 
 - 本机 loopback 的 connect 延迟本身就有 1–15 ms 抖动，旧行为的测量被连接建立淹没；
-- keep-alive 后每请求 ~67 µs，其中 C 解析器 ≈0.75 µs；即使换成当前 Well 解析器（13 µs）也只占约 20%，仍在可接受范围；
+- keep-alive 后每请求 ~67 µs，其中 C 解析器 ≈0.75 µs；换成优化后的 Well 解析器（9 µs）也只占约 13%，仍在可接受范围；
 - 结论：**连接处理（keep-alive / 单连接多请求）对吞吐的影响远大于解析器实现语言**。
 
 ## 5. 附带改动
 
 - `WellString` 增加 `len` 字段缓存字节长度：`s.length`、`s[i]`、`trim/startsWith/endsWith/split` 从 O(n) 降到 O(1)，避免解析循环里的 O(n²)。
-- 新增 `String.fromInt(n)`，便于拼装响应/日志。
+- 新增 `String.fromInt(n)`、`String.toLower()/toUpper()`（ASCII，单次分配并刷新缓存 hash）。

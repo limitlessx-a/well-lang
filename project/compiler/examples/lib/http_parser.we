@@ -1,6 +1,8 @@
 module demo.lib.httpparser;
 
-/* Reusable pure-Well HTTP/1.1 request parser (see 65_well_http_parser). */
+/* Reusable pure-Well HTTP/1.1 request parser (see 65_well_http_parser).
+   Allocation-lean: request line / headers are sliced with byte offsets instead
+   of materializing an intermediate String per header line. */
 
 struct ParsedReq {
     ok: bool;
@@ -12,19 +14,6 @@ struct ParsedReq {
     headers: Map<String>;
     headerCount: int;
     body: String;
-}
-
-func lowerAscii(s: String): String {
-    var b: Bytes = new Bytes();
-    var n: int = s.length;
-    for (var i: int = 0; i < n; i = i + 1) {
-        var c: int = s[i];
-        if (c >= 65 && c <= 90) {
-            c = c + 32;
-        }
-        b.push(c);
-    }
-    return b.toString();
 }
 
 func parseUnsigned(s: String): int {
@@ -56,22 +45,19 @@ func parseRequest(raw: String): ParsedReq {
     if (lineEnd < 0) {
         return r;
     }
-    var line: String = raw.substring(pos, lineEnd);
-    pos = lineEnd + 2;
-
-    var sp1: int = line.indexOf(" ");
-    if (sp1 <= 0) {
+    var sp1: int = raw.indexOf(" ", pos);
+    if (sp1 <= pos || sp1 > lineEnd) {
         return r;
     }
-    var rest: String = line.substring(sp1 + 1, line.length);
-    var sp2: int = rest.indexOf(" ");
-    if (sp2 <= 0) {
+    var sp2: int = raw.indexOf(" ", sp1 + 1);
+    if (sp2 <= sp1 + 1 || sp2 > lineEnd) {
         return r;
     }
-    r.method = line.substring(0, sp1);
-    var target: String = rest.substring(0, sp2);
+    r.method = raw.substring(pos, sp1);
+    var target: String = raw.substring(sp1 + 1, sp2);
     r.target = target;
-    r.version = rest.substring(sp2 + 1, rest.length);
+    r.version = raw.substring(sp2 + 1, lineEnd);
+    pos = lineEnd + 2;
 
     var qm: int = target.indexOf("?");
     if (qm >= 0) {
@@ -87,22 +73,22 @@ func parseRequest(raw: String): ParsedReq {
         if (lineEnd < 0) {
             return r;
         }
-        line = raw.substring(pos, lineEnd);
-        pos = lineEnd + 2;
-        if (line.length == 0) {
+        if (lineEnd == pos) {
+            pos = lineEnd + 2;
             break;
         }
-        var colon: int = line.indexOf(":");
-        if (colon <= 0) {
+        var colon: int = raw.indexOf(":", pos);
+        if (colon <= pos || colon > lineEnd) {
             return r;
         }
-        var name: String = lowerAscii(line.substring(0, colon));
-        var value: String = line.substring(colon + 1, line.length).trim();
+        var name: String = raw.substring(pos, colon).toLower();
+        var value: String = raw.substring(colon + 1, lineEnd).trim();
         r.headers.set(name, value);
         r.headerCount = r.headerCount + 1;
         if (name == "content-length") {
             contentLength = parseUnsigned(value);
         }
+        pos = lineEnd + 2;
     }
     if (contentLength < 0) {
         contentLength = 0;

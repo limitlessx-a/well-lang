@@ -95,6 +95,7 @@ String 方法（全部字节语义）：
 | `s.indexOf(x)` / `s.indexOf(x, from)` | 子串位置，未找到 `-1` |
 | `s.contains(x)` / `s.startsWith(x)` / `s.endsWith(x)` | `bool` |
 | `s.trim()` | 去首尾 ASCII 空白，返回新 String |
+| `s.toLower()` / `s.toUpper()` | ASCII 大小写转换，返回新 String |
 | `s.split(sep)` | `Array<String>`；`sep` 为空串时不切分 |
 | `String.fromByte(n)` | 取低 8 位构造单字节 String |
 | `String.fromInt(n)` | 整数转十进制字符串（`long`/`int`/`bool`） |

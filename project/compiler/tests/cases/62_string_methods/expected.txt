@@ -25,3 +25,7 @@ Hello,World!
 true
 chain-ok
 World
+hello
+HELLO
+3
+upper-ok

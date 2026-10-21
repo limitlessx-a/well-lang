@@ -213,6 +213,8 @@ int well_str_starts_with(WellString *s, WellString *prefix);
 int well_str_ends_with(WellString *s, WellString *suffix);
 WellString *well_str_trim(WellString *s);
 WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx);
+WellString *well_str_to_lower(WellString *s);
+WellString *well_str_to_upper(WellString *s);
 WellString *well_str_from_int(long long v);
 
 /* Bytes: mutable, byte addressed. get(byteAt) returns -1 when out of range. */
@@ -243,6 +245,8 @@ long long well_str_index_of_from_take(WellString *s, WellString *needle, long lo
 int well_str_contains_take(WellString *s, WellString *needle);
 int well_str_starts_with_take(WellString *s, WellString *prefix);
 int well_str_ends_with_take(WellString *s, WellString *suffix);
+WellString *well_str_to_lower_take(WellString *s);
+WellString *well_str_to_upper_take(WellString *s);
 
 /* containers: Array<T> / Map<T> (homogeneous, String keys) */
 WellArray *well_array_new(WellCtx *ctx, int is_ref);

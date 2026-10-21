@@ -37,6 +37,12 @@ controller MainController extends Controller {
             print("chain-ok");
         }
         print(t.trim().substring(6, 11));
+        print("HeLLo".toLower());
+        print("HeLLo".toUpper());
+        print("aBc".toLower().length);
+        if ("AbC".toUpper() == "ABC") {
+            print("upper-ok");
+        }
     }
 }
 

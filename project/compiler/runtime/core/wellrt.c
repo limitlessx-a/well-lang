@@ -980,6 +980,18 @@ int well_str_starts_with_take(WellString *s, WellString *prefix) {
     return v;
 }
 
+WellString *well_str_to_lower_take(WellString *s) {
+    WellString *r = well_str_to_lower(s);
+    well_release(s);
+    return r;
+}
+
+WellString *well_str_to_upper_take(WellString *s) {
+    WellString *r = well_str_to_upper(s);
+    well_release(s);
+    return r;
+}
+
 int well_str_ends_with_take(WellString *s, WellString *suffix) {
     int v = well_str_ends_with(s, suffix);
     well_release(s);
@@ -1058,6 +1070,34 @@ WellString *well_str_from_int(long long v) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%lld", v);
     return well_string_new(buf);
+}
+
+WellString *well_str_to_lower(WellString *s) {
+    size_t i, n;
+    WellString *r;
+    if (!s) return well_string_lit("");
+    n = (size_t)s->len;
+    r = string_alloc_n(s->data, n);
+    for (i = 0; i < n; i++) {
+        char c = r->data[i];
+        if (c >= 'A' && c <= 'Z') r->data[i] = (char)(c - 'A' + 'a');
+    }
+    string_set_hash(r); /* content changed: refresh the cached hash */
+    return r;
+}
+
+WellString *well_str_to_upper(WellString *s) {
+    size_t i, n;
+    WellString *r;
+    if (!s) return well_string_lit("");
+    n = (size_t)s->len;
+    r = string_alloc_n(s->data, n);
+    for (i = 0; i < n; i++) {
+        char c = r->data[i];
+        if (c >= 'a' && c <= 'z') r->data[i] = (char)(c - 'a' + 'A');
+    }
+    string_set_hash(r); /* content changed: refresh the cached hash */
+    return r;
 }
 
 WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx) {

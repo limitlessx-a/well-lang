@@ -1185,6 +1185,11 @@ class Checker:
                 "startsWith": "str_starts_with",
                 "endsWith": "str_ends_with",
             }[name]
+        elif name in ("toLower", "toUpper"):
+            if e.args:
+                self.err(f"String.{name}() takes no arguments")
+            e.ty = "String"
+            e.method_op = "str_to_lower" if name == "toLower" else "str_to_upper"
         elif name == "trim":
             if e.args:
                 self.err("String.trim() takes no arguments")

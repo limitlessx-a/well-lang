@@ -156,7 +156,7 @@ class CodeGen:
             return True
         if isinstance(e, Call) and getattr(e, "method_op", None) in ("linked_popHead", "linked_popTail"):
             return self.is_ref(getattr(e, "ty", ""))
-        if isinstance(e, Call) and getattr(e, "method_op", None) in ("str_substring", "str_trim", "str_split"):
+        if isinstance(e, Call) and getattr(e, "method_op", None) in ("str_substring", "str_trim", "str_split", "str_to_lower", "str_to_upper"):
             return True
         if isinstance(e, Call) and getattr(e, "method_op", None) == "bytes_to_string":
             return True
@@ -438,6 +438,10 @@ class CodeGen:
                 return f"well_str_ends_with{take}({obj}, {self.gen_expr(e.args[0])})"
             if op == "str_trim":
                 return f"well_str_trim{take}({obj})"
+            if op == "str_to_lower":
+                return f"well_str_to_lower{take}({obj})"
+            if op == "str_to_upper":
+                return f"well_str_to_upper{take}({obj})"
             if op == "str_split":
                 return f"well_str_split{take}({obj}, {self.gen_expr(e.args[0])}, ctx)"
             if op == "bytes_push":
