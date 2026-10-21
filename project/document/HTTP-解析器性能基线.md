@@ -66,6 +66,19 @@ build/bench_well.exe
    - 中期把"原地扫描的 Well 解析器"做成可选实现，用同一套 conformance 测试对照；
    - 长期（等 TLS/keep-alive 等大头落地）再决定是否切换默认实现。
 
+## 4.1 keep-alive 后的端到端吞吐（同机补充测量）
+
+为区分"解析成本"和"连接成本"，对 `GET /ping → 200 ok` 的最小服务器用 Python 客户端做两组测量（各 2000 次请求，统计含 Python 客户端开销）：
+
+| 场景 | req/s | ms/req |
+|---|---|---|
+| 每次新建连接（Connection: close，旧行为） | ≈175 | 5.72 |
+| 单连接 keep-alive（新行为） | **≈15,000** | 0.067 |
+
+- 本机 loopback 的 connect 延迟本身就有 1–15 ms 抖动，旧行为的测量被连接建立淹没；
+- keep-alive 后每请求 ~67 µs，其中 C 解析器 ≈0.75 µs；即使换成当前 Well 解析器（13 µs）也只占约 20%，仍在可接受范围；
+- 结论：**连接处理（keep-alive / 单连接多请求）对吞吐的影响远大于解析器实现语言**。
+
 ## 5. 附带改动
 
 - `WellString` 增加 `len` 字段缓存字节长度：`s.length`、`s[i]`、`trim/startsWith/endsWith/split` 从 O(n) 降到 O(1)，避免解析循环里的 O(n²)。

@@ -1,0 +1,32 @@
+module demo.keepalive;
+
+event HttpRequestEvent extends Event {
+    reqId: long;
+    method: String;
+    path: String;
+    query: String;
+    body: String;
+}
+
+controller HttpController extends Controller {
+    run() {
+        Http.route("/a", "GET", AHandler);
+        Http.route("/b", "GET", BHandler);
+        Http.listen(18092);
+    }
+}
+
+handler AHandler extends Handler {
+    onEvent(e: HttpRequestEvent) {
+        Http.respond(e.reqId, 200, "alpha");
+    }
+}
+
+handler BHandler extends Handler {
+    onEvent(e: HttpRequestEvent) {
+        Http.respond(e.reqId, 200, "beta");
+        Http.stop();
+    }
+}
+
+entry HttpController;

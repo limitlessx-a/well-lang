@@ -34,7 +34,7 @@
 - **行级二进制序列化**：`well_encode` / `well_decode`，支持标量、String、Array/Map/Linked、ref（type_id+oid）；ref 可用 resolver 恢复
 - **JSON 解析**：`Json.parse(Type, String)` 按 Struct 元数据解析为 struct/event，支持嵌套对象、Array/Map/Linked、String 转义/Unicode、ref
 - **File/Host API**：`File.read/write/exists/remove`、`Host.nowMs/env/log`
-- **HTTP/1.1 服务器**：`Http.route/listen/respond/stop`；非阻塞 listener + 每请求 task 派发（handler 在 worker 上运行，可 emit 业务事件后由其他 oid 响应）+ 首响应生效 + 5s 超时 504；自写受限 parser；Windows Winsock 动态加载，Linux POSIX socket
+- **HTTP/1.1 服务器**：`Http.route/listen/respond/stop`；非阻塞 listener + 每连接 reader 线程（**keep-alive**，HTTP/1.1 默认开，15s 空闲关闭）+ 每请求 task 派发（handler 在 worker 上运行，可 emit 业务事件后由其他 oid 响应）+ 首响应生效 + 5s 超时 504；自写受限 parser；Windows Winsock 动态加载，Linux POSIX socket
 - **WebSocket**：`Ws.route/listen/send/close/stop`；非阻塞 listener + 每连接 reader 线程，open/message/close handler 作为 task 在连接 oid 上串行执行；`Ws.send/close` 可从任意 handler 按 clientId 调用；握手、text frame、ping/pong、close；独立端口
 - **MySQL 客户端（最小）**：自实现 wire protocol；`mysql_native_password` + `COM_QUERY`；`Mysql.connect/exec/queryJson/close`
 - **MySQL 连接池**：`Mysql.pool/execPool/queryJsonPool/closePool`；`WellMysqlPool` acquire/release
@@ -53,7 +53,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（66 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（67 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```
@@ -97,7 +97,7 @@ $env:WELL_RC_DEBUG = "1"
 - controller 的 `ctx.oid = 0`：不要在 controller 里创建业务数据；业务数据应在 handler（目标 oid）中创建。
 - `String.length` 按 UTF-8 字节数（设计稿要求码点）。
 - 生成 C 使用 C99（兼容 TinyCC）；线程/调度已实现（Windows CreateThread / POSIX pthread）。
-- HTTP/1.1 为最小实现：每连接一次请求（`Connection: close`）、无 keep-alive/TLS/HTTP2/chunked；`Http.listen` 非阻塞，listener 只做 accept + 解析并把请求投递成 task（不等待 handler），handler 在 worker 上运行，`Http.respond` 可在任意 handler 中首个生效，5s 未响应返回 504。
+- HTTP/1.1 仍是受限实现：支持 keep-alive（每连接一个 reader 线程、15s 空闲超时），但不支持 pipelining 并发、chunked、TLS/HTTP2；`Http.respond` 可在任意 handler 中首个生效，5s 未响应返回 504 并关闭连接。
 - Model 已拆为 Cache + Store（默认 MemoryStore，字节行）；MySQL/FileStore 尚未接入。
 
 详细实现、运行时设计、扩展指引见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)。

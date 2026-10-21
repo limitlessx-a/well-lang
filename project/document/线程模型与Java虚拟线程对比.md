@@ -1,7 +1,7 @@
 # Well 线程模型与 Java 虚拟线程对比
 
 > 本文描述当前 Well 运行时的多线程实现，并与 Java Virtual Threads 做对比。
-> 当前基线：66 个 .we 用例 + C 测试通过。
+> 当前基线：67 个 .we 用例 + C 测试通过。
 
 ---
 
@@ -159,8 +159,12 @@ HTTP 与 WS 都已接入 oid 调度器，MySQL 尚未接入：
 
 ```text
 HTTP listener thread
-  -> accept + 解析
-  -> well_schedule_task(req.oid, route_fn)   // 投递到请求 oid 的队列后立即回到 accept
+  -> accept，每个连接一个 reader thread
+
+HTTP conn reader thread
+  -> 解析请求 + keep-alive 循环（读完一个请求等响应写出，再读下一个）
+  -> well_schedule_task(req.oid, route_fn)   // 投递到请求 oid 的队列
+  -> 超时/关闭：连接线程自己关闭 socket
 
 WS listener thread
   -> accept，每个连接一个 reader thread（握手 + 收帧）
@@ -174,10 +178,12 @@ worker（oid runner）
 因此：
 
 - HTTP/WS handler 都跑在 worker 池，遵守同 oid 单 runner；
-- listener 不再被 handler 阻塞，连接之间不再串行（`59_http_concurrent` / `61_ws_concurrent` 覆盖）；
+- listener 只做 accept，连接之间完全并行（`59_http_concurrent` / `61_ws_concurrent` 覆盖）；
+- HTTP 连接支持 keep-alive（HTTP/1.1 默认，15s 空闲关闭），同一连接上的请求串行、连接之间并行；
 - `Http.respond`、`Ws.send/close` 可从任意 handler/线程调用；HTTP 首个响应生效，WS 按连接表查 clientId；
-- 5s 内无人响应的 HTTP 请求由清扫线程返回 504；
+- 5s 内无人响应的 HTTP 请求由清扫线程返回 504 并关闭连接；
 - 每连接/每请求都有引用计数与 service 计数，run loop 不会在连接仍存活时退出；
+- 每连接一个线程：高并发连接数受线程数限制（后续可换 I/O 多路复用）；
 - MySQL 仍是同步调用，是当前多线程模型剩余缺口。
 
 ### 2.7 当前没有的能力

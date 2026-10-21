@@ -8,14 +8,12 @@
 
 #ifdef _WIN32
 #include <windows.h>
-typedef unsigned long long WellSocket;
 typedef struct {
     unsigned short family;
     unsigned short port;
     unsigned long addr;
     char zero[8];
 } WellSockaddrIn;
-#define WELL_INVALID_SOCKET (~0ULL)
 static HMODULE g_ws;
 static int (*pWSAStartup)(int, void *);
 static int (*pWSACleanup)(void);
@@ -25,9 +23,14 @@ static int (*plisten)(WellSocket, int);
 static WellSocket (*paccept)(WellSocket, void *, int *);
 static int (*precv)(WellSocket, char *, int, int);
 static int (*psend)(WellSocket, const char *, int, int);
+static int (*pshutdown_fn)(WellSocket, int);
+static int (*psetsockopt)(WellSocket, int, int, const char *, int);
 static int (*pclosesocket)(WellSocket);
+#define WELL_SOL_SOCKET 0xFFFF
+#define WELL_SO_RCVTIMEO 0x1006
 #else
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <signal.h>
@@ -38,7 +41,6 @@ typedef struct {
     unsigned long addr;
     char zero[8];
 } WellSockaddrIn;
-#define WELL_INVALID_SOCKET (-1)
 #endif
 
 typedef struct HttpRoute {
@@ -58,6 +60,7 @@ static WellThread g_http_thread;
 static int g_http_thread_started = 0;
 static int g_http_service_held = 0;
 static WellHttpRequest *g_requests = NULL;
+static WellHttpConn *g_conns = NULL;
 static WellThread g_http_sweep_thread;
 static int g_http_sweep_started = 0;
 static int g_http_sweep_stop = 0;
@@ -65,6 +68,8 @@ static int g_http_sweep_stop = 0;
 /* A request that has not been answered within this window is answered with 504. */
 #define WELL_HTTP_TIMEOUT_MS 5000
 #define WELL_HTTP_SWEEP_BATCH 32
+/* An idle keep-alive connection is closed after this long without a request. */
+#define WELL_HTTP_IDLE_TIMEOUT_MS 15000
 
 static void http_lock_init(void) {
     if (g_http_inited) return;
@@ -86,9 +91,11 @@ static void load_winsock(void) {
     paccept = (WellSocket (*)(WellSocket, void *, int *))GetProcAddress(g_ws, "accept");
     precv = (int (*)(WellSocket, char *, int, int))GetProcAddress(g_ws, "recv");
     psend = (int (*)(WellSocket, const char *, int, int))GetProcAddress(g_ws, "send");
+    pshutdown_fn = (int (*)(WellSocket, int))GetProcAddress(g_ws, "shutdown");
+    psetsockopt = (int (*)(WellSocket, int, int, const char *, int))GetProcAddress(g_ws, "setsockopt");
     pclosesocket = (int (*)(WellSocket))GetProcAddress(g_ws, "closesocket");
     if (!pWSAStartup || !psocket || !pbind || !plisten || !paccept ||
-        !precv || !psend || !pclosesocket)
+        !precv || !psend || !pshutdown_fn || !psetsockopt || !pclosesocket)
         well_panic("HTTP: ws2_32 exports missing");
     {
         char wsa[512];
@@ -103,6 +110,11 @@ static WellSocket http_accept(WellSocket s) { return paccept(s, NULL, NULL); }
 static int http_recv(WellSocket s, char *b, int n) { return precv(s, b, n, 0); }
 static int http_send(WellSocket s, const char *b, int n) { return psend(s, b, n, 0); }
 static void http_close(WellSocket s) { if (s != WELL_INVALID_SOCKET) pclosesocket(s); }
+static void http_shutdown_socket(WellSocket s) { if (s != WELL_INVALID_SOCKET) pshutdown_fn(s, 2); }
+static int http_set_recv_timeout(WellSocket s, int ms) {
+    DWORD tv = (DWORD)ms;
+    return psetsockopt(s, WELL_SOL_SOCKET, WELL_SO_RCVTIMEO, (const char *)&tv, (int)sizeof(tv));
+}
 static unsigned short http_htons(unsigned short v) { return (unsigned short)((v << 8) | (v >> 8)); }
 #else
 static void load_winsock(void) {
@@ -115,6 +127,13 @@ static WellSocket http_accept(WellSocket s) { return accept(s, NULL, NULL); }
 static int http_recv(WellSocket s, char *b, int n) { return (int)recv(s, b, (size_t)n, 0); }
 static int http_send(WellSocket s, const char *b, int n) { return (int)send(s, b, (size_t)n, 0); }
 static void http_close(WellSocket s) { if (s >= 0) close(s); }
+static void http_shutdown_socket(WellSocket s) { if (s >= 0) shutdown(s, SHUT_RDWR); }
+static int http_set_recv_timeout(WellSocket s, int ms) {
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (long)(ms % 1000) * 1000;
+    return setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+}
 static unsigned short http_htons(unsigned short v) { return htons(v); }
 #endif
 
@@ -162,15 +181,45 @@ static const char *http_reason(int status) {
 }
 
 static void http_write_response(WellHttpRequest *req, int status, const char *body) {
-    char head[256];
+    char head[320];
     size_t blen = body ? strlen(body) : 0;
+    const char *ch = req->keep_alive ? "keep-alive" : "close";
     int n = snprintf(head, sizeof(head),
                      "HTTP/1.1 %d %s\r\nContent-Type: text/plain; charset=utf-8\r\n"
-                     "Content-Length: %lu\r\nConnection: close\r\n\r\n",
-                     status, http_reason(status), (unsigned long)blen);
+                     "Content-Length: %lu\r\nConnection: %s\r\n\r\n",
+                     status, http_reason(status), (unsigned long)blen, ch);
+    WellSocket fd;
     if (n < 0) return;
-    http_send_all((WellSocket)req->fd, head, strlen(head));
-    if (blen) http_send_all((WellSocket)req->fd, body, blen);
+    fd = req->conn ? req->conn->fd : WELL_INVALID_SOCKET;
+    if (fd == WELL_INVALID_SOCKET) return;
+    http_send_all(fd, head, strlen(head));
+    if (blen) http_send_all(fd, body, blen);
+}
+
+/* ---------- connection lifetime (all refcount ops hold g_http_lock) ---------- */
+
+static void http_conn_free(WellHttpConn *c) {
+    if (!c) return;
+    well_mutex_destroy(&c->lock);
+    well_cond_destroy(&c->cond);
+    free(c);
+}
+
+/* Caller holds g_http_lock. Unlinks on the last ref; returns the orphan to free. */
+static WellHttpConn *http_conn_unref_locked(WellHttpConn *c) {
+    WellHttpConn **pp;
+    if (!c) return NULL;
+    c->refs--;
+    if (c->refs > 0) return NULL;
+    pp = &g_conns;
+    while (*pp) {
+        if (*pp == c) {
+            *pp = c->next;
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+    return c;
 }
 
 /* ---------- request lifetime (all refcount ops hold g_http_lock) ---------- */
@@ -199,12 +248,13 @@ static WellHttpRequest *http_req_unref_locked(WellHttpRequest *req) {
     return req;
 }
 
-/* First response wins. Whoever claims `responded` owns the socket, writes and
- * closes it, then drops the list reference. Later calls become no-ops. */
+/* First response wins: whoever claims `responded` writes. The reader thread
+ * waits for `written` before reading the next request on a keep-alive socket. */
 void well_http_respond(long long req_id, int status, const char *body) {
     WellHttpRequest *req = NULL;
     WellHttpRequest *dead;
     WellHttpRequest *p;
+    WellHttpConn *conn;
     http_lock_init();
     well_mutex_lock(&g_http_lock);
     for (p = g_requests; p; p = p->next) {
@@ -213,18 +263,29 @@ void well_http_respond(long long req_id, int status, const char *body) {
             break;
         }
     }
-    if (!req || req->responded) {
+    if (!req) {
         well_mutex_unlock(&g_http_lock);
         return;
     }
-    req->responded = 1;
+    conn = req->conn;
+    well_mutex_lock(&conn->lock);
     well_mutex_unlock(&g_http_lock);
+    if (req->responded) {
+        well_mutex_unlock(&conn->lock);
+        return;
+    }
+    req->responded = 1;
+    well_mutex_unlock(&conn->lock);
 
     http_write_response(req, status, body);
-    http_close((WellSocket)req->fd);
+
+    well_mutex_lock(&conn->lock);
+    req->written = 1;
+    if (!req->keep_alive) conn->closed = 1;
+    well_cond_signal(&conn->cond);
+    well_mutex_unlock(&conn->lock);
 
     well_mutex_lock(&g_http_lock);
-    req->fd = (long long)WELL_INVALID_SOCKET;
     dead = http_req_unref_locked(req);
     well_mutex_unlock(&g_http_lock);
     if (dead) http_req_free(dead);
@@ -266,9 +327,27 @@ static int http_starts_ci(const char *s, const char *pre) {
     return 1;
 }
 
-/* Read one request. Returns 0 on success. */
+static int http_has_ci(const char *s, const char *needle) {
+    size_t n = strlen(needle);
+    while (*s) {
+        size_t i;
+        for (i = 0; i < n; i++) {
+            char a = s[i], b = needle[i];
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+            if (a != b) break;
+        }
+        if (i == n) return 1;
+        s++;
+    }
+    return 0;
+}
+
+/* Reads one request from a keep-alive connection.
+ * Returns 0 on success, -1 on a malformed request, -2 when the peer closed
+ * (or the idle read timeout elapsed) before sending a new request. */
 static int http_read_request(WellSocket fd, char **method, char **path,
-                             char **query, char **body) {
+                             char **query, char **body, int *keep_alive) {
     char *buf = (char *)malloc(65537);
     size_t cap = 65536;
     size_t len = 0;
@@ -278,6 +357,9 @@ static int http_read_request(WellSocket fd, char **method, char **path,
     char *target = NULL;
     char *m = NULL;
     int content_length = -1;
+    int http11 = 0;
+    int conn_close = 0;
+    int conn_keep = 0;
 
     if (!buf) well_panic("out of memory (HTTP request)");
     for (;;) {
@@ -288,8 +370,9 @@ static int http_read_request(WellSocket fd, char **method, char **path,
         }
         k = http_recv(fd, buf + len, (int)(cap - len));
         if (k <= 0) {
+            int eof = (len == 0);
             free(buf);
-            return -1;
+            return eof ? -2 : -1;
         }
         len += (size_t)k;
         buf[len] = '\0';
@@ -313,6 +396,7 @@ static int http_read_request(WellSocket fd, char **method, char **path,
         *sp2 = '\0';
         m = http_strdup(line);
         target = http_strdup(sp1 + 1);
+        http11 = (strcmp(sp2 + 1, "HTTP/1.1") == 0);
     }
 
     line = next + 2;
@@ -320,8 +404,12 @@ static int http_read_request(WellSocket fd, char **method, char **path,
         char *e = strstr(line, "\r\n");
         if (!e) break;
         *e = '\0';
-        if (http_starts_ci(line, "Content-Length:"))
+        if (http_starts_ci(line, "Content-Length:")) {
             content_length = atoi(line + 15);
+        } else if (http_starts_ci(line, "Connection:")) {
+            if (http_has_ci(line + 11, "close")) conn_close = 1;
+            if (http_has_ci(line + 11, "keep-alive")) conn_keep = 1;
+        }
         line = e + 2;
     }
     if (content_length < 0) content_length = 0;
@@ -353,6 +441,7 @@ static int http_read_request(WellSocket fd, char **method, char **path,
     }
     *path = target;
     *method = m;
+    *keep_alive = http11 ? !conn_close : conn_keep;
     free(buf);
     return 0;
 }
@@ -377,67 +466,104 @@ static void http_task_done(void *arg) {
     free(t);
 }
 
-/* Parses the request and hands it to a worker. Never blocks on the handler:
- * the listener returns to accept() immediately, so connections are served
- * concurrently and an HTTP task can safely emit business events that answer
- * later from another oid.
- * Returns 1 when the socket was handed over, 0 when the caller keeps it. */
-static int http_handle_connection(WellSocket fd) {
-    char *method = NULL, *path = NULL, *query = NULL, *body = NULL;
-    HttpRoute *route;
-    WellHttpRequest *req;
-    HttpTaskCtx *task;
+/* One reader thread per connection: parse a request, dispatch it, wait until
+ * the response bytes are written, then serve the next request when the client
+ * asked for keep-alive. */
+static void *http_conn_thread(void *arg) {
+    WellHttpConn *conn = (WellHttpConn *)arg;
+    WellSocket fd = conn->fd;
+    for (;;) {
+        char *method = NULL, *path = NULL, *query = NULL, *body = NULL;
+        int keep_alive = 0;
+        int rc;
+        HttpRoute *route;
+        WellHttpRequest *req;
+        HttpTaskCtx *task;
+        long long deadline;
+        int written, closed;
+        WellHttpRequest *deadreq;
+        WellHttpConn *deadconn;
 
-    if (http_read_request(fd, &method, &path, &query, &body) != 0) {
-        const char *bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        http_send_all(fd, bad, strlen(bad));
-        return 0;
-    }
-    route = http_find_route(method, path);
-    req = (WellHttpRequest *)calloc(1, sizeof(WellHttpRequest));
-    if (!req) well_panic("out of memory (HTTP request)");
-    req->id = well_id_util_get_id();
-    req->method = well_string_new(method);
-    req->path = well_string_new(path);
-    req->query = well_string_new(query);
-    req->body = well_string_new(body);
-    req->fd = (long long)fd;
-    req->responded = 0;
-    req->refs = 1; /* list reference */
-    req->deadline_ms = well_host_now_ms() + WELL_HTTP_TIMEOUT_MS;
+        rc = http_read_request(fd, &method, &path, &query, &body, &keep_alive);
+        if (rc == -2) break;
+        if (rc != 0) {
+            const char *bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            http_send_all(fd, bad, strlen(bad));
+            break;
+        }
+        route = http_find_route(method, path);
+        req = (WellHttpRequest *)calloc(1, sizeof(WellHttpRequest));
+        if (!req) well_panic("out of memory (HTTP request)");
+        req->id = well_id_util_get_id();
+        req->method = well_string_new(method);
+        req->path = well_string_new(path);
+        req->query = well_string_new(query);
+        req->body = well_string_new(body);
+        req->conn = conn;
+        req->keep_alive = keep_alive;
+        req->responded = 0;
+        req->written = 0;
+        req->refs = 2; /* list reference + this thread */
+        req->deadline_ms = well_host_now_ms() + WELL_HTTP_TIMEOUT_MS;
+        free(method);
+        free(path);
+        free(query);
+        free(body);
 
-    http_lock_init();
-    well_mutex_lock(&g_http_lock);
-    req->next = g_requests;
-    g_requests = req;
-    well_mutex_unlock(&g_http_lock);
-
-    free(method);
-    free(path);
-    free(query);
-    free(body);
-
-    if (!route) {
-        WellHttpRequest *dead;
-        req->responded = 1;
-        http_write_response(req, 404, "not found");
+        http_lock_init();
         well_mutex_lock(&g_http_lock);
-        dead = http_req_unref_locked(req);
+        req->next = g_requests;
+        g_requests = req;
+        conn->refs++; /* the in-flight request keeps the connection alive */
         well_mutex_unlock(&g_http_lock);
-        if (dead) http_req_free(dead);
-        http_close(fd);
-        return 0;
+
+        if (route) {
+            task = (HttpTaskCtx *)calloc(1, sizeof(HttpTaskCtx));
+            if (!task) well_panic("out of memory (HTTP task)");
+            task->req = req;
+            task->route = route;
+            well_mutex_lock(&g_http_lock);
+            req->refs++; /* task reference */
+            well_mutex_unlock(&g_http_lock);
+            well_schedule_task(req->id, http_task_entry, task, http_task_done);
+        } else {
+            well_http_respond(req->id, 404, "not found");
+        }
+
+        deadline = well_host_now_ms() + WELL_HTTP_TIMEOUT_MS + 2000;
+        well_mutex_lock(&conn->lock);
+        while (!req->written && !conn->closed) {
+            if (well_host_now_ms() >= deadline) break;
+            well_cond_wait(&conn->cond, &conn->lock);
+        }
+        written = req->written;
+        closed = conn->closed;
+        well_mutex_unlock(&conn->lock);
+
+        well_mutex_lock(&g_http_lock);
+        deadreq = http_req_unref_locked(req); /* this thread's reference */
+        deadconn = http_conn_unref_locked(conn); /* request's reference on the conn */
+        well_mutex_unlock(&g_http_lock);
+        if (deadreq) http_req_free(deadreq);
+        if (deadconn) http_conn_free(deadconn); /* cannot happen while we are here */
+
+        if (!written || closed || !keep_alive) break;
     }
 
-    task = (HttpTaskCtx *)calloc(1, sizeof(HttpTaskCtx));
-    if (!task) well_panic("out of memory (HTTP task)");
-    task->req = req;
-    task->route = route;
-    well_mutex_lock(&g_http_lock);
-    req->refs++; /* task reference keeps the request alive while the handler runs */
-    well_mutex_unlock(&g_http_lock);
-    well_schedule_task(req->id, http_task_entry, task, http_task_done);
-    return 1;
+    {
+        WellSocket to_close;
+        WellHttpConn *deadconn;
+        well_mutex_lock(&g_http_lock);
+        conn->closed = 1;
+        to_close = conn->fd;
+        conn->fd = WELL_INVALID_SOCKET;
+        deadconn = http_conn_unref_locked(conn); /* list reference */
+        well_mutex_unlock(&g_http_lock);
+        if (to_close != WELL_INVALID_SOCKET) http_close(to_close);
+        if (deadconn) http_conn_free(deadconn);
+    }
+    well_service_release();
+    return NULL;
 }
 
 /* Answers requests that no handler replied to, so sockets never leak. */
@@ -458,18 +584,27 @@ static void *http_sweeper_thread(void *arg) {
         }
         for (p = g_requests; p && n < WELL_HTTP_SWEEP_BATCH; p = p->next) {
             if (!p->responded && now >= p->deadline_ms) {
-                p->responded = 1;
-                expired[n++] = p;
+                WellHttpConn *c = p->conn;
+                well_mutex_lock(&c->lock);
+                if (!p->responded) {
+                    p->responded = 1;
+                    expired[n++] = p;
+                }
+                well_mutex_unlock(&c->lock);
             }
         }
         well_mutex_unlock(&g_http_lock);
         for (i = 0; i < n; i++) {
             WellHttpRequest *req = expired[i];
+            WellHttpConn *c = req->conn;
             WellHttpRequest *dead;
             http_write_response(req, 504, "gateway timeout");
-            http_close((WellSocket)req->fd);
+            well_mutex_lock(&c->lock);
+            req->written = 1;
+            c->closed = 1;
+            well_cond_signal(&c->cond);
+            well_mutex_unlock(&c->lock);
             well_mutex_lock(&g_http_lock);
-            req->fd = (long long)WELL_INVALID_SOCKET;
             dead = http_req_unref_locked(req);
             well_mutex_unlock(&g_http_lock);
             if (dead) http_req_free(dead);
@@ -483,6 +618,8 @@ static void *http_listener_thread(void *arg) {
     (void)arg;
     for (;;) {
         WellSocket s;
+        WellHttpConn *conn;
+        WellThread th;
         well_mutex_lock(&g_http_lock);
         if (!g_http_running) {
             well_mutex_unlock(&g_http_lock);
@@ -492,7 +629,23 @@ static void *http_listener_thread(void *arg) {
         well_mutex_unlock(&g_http_lock);
         s = http_accept(fd);
         if (s == WELL_INVALID_SOCKET) break;
-        if (!http_handle_connection(s)) http_close(s);
+
+        conn = (WellHttpConn *)calloc(1, sizeof(WellHttpConn));
+        if (!conn) well_panic("out of memory (HTTP connection)");
+        conn->fd = s;
+        conn->refs = 1; /* list reference */
+        conn->closed = 0;
+        well_mutex_init(&conn->lock);
+        well_cond_init(&conn->cond);
+        http_set_recv_timeout(s, WELL_HTTP_IDLE_TIMEOUT_MS);
+        well_service_hold(); /* keep the run loop alive while the client is connected */
+        well_mutex_lock(&g_http_lock);
+        conn->next = g_conns;
+        g_conns = conn;
+        well_mutex_unlock(&g_http_lock);
+        if (well_thread_start(&th, http_conn_thread, conn) != 0)
+            well_panic("HTTP: cannot start connection thread");
+        well_thread_detach(th);
     }
     well_mutex_lock(&g_http_lock);
     g_http_running = 0;
@@ -542,11 +695,21 @@ void well_http_listen(int port) {
 
 void well_http_stop(void) {
     WellSocket fd;
+    WellHttpConn *c;
     http_lock_init();
     well_mutex_lock(&g_http_lock);
     g_http_running = 0;
     fd = g_http_listen_fd;
     g_http_listen_fd = WELL_INVALID_SOCKET;
+    for (c = g_conns; c; c = c->next) {
+        well_mutex_lock(&c->lock);
+        c->closed = 1;
+        well_cond_signal(&c->cond);
+        well_mutex_unlock(&c->lock);
+        /* shutdown() (not close): the reader thread owns the socket and will
+         * close it; closing from here can abort the connection with RST. */
+        http_shutdown_socket(c->fd);
+    }
     well_cond_signal(&g_http_cond);
     well_mutex_unlock(&g_http_lock);
     http_close(fd);
@@ -565,7 +728,19 @@ void well_http_shutdown(void) {
         well_thread_join(g_http_sweep_thread);
         g_http_sweep_started = 0;
     }
-    /* The run loop has already stopped its workers: close whatever is in flight. */
+    /* Every connection holds a service count, so the run loop has already
+     * waited for all readers; this is a defensive cleanup. */
+    for (;;) {
+        WellHttpConn *c;
+        well_mutex_lock(&g_http_lock);
+        c = g_conns;
+        if (c) g_conns = c->next;
+        well_mutex_unlock(&g_http_lock);
+        if (!c) break;
+        http_close(c->fd);
+        c->fd = WELL_INVALID_SOCKET;
+        http_conn_free(c);
+    }
     for (;;) {
         WellHttpRequest *req;
         well_mutex_lock(&g_http_lock);
@@ -573,8 +748,6 @@ void well_http_shutdown(void) {
         if (req) g_requests = req->next;
         well_mutex_unlock(&g_http_lock);
         if (!req) break;
-        http_close((WellSocket)req->fd);
-        req->fd = (long long)WELL_INVALID_SOCKET;
         http_req_free(req);
     }
     if (g_http_service_held) {
@@ -586,4 +759,3 @@ void well_http_shutdown(void) {
 
 
 WellModule well_http_module = { "http", NULL, NULL, NULL, well_http_shutdown };
-

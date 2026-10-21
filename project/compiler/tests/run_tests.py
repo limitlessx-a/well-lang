@@ -217,6 +217,83 @@ def run_ws_case(name: str, d: str, exe: str) -> bool:
     return True
 
 
+def http_recv_response(s) -> bytes:
+    """Read exactly one HTTP response (Content-Length framed)."""
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        d = s.recv(4096)
+        if not d:
+            raise OSError("eof before headers")
+        buf += d
+    head, rest = buf.split(b"\r\n\r\n", 1)
+    cl = 0
+    for line in head.split(b"\r\n"):
+        low = line.lower()
+        if low.startswith(b"content-length:"):
+            cl = int(line.split(b":", 1)[1].strip())
+    while len(rest) < cl:
+        d = s.recv(4096)
+        if not d:
+            raise OSError("eof before body")
+        rest += d
+    return head + b"\r\n\r\n" + rest[:cl]
+
+
+def run_http_keepalive_case(name: str, d: str, exe: str) -> bool:
+    """Several requests on one connection; the server must keep it open."""
+    port = int(open(os.path.join(d, "http_port.txt"), encoding="utf-8").read().strip())
+    spec = open(os.path.join(d, "http_keepalive.txt"), "rb").read()
+    requests = [r for r in spec.replace(b"\r\n", b"\n").split(b"===\n") if r.strip()]
+    p = subprocess.Popen([exe], cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    s = None
+    for _ in range(50):
+        if p.poll() is not None:
+            out, err = p.communicate()
+            print(f"FAIL {name}: server exited early\n{out.decode(errors='replace')}\n{err.decode(errors='replace')}")
+            return False
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=0.2)
+            break
+        except OSError:
+            time.sleep(0.1)
+    if s is None:
+        p.kill()
+        print(f"FAIL {name}: server did not listen on {port}")
+        return False
+    all_resp = b""
+    try:
+        s.settimeout(5)
+        for req in requests:
+            s.sendall(req.replace(b"\n", b"\r\n"))
+            all_resp += http_recv_response(s)
+    except OSError as e:
+        p.kill()
+        p.communicate()
+        print(f"FAIL {name}: HTTP client error: {e}")
+        return False
+    finally:
+        s.close()
+    try:
+        out, err = p.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        print(f"FAIL {name}: server did not stop")
+        return False
+    if p.returncode != 0:
+        print(f"FAIL {name}: exit={p.returncode}\n{err.decode(errors='replace')}")
+        return False
+    resp = all_resp.decode("utf-8", errors="replace")
+    expect_file = os.path.join(d, "http_expect.txt")
+    want = norm(open(expect_file, encoding="utf-8").read())
+    got = norm(resp)
+    if any(line and line not in got for line in want.split("\n")):
+        print(f"FAIL {name}: HTTP response mismatch\n--- want ---\n{want}\n--- got ---\n{got}")
+        return False
+    print(f"PASS {name}")
+    return True
+
+
 def run_http_case(name: str, d: str, exe: str) -> bool:
     port_file = os.path.join(d, "http_port.txt")
     port = int(open(port_file, encoding="utf-8").read().strip())
@@ -245,12 +322,7 @@ def run_http_case(name: str, d: str, exe: str) -> bool:
         else:
             request = b"GET /hello HTTP/1.1\r\nHost: test\r\n\r\n"
         s.sendall(request)
-        chunks = []
-        while True:
-            data = s.recv(4096)
-            if not data:
-                break
-            chunks.append(data)
+        resp_bytes = http_recv_response(s)
     except OSError as e:
         p.kill()
         p.communicate()
@@ -268,7 +340,7 @@ def run_http_case(name: str, d: str, exe: str) -> bool:
     if p.returncode != 0:
         print(f"FAIL {name}: exit={p.returncode}\n{err.decode(errors='replace')}")
         return False
-    resp = b"".join(chunks).decode("utf-8", errors="replace")
+    resp = resp_bytes.decode("utf-8", errors="replace")
     expect_file = os.path.join(d, "http_expect.txt")
     want = norm(open(expect_file, encoding="utf-8").read())
     got = norm(resp)
@@ -310,11 +382,7 @@ def run_http_concurrent_case(name: str, d: str, exe: str) -> bool:
         s2 = socket.create_connection(("127.0.0.1", port), timeout=2)
         s2.settimeout(3)
         s2.sendall(b"GET /ok HTTP/1.1\r\nHost: test\r\n\r\n")
-        while True:
-            chunk = s2.recv(4096)
-            if not chunk:
-                break
-            data += chunk
+        data = http_recv_response(s2)
         latency = time.time() - started
     except OSError as e:
         p.kill()
@@ -376,6 +444,8 @@ def run_case(name: str) -> bool:
             return run_ws_concurrent_case(name, d, exe)
         return run_ws_case(name, d, exe)
     if os.path.isfile(os.path.join(d, "http_port.txt")):
+        if os.path.isfile(os.path.join(d, "http_keepalive.txt")):
+            return run_http_keepalive_case(name, d, exe)
         if os.path.isfile(os.path.join(d, "http_concurrent.txt")):
             return run_http_concurrent_case(name, d, exe)
         return run_http_case(name, d, exe)
