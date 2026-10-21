@@ -675,6 +675,21 @@ void well_set_ref(void *owner, void **slot, void *val) {
     }
 }
 
+/* Static-class field write: no owner oid, first writer wins nothing special;
+ * caller may transfer ownership of a freshly created value (owned=1). */
+void well_static_set_ref(void **slot, void *val, int owned) {
+    void *old;
+    if (!slot) return;
+    old = *slot;
+    if (old == val) {
+        if (owned && val) well_release(val);
+        return;
+    }
+    *slot = val;
+    if (val && !owned) well_retain(val);
+    if (old) well_release(old);
+}
+
 void well_check_value_oid(void *target, void *value, WellCtx *ctx) {
     WellObj *t = (WellObj *)target;
     WellObj *v = (WellObj *)value;

@@ -172,6 +172,8 @@ void well_track_owned(WellCtx *ctx, void *obj);  /* transfer ownership to frame 
 void well_check_oid(void *obj, WellCtx *ctx, const char *where);
 void well_check_value_oid(void *target, void *value, WellCtx *ctx);
 void well_set_ref(void *owner, void **slot, void *val);
+/* static-class field write (no owner object / oid checks) */
+void well_static_set_ref(void **slot, void *val, int owned);
 void well_freeze(void *obj);
 
 /* Model */

@@ -128,6 +128,8 @@ class Parser:
                 prog.decls.append(self.parse_func())
             elif self.at("namespace"):
                 prog.decls.append(self.parse_namespace())
+            elif self.at("static"):
+                prog.decls.append(self.parse_static())
             else:
                 self.err(f"unexpected top-level token {self.peek().value!r}")
         return prog
@@ -252,6 +254,29 @@ class Parser:
             methods.append(self.parse_method())
         self.eat("}")
         return HandlerDecl(name, base, methods)
+
+    def parse_static(self) -> StaticDecl:
+        self.eat("static")
+        name = self.eat_id()
+        self.eat("{")
+        fields = []
+        funcs = []
+        while not self.at("}"):
+            # `name: Type [= default];` is a field, otherwise a function
+            if self.peek().kind == "id" and self.i + 1 < len(self.toks) and self.toks[self.i + 1].value == ":":
+                fname = self.eat_id()
+                self.eat(":")
+                fty = self.parse_type()
+                default = None
+                if self.at("="):
+                    self.eat("=")
+                    default = self.parse_expr()
+                self.eat(";")
+                fields.append(FieldDecl(fname, fty, default))
+            else:
+                funcs.append(self.parse_method())
+        self.eat("}")
+        return StaticDecl(name, fields, funcs)
 
     def parse_namespace(self) -> NamespaceDecl:
         self.eat("namespace")

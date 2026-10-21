@@ -1,0 +1,14 @@
+module demo.staticerr;
+
+static RoleConfig {
+    maxLevel: int = 1;
+}
+
+controller MainController extends Controller {
+    run() {
+        var c: RoleConfig = new RoleConfig();
+        print(c.maxLevel);
+    }
+}
+
+entry MainController;

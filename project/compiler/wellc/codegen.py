@@ -204,6 +204,8 @@ class CodeGen:
         if isinstance(e, Ident):
             return e.name
         if isinstance(e, Member):
+            if isinstance(e.obj, Ident) and e.obj.name in getattr(self.p, "statics", {}):
+                return f"{e.obj.name}__{e.name}"
             if getattr(e, "is_enum", False) and isinstance(e.obj, Ident):
                 return self.enum_macro(e.obj.name, e.name)
             if getattr(e, "str_len", False):
@@ -771,6 +773,18 @@ class CodeGen:
 
     def gen_assign(self, s: Assign):
         tgt = s.target
+        if isinstance(tgt, Member) and isinstance(tgt.obj, Ident) and \
+           tgt.obj.name in getattr(self.p, "statics", {}):
+            sname = tgt.obj.name
+            st = self.p.statics[sname]
+            ftype = st["fields"][tgt.name].type.name
+            code = self.gen_expr(s.value)
+            if self.is_ref(ftype):
+                owned = 1 if self.is_owned(s.value) else 0
+                self.w(f"well_static_set_ref((void**)&{sname}__{tgt.name}, (void*)({code}), {owned});")
+            else:
+                self.w(f"{sname}__{tgt.name} = {code};")
+            return
         if isinstance(tgt, Ident):
             ty = self.env.get(tgt.name)
             if ty is None:
@@ -982,12 +996,14 @@ class CodeGen:
         self.gen_type_meta()
         self.gen_constructors()
         self.gen_destroyers()
+        self.gen_static_decls()
         self.gen_prototypes()
         self.gen_http_routes()
         self.gen_ws_routes()
         self.gen_timer_wrappers()
         self.gen_user_funcs()
         self.gen_namespaces()
+        self.gen_static_funcs()
         self.gen_controllers()
         self.gen_handlers()
         self.gen_main()
@@ -1127,6 +1143,11 @@ class CodeGen:
             ret = self.ctype(f.ret.name) if f.ret else "void"
             params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
             self.w(f"static {ret} {name}({params});")
+        for sname, st in getattr(self.p, "statics", {}).items():
+            for fname, f in st["funcs"].items():
+                ret = self.ctype(f.ret.name) if f.ret else "void"
+                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
+                self.w(f"static {ret} {sname}__{fname}({params});")
         for ns, funcs in getattr(self.p, "namespaces", {}).items():
             for fname, f in funcs.items():
                 ret = self.ctype(f.ret.name) if f.ret else "void"
@@ -1252,6 +1273,11 @@ class CodeGen:
             self.w("")
 
     def gen_namespaces(self):
+        for sname, st in getattr(self.p, "statics", {}).items():
+            for fname, f in st["funcs"].items():
+                ret = self.ctype(f.ret.name) if f.ret else "void"
+                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
+                self.w(f"static {ret} {sname}__{fname}({params});")
         for ns, funcs in getattr(self.p, "namespaces", {}).items():
             for fname, f in funcs.items():
                 ret = self.ctype(f.ret.name) if f.ret else "void"
@@ -1273,6 +1299,65 @@ class CodeGen:
                 self.ind -= 1
                 self.w("}")
                 self.w("")
+
+    def gen_static_funcs(self):
+        for sname, st in getattr(self.p, "statics", {}).items():
+            for fname, f in st["funcs"].items():
+                ret = self.ctype(f.ret.name) if f.ret else "void"
+                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
+                self.w(f"static {ret} {sname}__{fname}({params}) {{")
+                self.ind += 1
+                self.w("(void)ctx;")
+                self.env = {n: t.name for n, t in f.params}
+                self.current_ret = f.ret.name if f.ret else "void"
+                m = self.next_id()
+                mk = f"_m{m}"
+                self.w(f"int {mk} = well_ctx_mark(ctx);")
+                tm, old_tm = self.begin_frame_temp()
+                self.push_scope(mk, False)
+                self.gen_block(f.body)
+                self.emit_scope_release(mk)
+                self.pop_scope(mk)
+                self.end_frame_temp(tm, old_tm)
+                self.ind -= 1
+                self.w("}")
+                self.w("")
+
+    def gen_static_decls(self):
+        statics = getattr(self.p, "statics", {})
+        if not statics:
+            return
+        for sname, st in statics.items():
+            for fname, f in st["fields"].items():
+                cty = self.ctype(f.type.name)
+                if self.is_ref(f.type.name):
+                    self.w(f"static {cty} {sname}__{fname} = NULL;")
+                elif f.default is not None:
+                    self.w(f"static {cty} {sname}__{fname} = {self.gen_expr(f.default)};")
+                else:
+                    zero = "0" if cty != "double" else "0.0"
+                    if cty == "int" or cty == "long long":
+                        zero = "0"
+                    self.w(f"static {cty} {sname}__{fname} = {zero};")
+        self.w("")
+        self.w("static void well_statics_init(void) {")
+        self.ind += 1
+        for sname, st in statics.items():
+            for fname, f in st["fields"].items():
+                if self.is_ref(f.type.name) and f.default is not None and f.default.__class__.__name__ == "StrLit":
+                    self.w(f"{sname}__{fname} = well_string_lit(\"{c_escape(f.default.value)}\");")
+        self.ind -= 1
+        self.w("}")
+        self.w("")
+        self.w("static void well_statics_shutdown(void) {")
+        self.ind += 1
+        for sname, st in statics.items():
+            for fname, f in st["fields"].items():
+                if self.is_ref(f.type.name):
+                    self.w(f"if ({sname}__{fname}) {{ well_release((void*){sname}__{fname}); {sname}__{fname} = NULL; }}")
+        self.ind -= 1
+        self.w("}")
+        self.w("")
 
     def gen_controllers(self):
         for name, c in self.p.controllers.items():
@@ -1362,6 +1447,8 @@ class CodeGen:
         for name in self.type_ids:
             self.w(f"well_register_type(T_{name}, destroy_{name});")
             self.w(f"well_register_type_desc(&desc_{name});")
+        if getattr(self.p, "statics", {}):
+            self.w("well_statics_init();")
         if not self.entry:
             self.w('fprintf(stderr, "no entry controller\\n");')
             self.w("return 1;")
@@ -1375,6 +1462,8 @@ class CodeGen:
             self.ind -= 1
             self.w("}")
             self.w("well_run_loop();")
+        if getattr(self.p, "statics", {}):
+            self.w("well_statics_shutdown();")
         self.w("well_shutdown();")
         self.w("return 0;")
         self.ind -= 1

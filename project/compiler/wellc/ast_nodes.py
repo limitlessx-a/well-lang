@@ -232,6 +232,14 @@ class NamespaceDecl:
 
 
 @dataclass
+class StaticDecl:
+    """A static class: writable static fields + static functions, never instantiated."""
+    name: str
+    fields: list[FieldDecl]
+    funcs: list[MethodDecl]
+
+
+@dataclass
 class ImportDecl:
     path: str
 
@@ -247,6 +255,7 @@ class Program:
     uses_mysql: bool = False
     timer_calls: list = field(default_factory=list)  # {"event","handler","op"}
     namespaces: dict = field(default_factory=dict)  # name -> {func: MethodDecl}
+    statics: dict = field(default_factory=dict)     # name -> {"fields": {...}, "funcs": {...}}
 
     # lookup helpers filled by checker
     structs: dict = field(default_factory=dict)

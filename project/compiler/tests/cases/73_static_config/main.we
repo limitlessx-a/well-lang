@@ -1,0 +1,57 @@
+module demo.staticcfg;
+
+static RoleConfig {
+    maxLevel: int = 1;
+    title: String = "default";
+    locked: bool = false;
+    ratio: int = 5;
+
+    bump(): int {
+        RoleConfig.maxLevel = RoleConfig.maxLevel + 1;
+        return RoleConfig.maxLevel;
+    }
+
+    label(): String {
+        var b: Bytes = new Bytes();
+        b.appendStr(RoleConfig.title);
+        b.appendStr("!");
+        return b.toString();
+    }
+}
+
+namespace RoleUtil {
+    limit(): int {
+        return RoleConfig.maxLevel * 2;
+    }
+}
+
+event GoEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        print(RoleConfig.title);
+        print(RoleConfig.maxLevel);
+        RoleConfig.title = "runtime";
+        RoleConfig.maxLevel = 42;
+        RoleConfig.locked = true;
+        print(RoleConfig.bump());
+        print(RoleConfig.label());
+        RoleConfig.title = RoleConfig.label();
+        print(RoleUtil.limit());
+        print(RoleConfig.locked);
+        on(GoEvent, GoHandler);
+        emit(new GoEvent(0) { n: 1 });
+    }
+}
+
+handler GoHandler extends Handler {
+    onEvent(e: GoEvent) {
+        print(RoleConfig.title);
+        print(RoleConfig.maxLevel);
+        print(RoleUtil.limit());
+    }
+}
+
+entry MainController;

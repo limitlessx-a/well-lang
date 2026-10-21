@@ -23,6 +23,7 @@ class Checker:
         self.handler_event = {}   # handler -> TypeRef
         self.handler_method = {}  # handler -> method name
         self.namespaces = {}      # namespace -> {func name: MethodDecl}
+        self.statics = {}         # static name -> {"fields": {name: FieldDecl}, "funcs": {name: MethodDecl}}
         self.current_namespace = None
 
     # ---------- public ----------
@@ -47,6 +48,19 @@ class Checker:
             for fname, f in funcs.items():
                 self.check_method(f, {}, owner=None, is_func=True)
             self.current_namespace = old
+        for sname, st in self.statics.items():
+            for fname, f in st["fields"].items():
+                self.check_type_name(f.type.name)
+                if f.default is not None:
+                    if not isinstance(f.default, (IntLit, FloatLit, StrLit, BoolLit, NullLit, Ident)):
+                        self.err(f"static {sname}.{fname}: default value must be a literal or const")
+                    dt = self.check_expr(f.default, {})
+                    self.check_assignable(f.type.name, dt)
+            old = self.current_namespace
+            self.current_namespace = sname
+            for fname, f in st["funcs"].items():
+                self.check_method(f, {}, owner=None, is_func=True)
+            self.current_namespace = old
         if self.p.entry and self.p.entry not in self.controllers:
             self.err(f"entry '{self.p.entry}' is not a controller")
         # expose tables
@@ -56,6 +70,7 @@ class Checker:
         self.p.consts = self.consts
         self.p.funcs = self.funcs
         self.p.namespaces = self.namespaces
+        self.p.statics = self.statics
         self.p.controllers = self.controllers
         self.p.handlers = self.handlers
         self.p.handler_event = self.handler_event
@@ -90,6 +105,20 @@ class Checker:
                         self.err(f"namespace {d.name}: duplicate function {f.name}")
                     table[f.name] = f
                 self.namespaces[d.name] = table
+            elif isinstance(d, StaticDecl):
+                if d.name in self.statics or d.name in self.namespaces:
+                    self.err(f"duplicate type name {d.name}")
+                fields = {}
+                for f in d.fields:
+                    if f.name in fields:
+                        self.err(f"static {d.name}: duplicate field {f.name}")
+                    fields[f.name] = f
+                table = {}
+                for f in d.funcs:
+                    if f.name in table:
+                        self.err(f"static {d.name}: duplicate function {f.name}")
+                    table[f.name] = f
+                self.statics[d.name] = {"fields": fields, "funcs": table}
         # enums: normalize members (auto values, String default = member name)
         for name, d in self.enums.items():
             kind = None
@@ -263,6 +292,11 @@ class Checker:
             if tgt.name not in env:
                 self.err(f"assignment to undeclared variable {tgt.name}")
             return env[tgt.name]
+        if isinstance(tgt, Member) and isinstance(tgt.obj, Ident) and tgt.obj.name in self.statics:
+            st = self.statics[tgt.obj.name]
+            if tgt.name not in st["fields"]:
+                self.err(f"static {tgt.obj.name} has no field {tgt.name}")
+            return st["fields"][tgt.name].type.name
         if isinstance(tgt, Member):
             ot = self.check_expr(tgt.obj, env)
             ft = self.field_type(ot, tgt.name)
@@ -390,6 +424,14 @@ class Checker:
             e.ty = et
             e.elem_ty = et
         elif isinstance(e, Member):
+            # StaticName.field
+            if isinstance(e.obj, Ident) and e.obj.name in self.statics:
+                st = self.statics[e.obj.name]
+                if e.name not in st["fields"]:
+                    self.err(f"static {e.obj.name} has no field {e.name}")
+                e.ty = st["fields"][e.name].type.name
+                e.static_ref = (e.obj.name, e.name)
+                return e.ty
             # Enum.Member
             if isinstance(e.obj, Ident) and e.obj.name in self.enums:
                 en = self.enums[e.obj.name]
@@ -433,6 +475,8 @@ class Checker:
         elif isinstance(e, New):
             ty = e.type.name
             self.check_type_name(ty)
+            if ty in self.statics:
+                self.err(f"static {ty} cannot be instantiated")
             if ty == "Bytes":
                 if e.args or e.init:
                     self.err("new Bytes() takes no arguments")
@@ -514,9 +558,9 @@ class Checker:
 
     def check_call(self, e: Call, env):
         # NamespaceName.func(...)
-        if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name in self.namespaces:
+        if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and            (e.func.obj.name in self.namespaces or e.func.obj.name in self.statics):
             ns = e.func.obj.name
-            table = self.namespaces[ns]
+            table = self.namespaces.get(ns) or self.statics[ns]["funcs"]
             fname = e.func.name
             if fname not in table:
                 self.err(f"namespace {ns} has no function {fname}")
@@ -1165,8 +1209,14 @@ class Checker:
                 e.builtin = name
                 e.controller_name = cn
                 return
-            if self.current_namespace and name in self.namespaces.get(self.current_namespace, {}):
-                f = self.namespaces[self.current_namespace][name]
+            _sib = None
+            if self.current_namespace:
+                if self.current_namespace in self.namespaces:
+                    _sib = self.namespaces[self.current_namespace]
+                elif self.current_namespace in self.statics:
+                    _sib = self.statics[self.current_namespace]["funcs"]
+            if _sib is not None and name in _sib:
+                f = _sib[name]
                 if len(e.args) != len(f.params):
                     self.err(f"{name} expects {len(f.params)} arguments, got {len(e.args)}")
                 for i, a in enumerate(e.args):
@@ -1339,6 +1389,8 @@ class Checker:
             return
         if ty in BUILTIN:
             return
+        if ty in self.statics:
+            self.err(f"static {ty} cannot be used as a value type")
         if ty in self.structs or ty in ROOTS:
             return
         self.err(f"unknown type {ty}")
