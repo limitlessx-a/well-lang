@@ -1,0 +1,29 @@
+ok true
+method GET
+path /index.html
+query a=1&b=2
+version HTTP/1.1
+headers 4
+body hello world
+len 11
+host example.com
+ua well
+ok true
+method POST
+path /api
+query
+version HTTP/1.0
+headers 1
+body
+len 0
+host2
+bad
+ok true
+method PUT
+path /data
+query x=9
+version HTTP/1.1
+headers 1
+body abc
+len 3
+x x=9

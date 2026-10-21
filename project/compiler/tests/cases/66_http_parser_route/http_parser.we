@@ -1,0 +1,116 @@
+module demo.lib.httpparser;
+
+/* Reusable pure-Well HTTP/1.1 request parser (see 65_well_http_parser). */
+
+struct ParsedReq {
+    ok: bool;
+    method: String;
+    target: String;
+    path: String;
+    query: String;
+    version: String;
+    headers: Map<String>;
+    headerCount: int;
+    body: String;
+}
+
+func lowerAscii(s: String): String {
+    var b: Bytes = new Bytes();
+    var n: int = s.length;
+    for (var i: int = 0; i < n; i = i + 1) {
+        var c: int = s[i];
+        if (c >= 65 && c <= 90) {
+            c = c + 32;
+        }
+        b.push(c);
+    }
+    return b.toString();
+}
+
+func parseUnsigned(s: String): int {
+    var n: int = s.length;
+    if (n == 0) {
+        return -1;
+    }
+    var v: int = 0;
+    for (var i: int = 0; i < n; i = i + 1) {
+        var c: int = s[i];
+        if (c < 48 || c > 57) {
+            return -1;
+        }
+        v = v * 10 + (c - 48);
+    }
+    return v;
+}
+
+func parseRequest(raw: String): ParsedReq {
+    var r: ParsedReq = new ParsedReq();
+    r.ok = false;
+    r.headers = new Map<String>();
+    r.headerCount = 0;
+    r.query = "";
+    r.body = "";
+
+    var pos: int = 0;
+    var lineEnd: int = raw.indexOf("\r\n", pos);
+    if (lineEnd < 0) {
+        return r;
+    }
+    var line: String = raw.substring(pos, lineEnd);
+    pos = lineEnd + 2;
+
+    var sp1: int = line.indexOf(" ");
+    if (sp1 <= 0) {
+        return r;
+    }
+    var rest: String = line.substring(sp1 + 1, line.length);
+    var sp2: int = rest.indexOf(" ");
+    if (sp2 <= 0) {
+        return r;
+    }
+    r.method = line.substring(0, sp1);
+    var target: String = rest.substring(0, sp2);
+    r.target = target;
+    r.version = rest.substring(sp2 + 1, rest.length);
+
+    var qm: int = target.indexOf("?");
+    if (qm >= 0) {
+        r.path = target.substring(0, qm);
+        r.query = target.substring(qm + 1, target.length);
+    } else {
+        r.path = target;
+    }
+
+    var contentLength: int = -1;
+    while (true) {
+        lineEnd = raw.indexOf("\r\n", pos);
+        if (lineEnd < 0) {
+            return r;
+        }
+        line = raw.substring(pos, lineEnd);
+        pos = lineEnd + 2;
+        if (line.length == 0) {
+            break;
+        }
+        var colon: int = line.indexOf(":");
+        if (colon <= 0) {
+            return r;
+        }
+        var name: String = lowerAscii(line.substring(0, colon));
+        var value: String = line.substring(colon + 1, line.length).trim();
+        r.headers.set(name, value);
+        r.headerCount = r.headerCount + 1;
+        if (name == "content-length") {
+            contentLength = parseUnsigned(value);
+        }
+    }
+    if (contentLength < 0) {
+        contentLength = 0;
+    }
+    if (contentLength > raw.length - pos) {
+        return r;
+    }
+    r.body = raw.substring(pos, pos + contentLength);
+    r.ok = true;
+    return r;
+}

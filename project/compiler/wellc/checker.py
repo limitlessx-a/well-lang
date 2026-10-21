@@ -350,14 +350,14 @@ class Checker:
                 e.ty = "int"
                 e.str_index = True
                 e.str_obj = e.obj
-                return
+                return e.ty
             if ot == "Bytes":
                 it = self.check_expr(e.index, env)
                 if it not in ("int", "long"):
                     self.err("Bytes index must be int/long")
                 e.ty = "int"
                 e.bytes_index = True
-                return
+                return e.ty
             kind, et = self.container_info(ot)
             if kind == "array":
                 it = self.check_expr(e.index, env)
@@ -386,24 +386,24 @@ class Checker:
                 if ft is None and ot == "String" and e.name == "length":
                     e.ty = "int"
                     e.str_len = True
-                    return
+                    return e.ty
                 if ft is None and ot == "Bytes" and e.name == "length":
                     e.ty = "long"
                     e.container_len = "bytes"
-                    return
+                    return e.ty
                 kind, _ = self.container_info(ot)
                 if ft is None and kind == "array" and e.name == "length":
                     e.ty = "long"
                     e.container_len = "array"
-                    return
+                    return e.ty
                 if ft is None and kind == "map" and e.name == "size":
                     e.ty = "long"
                     e.container_len = "map"
-                    return
+                    return e.ty
                 if ft is None and kind == "linked" and e.name == "length":
                     e.ty = "long"
                     e.container_len = "linked"
-                    return
+                    return e.ty
                 if ft is None:
                     self.err(f"unknown field {e.name} on {ot}")
                 e.ty = ft
@@ -420,14 +420,14 @@ class Checker:
                     self.err("new Bytes() takes no arguments")
                 e.ty = "Bytes"
                 e.bytes_new = True
-                return
+                return e.ty
             kind, _ = self.container_info(ty)
             if kind:
                 if e.args or e.init:
                     self.err(f"new {ty}() takes no arguments")
                 e.ty = ty
                 e.container_new = kind
-                return
+                return e.ty
             if ty not in self.structs:
                 self.err(f"cannot construct unknown type {ty}")
             is_event = self.structs[ty]["kind"] == "event"
@@ -782,6 +782,15 @@ class Checker:
                     self.err("String.fromByte: code must be int/long")
                 e.ty = "String"
                 e.builtin = "str_from_byte"
+                return
+            if e.func.name == "fromInt":
+                if len(e.args) != 1:
+                    self.err("String.fromInt(value) expects 1 argument")
+                it = self.check_expr(e.args[0], env)
+                if it not in ("int", "long", "bool"):
+                    self.err("String.fromInt: value must be int/long")
+                e.ty = "String"
+                e.builtin = "str_from_int"
                 return
             self.err(f"unknown String method {e.func.name}")
         # container / String methods

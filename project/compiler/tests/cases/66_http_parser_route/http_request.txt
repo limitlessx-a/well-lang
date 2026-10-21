@@ -1,0 +1,9 @@
+POST /parse HTTP/1.1
+Host: t
+Content-Length: 72
+
+GET /inner?a=1 HTTP/1.1
+Host: inner.example
+Content-Length: 5
+
+hello

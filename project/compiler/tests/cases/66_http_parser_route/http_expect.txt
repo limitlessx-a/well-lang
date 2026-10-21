@@ -1,0 +1,2 @@
+HTTP/1.1 200 OK
+method=GET path=/inner query=a=1 host=inner.example headers=2 body=hello

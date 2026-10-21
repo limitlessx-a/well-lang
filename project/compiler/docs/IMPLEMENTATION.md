@@ -97,6 +97,7 @@ String 方法（全部字节语义）：
 | `s.trim()` | 去首尾 ASCII 空白，返回新 String |
 | `s.split(sep)` | `Array<String>`；`sep` 为空串时不切分 |
 | `String.fromByte(n)` | 取低 8 位构造单字节 String |
+| `String.fromInt(n)` | 整数转十进制字符串（`long`/`int`/`bool`） |
 
 Bytes（可变字节缓冲）：
 
@@ -427,7 +428,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（64 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（66 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

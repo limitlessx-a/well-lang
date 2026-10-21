@@ -101,6 +101,11 @@ void *well_new(size_t size, unsigned int type_id, long long oid);
 void well_register_type(unsigned int id, void (*destroy)(void *));
 void well_retain(void *obj);
 void well_release(void *obj);
+/* per-frame ownership of temporaries used as call arguments */
+void *well_temp_hold(void *p);
+int well_temp_mark(void);
+void well_temp_release_to(int mark);
+void well_temp_reset(void);
 void well_obj_free(void *obj);
 long long well_live_count(void);
 
@@ -207,6 +212,7 @@ int well_str_starts_with(WellString *s, WellString *prefix);
 int well_str_ends_with(WellString *s, WellString *suffix);
 WellString *well_str_trim(WellString *s);
 WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx);
+WellString *well_str_from_int(long long v);
 
 /* Bytes: mutable, byte addressed. get(byteAt) returns -1 when out of range. */
 WellBytes *well_bytes_new(WellCtx *ctx);

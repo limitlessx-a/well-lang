@@ -34,6 +34,7 @@ class CodeGen:
         self.type_kind: dict[str, str] = {}
         self.controller_ids: dict[str, int] = {}
         self.scope_stack: list[tuple[str, bool]] = []
+        self.temp_mark: str | None = None
         self.continue_stack: list[str | None] = []
         self.assign_ids()
         self.entry = prog.entry
@@ -139,7 +140,7 @@ class CodeGen:
             return True
         if isinstance(e, Call) and getattr(e, "model_op", None) in ("get", "peek", "findByOid"):
             return True
-        if isinstance(e, Call) and getattr(e, "builtin", None) in ("json_parse", "file_read", "host_env", "mysql_query_json", "mysql_query_json_pool"):
+        if isinstance(e, Call) and getattr(e, "builtin", None) in ("json_parse", "file_read", "host_env", "mysql_query_json", "mysql_query_json_pool", "str_from_int"):
             return True
         if isinstance(e, Binary) and e.op == "+" and getattr(e, "ty", None) == "String":
             return True
@@ -364,6 +365,8 @@ class CodeGen:
             return "well_id_util_get_id()"
         if getattr(e, "builtin", None) == "str_from_byte":
             return f"well_str_from_byte((int)({self.gen_expr(e.args[0])}))"
+        if getattr(e, "builtin", None) == "str_from_int":
+            return f"well_str_from_int((long long)({self.gen_expr(e.args[0])}))"
         if getattr(e, "method_op", None):
             op = e.method_op
             obj = self.gen_expr(e.method_obj)
@@ -487,8 +490,13 @@ class CodeGen:
         if getattr(e, "builtin", None) in ("print", "host_log"):
             raise Exception("print/Host.log is only supported as a statement")
         if getattr(e, "call_user", None):
-            args = ", ".join(["ctx"] + [self.gen_expr(a) for a in e.args])
-            return f"{e.call_user}({args})"
+            args = ["ctx"]
+            for a in e.args:
+                code = self.gen_expr(a)
+                if self.is_owned(a) and self.is_ref(getattr(a, "ty", "void")):
+                    code = f"well_temp_hold((void*)({code}))"
+                args.append(code)
+            return f"{e.call_user}({', '.join(args)})"
         raise Exception("unsupported call")
 
     # ---------- statements ----------
@@ -507,6 +515,8 @@ class CodeGen:
         self.w(f"well_ctx_release_from(ctx, {mark});")
 
     def emit_return_cleanup(self):
+        if self.temp_mark:
+            self.w(f"well_temp_release_to({self.temp_mark});")
         for mark, _ in reversed(self.scope_stack):
             self.emit_scope_release(mark)
 
@@ -924,14 +934,18 @@ class CodeGen:
             return
         rt = self.current_ret
         if self.is_ref(rt):
-            code = self.gen_expr(s.value)
-            if self.is_owned(s.value):
-                self.emit_return_cleanup()
-                self.w(f"return {code};")
-            else:
-                self.w(f"well_retain((void*)({code}));")
-                self.emit_return_cleanup()
-                self.w(f"return {code};")
+            # Evaluate first: the expression may use locals that the return
+            # cleanup is about to release (e.g. `return b.toString()`).
+            tmp = f"_rv{self.next_id()}"
+            self.w("{")
+            self.ind += 1
+            self.w(f"{self.ctype(rt)} {tmp} = {self.gen_expr(s.value)};")
+            if not self.is_owned(s.value):
+                self.w(f"well_retain((void*){tmp});")
+            self.emit_return_cleanup()
+            self.w(f"return {tmp};")
+            self.ind -= 1
+            self.w("}")
         else:
             code = self.gen_expr(s.value)
             self.emit_return_cleanup()
@@ -1160,6 +1174,18 @@ class CodeGen:
             self.w("}")
             self.w("")
 
+    def begin_frame_temp(self):
+        tid = self.next_id()
+        name = f"_tm{tid}"
+        self.w(f"int {name} = well_temp_mark();")
+        old = self.temp_mark
+        self.temp_mark = name
+        return name, old
+
+    def end_frame_temp(self, name: str, old):
+        self.w(f"well_temp_release_to({name});")
+        self.temp_mark = old
+
     def gen_user_funcs(self):
         for name, f in self.p.funcs.items():
             ret = self.ctype(f.ret.name) if f.ret else "void"
@@ -1172,10 +1198,12 @@ class CodeGen:
             m = self.next_id()
             mk = f"_m{m}"
             self.w(f"int {mk} = well_ctx_mark(ctx);")
+            tm, old_tm = self.begin_frame_temp()
             self.push_scope(mk, False)
             self.gen_block(f.body)
             self.emit_scope_release(mk)
             self.pop_scope(mk)
+            self.end_frame_temp(tm, old_tm)
             self.ind -= 1
             self.w("}")
             self.w("")
@@ -1212,11 +1240,13 @@ class CodeGen:
             m = self.next_id()
             mk = f"_m{m}"
             self.w(f"int {mk} = well_ctx_mark(ctx);")
+            tm, old_tm = self.begin_frame_temp()
             self.push_scope(mk, False)
             if run:
                 self.gen_block(run.body)
             self.emit_scope_release(mk)
             self.pop_scope(mk)
+            self.end_frame_temp(tm, old_tm)
             self.ind -= 1
             self.w("}")
             self.w("")
@@ -1241,11 +1271,13 @@ class CodeGen:
             mmark = self.next_id()
             mk = f"_m{mmark}"
             self.w(f"int {mk} = well_ctx_mark(ctx);")
+            tm, old_tm = self.begin_frame_temp()
             self.push_scope(mk, False)
             if m:
                 self.gen_block(m.body)
             self.emit_scope_release(mk)
             self.pop_scope(mk)
+            self.end_frame_temp(tm, old_tm)
             self.ind -= 1
             self.w("}")
             self.w("")

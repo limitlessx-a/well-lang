@@ -569,6 +569,7 @@ static void dispatch_event(WellEventNode *node) {
         } else {
             /* handler panic: release the frame and continue the task loop */
             well_panic_pop(old);
+            well_temp_reset();
         }
         well_ctx_clear((WellCtx *)&ctx);
     }
@@ -586,6 +587,7 @@ static void dispatch_task(long long oid, WellEventNode *node) {
         well_panic_pop(old);
     } else {
         well_panic_pop(old);
+        well_temp_reset();
     }
     well_ctx_clear(&ctx);
     if (node->task_done) node->task_done(node->task_arg);

@@ -1,0 +1,46 @@
+module demo.httpparserroute;
+
+import "http_parser";
+
+event HttpRequestEvent extends Event {
+    reqId: long;
+    method: String;
+    path: String;
+    query: String;
+    body: String;
+}
+
+controller HttpController extends Controller {
+    run() {
+        Http.route("/parse", "POST", ParseHandler);
+        Http.listen(18088);
+    }
+}
+
+handler ParseHandler extends Handler {
+    onEvent(e: HttpRequestEvent) {
+        var r: ParsedReq = parseRequest(e.body);
+        if (!r.ok) {
+            Http.respond(e.reqId, 400, "bad");
+            Http.stop();
+            return;
+        }
+        var out: Bytes = new Bytes();
+        out.appendStr("method=");
+        out.appendStr(r.method);
+        out.appendStr(" path=");
+        out.appendStr(r.path);
+        out.appendStr(" query=");
+        out.appendStr(r.query);
+        out.appendStr(" host=");
+        out.appendStr(r.headers.get("host"));
+        out.appendStr(" headers=");
+        out.appendStr(String.fromInt(r.headerCount));
+        out.appendStr(" body=");
+        out.appendStr(r.body);
+        Http.respond(e.reqId, 200, out.toString());
+        Http.stop();
+    }
+}
+
+entry HttpController;

@@ -491,6 +491,37 @@ void well_release(void *obj) {
     }
 }
 
+/* ---------- per-frame temporary ownership ----------
+ * Function arguments built from owned expressions (e.g. f(s.trim())) are
+ * evaluated into this per-frame stack; the callee's prologue records a mark
+ * and releases everything above it on return. */
+
+#define WELL_TEMP_MAX 1024
+typedef struct {
+    void *items[WELL_TEMP_MAX];
+    int n;
+} WellTempStack;
+
+static WELL_THREAD_LOCAL WellTempStack g_temps;
+
+void *well_temp_hold(void *p) {
+    if (p && g_temps.n < WELL_TEMP_MAX) g_temps.items[g_temps.n++] = p;
+    return p;
+}
+
+int well_temp_mark(void) { return g_temps.n; }
+
+void well_temp_release_to(int mark) {
+    if (mark < 0) mark = 0;
+    if (mark > g_temps.n) mark = g_temps.n;
+    while (g_temps.n > mark) {
+        void *p = g_temps.items[--g_temps.n];
+        well_release(p);
+    }
+}
+
+void well_temp_reset(void) { well_temp_release_to(0); }
+
 /* ---------- frame journal ---------- */
 void well_ctx_init(WellCtx *ctx, long long oid) {
     ctx->oid = oid;
@@ -1022,8 +1053,13 @@ WellString *well_str_trim(WellString *s) {
     return string_alloc_n(d + a, b - a);
 }
 
-WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx) {
-    WellArray *a = well_array_new(ctx, 1);
+WellString *well_str_from_int(long long v) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%lld", v);
+    return well_string_new(buf);
+}
+
+WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx) {    WellArray *a = well_array_new(ctx, 1);
     const char *d = s ? s->data : "";
     const char *sp = sep ? sep->data : "";
     size_t spl = strlen(sp);
