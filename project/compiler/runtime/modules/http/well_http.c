@@ -151,6 +151,31 @@ static void http_set_nodelay(WellSocket s) {
 static unsigned short http_htons(unsigned short v) { return htons(v); }
 #endif
 
+/* Interns the handful of request-line tokens seen on every request so the
+ * hot path does not allocate a new String for them. */
+static WellString *http_method_str(const char *m) {
+    static const char *names[] = {
+        "GET", "POST", "PUT", "DELETE", "HEAD", "PATCH", "OPTIONS", "TRACE", "CONNECT"
+    };
+    static WellString *vals[9];
+    static int inited = 0;
+    int i;
+    if (!inited) {
+        for (i = 0; i < 9; i++) vals[i] = well_string_lit(names[i]);
+        inited = 1;
+    }
+    for (i = 0; i < 9; i++) {
+        if (strcmp(names[i], m) == 0) return vals[i];
+    }
+    return well_string_new(m);
+}
+
+static WellString *http_empty_str(void) {
+    static WellString *empty = NULL;
+    if (!empty) empty = well_string_lit("");
+    return empty;
+}
+
 static char *http_strdup(const char *s) {
     size_t n = strlen(s);
     char *p = (char *)malloc(n + 1);
@@ -629,10 +654,10 @@ static void *http_conn_thread(void *arg) {
         req = http_req_alloc();
         if (!req) well_panic("out of memory (HTTP request)");
         req->id = well_id_util_get_id();
-        req->method = well_string_new(method ? method : "");
-        req->path = well_string_new(path ? path : "");
-        req->query = well_string_new(query ? query : "");
-        req->body = well_string_new(body ? body : "");
+        req->method = (method && method[0]) ? http_method_str(method) : http_empty_str();
+        req->path = (path && path[0]) ? well_string_new(path) : http_empty_str();
+        req->query = (query && query[0]) ? well_string_new(query) : http_empty_str();
+        req->body = (body && body[0]) ? well_string_new(body) : http_empty_str();
         req->conn = conn;
         req->keep_alive = keep_alive;
         req->responded = 0;
