@@ -292,85 +292,18 @@ void well_panic_pop(jmp_buf *old) {
     panic_env_set(old);
 }
 
-/* ---------- object graph (DAG enforcement) ---------- */
-typedef struct WellEdge {
-    WellObj *to;
-    int count;
-    struct WellEdge *next;
-} WellEdge;
-
-static WellLock g_graph_lock = 0;
-
-static int graph_seen(WellObj **seen, int n, WellObj *o) {
-    int i;
-    for (i = 0; i < n; i++) if (seen[i] == o) return 1;
-    return 0;
-}
-
-static int graph_reaches_rec(WellObj *cur, WellObj *target,
-                             WellObj ***seen, int *n, int *cap) {
-    WellEdge *e;
-    if (cur == target) return 1;
-    if (graph_seen(*seen, *n, cur)) return 0;
-    if (*n == *cap) {
-        int ncap = *cap ? *cap * 2 : 16;
-        WellObj **ns = (WellObj **)realloc(*seen, (size_t)ncap * sizeof(WellObj *));
-        if (!ns) well_panic("out of memory (DAG)");
-        *seen = ns;
-        *cap = ncap;
-    }
-    (*seen)[(*n)++] = cur;
-    for (e = (WellEdge *)cur->graph_edges; e; e = e->next) {
-        if (graph_reaches_rec(e->to, target, seen, n, cap)) return 1;
-    }
-    return 0;
-}
-
-static int graph_reaches(WellObj *start, WellObj *target) {
-    WellObj **seen = NULL;
-    int n = 0, cap = 0;
-    int r = graph_reaches_rec(start, target, &seen, &n, &cap);
-    free(seen);
-    return r;
-}
-
-static void well_graph_clear_edges(WellObj *o) {
-    WellEdge *e, *next;
-    if (!o) return;
-    well_lock_acquire(&g_graph_lock);
-    e = (WellEdge *)o->graph_edges;
-    o->graph_edges = NULL;
-    well_lock_release(&g_graph_lock);
-    while (e) {
-        next = e->next;
-        free(e);
-        e = next;
-    }
-}
-
+/* ---------- object graph ----------
+ * The runtime does not maintain a reference graph: cycle reclamation is done
+ * by oid-group TTL cleanup. These stubs keep the historical call sites cheap;
+ * a future cycle collector can re-introduce the edge lists. */
 void well_graph_add_edge(WellObj *from, WellObj *to) {
     (void)from;
     (void)to;
 }
 
 void well_graph_remove_edge(WellObj *from, WellObj *to) {
-    WellEdge **pp, *e;
-    if (!from || !to || to->type_id == WELL_T_STRING) return;
-    well_lock_acquire(&g_graph_lock);
-    pp = (WellEdge **)&from->graph_edges;
-    while (*pp) {
-        e = *pp;
-        if (e->to == to) {
-            if (--e->count <= 0) {
-                *pp = e->next;
-                free(e);
-            }
-            well_lock_release(&g_graph_lock);
-            return;
-        }
-        pp = &e->next;
-    }
-    well_lock_release(&g_graph_lock);
+    (void)from;
+    (void)to;
 }
 
 static void bytes_destroy(void *p);
@@ -502,7 +435,6 @@ void well_release(void *obj) {
     if (well_atomic_load(&o->rc) <= 0) well_panic("release of dead object");
     if (well_atomic_dec(&o->rc) == 0) {
         g_live--;
-        well_graph_clear_edges(o);
         well_event_unpin_payload(o);
         well_registry_remove(o);
         if (o->type_id < WELL_MAX_TYPES && g_destroy[o->type_id])

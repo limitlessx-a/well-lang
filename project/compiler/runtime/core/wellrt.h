@@ -24,7 +24,7 @@ typedef struct WellObj {
     unsigned int type_id;
     unsigned int flags;
     long long oid;
-    void *graph_edges;   /* internal: outgoing reference edges for DAG checks */
+    void *graph_edges;   /* reserved: object graph is not maintained (cycles -> oid TTL) */
     void *exec_pins;     /* internal: event execution pins */
     struct WellObj *reg_next; /* internal: oid registry */
     struct WellObj *reg_prev;

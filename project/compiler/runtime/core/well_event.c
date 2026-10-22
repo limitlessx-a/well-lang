@@ -661,6 +661,16 @@ static void dispatch_task(long long oid, WellEventNode *node) {
 }
 
 /* One scheduler worker. Returns when g_stop is set (non-main) or idle (main). */
+/* Caller holds the scheduler mutex. A plain signal may wake another worker,
+ * but only the main worker checks the idle-exit predicate, so use a broadcast
+ * when the predicate can have become true. */
+static void sched_notify(void) {
+    if (g_pending == 0 && g_service_count == 0)
+        well_cond_broadcast(&g_sched_cond);
+    else
+        well_cond_signal(&g_sched_cond);
+}
+
 static void sched_worker_loop(int wid, int is_main) {
     for (;;) {
         WellOidQueue *q;
@@ -686,7 +696,7 @@ static void sched_worker_loop(int wid, int is_main) {
                 return;
             }
             well_cond_wait(&g_sched_cond, &g_sched_mutex);
-        }
+            }
         q->running = 1;
         {
             node = q->head;
@@ -699,18 +709,18 @@ static void sched_worker_loop(int wid, int is_main) {
                 dispatch_event(node);
                 well_release(node->event);
             }
-        }
+            }
 
         well_mutex_lock(&g_sched_mutex);
         node_pool_put(node);
         q->running = 0;
         if (q->head) {
             if (!q->scheduled) ready_push(q);
-            well_cond_signal(&g_sched_cond);
+            sched_notify();
         } else {
             if (g_pending > 0) g_pending--;
             qmap_remove(q);
-            well_cond_signal(&g_sched_cond);
+            sched_notify();
         }
         well_mutex_unlock(&g_sched_mutex);
     }
