@@ -203,11 +203,14 @@ static void well_pool_shutdown(void) {
 }
 /* Panic target for the current thread (setjmp/longjmp boundary per task). */
 static WellTlsKey g_panic_key = WELL_TLS_KEY_INVALID;
+static void panic_tls_ensure(void) {
+    if (g_panic_key == WELL_TLS_KEY_INVALID) g_panic_key = well_tls_key_create(NULL);
+}
 static jmp_buf *panic_env_get(void) {
     return (jmp_buf *)well_tls_get(g_panic_key);
 }
 static void panic_env_set(jmp_buf *p) {
-    if (g_panic_key == WELL_TLS_KEY_INVALID) g_panic_key = well_tls_key_create(NULL);
+    panic_tls_ensure();
     well_tls_set(g_panic_key, p);
 }
 static WellMutex g_print_mutex;
@@ -340,12 +343,17 @@ void well_graph_remove_edge(WellObj *from, WellObj *to) {
 }
 
 static void bytes_destroy(void *p);
+static void temp_tls_ensure(void);
 
 void well_init(void) {
     pool_cfg_init();
     memset(g_destroy, 0, sizeof(g_destroy));
     memset(g_type_desc, 0, sizeof(g_type_desc));
     g_inited = 1;
+    /* Allocate per-thread keys once, single-threaded, before workers start. */
+    panic_tls_ensure();
+    src_tls_ensure();
+    temp_tls_ensure();
     well_mutex_init(&g_print_mutex);
     g_print_inited = 1;
     well_register_type(WELL_T_STRING, string_destroy);
@@ -489,10 +497,12 @@ typedef struct {
 } WellTempStack;
 
 static WellTlsKey g_temps_key = WELL_TLS_KEY_INVALID;
+static void temp_tls_ensure(void) {
+    if (g_temps_key == WELL_TLS_KEY_INVALID) g_temps_key = well_tls_key_create(free);
+}
 static WellTempStack *temp_stack(void) {
     WellTempStack *t;
-    if (g_temps_key == WELL_TLS_KEY_INVALID)
-        g_temps_key = well_tls_key_create(free);
+    temp_tls_ensure();
     if (g_temps_key == WELL_TLS_KEY_INVALID) return NULL;
     t = (WellTempStack *)well_tls_get(g_temps_key);
     if (!t) {

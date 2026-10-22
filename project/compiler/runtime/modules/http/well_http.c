@@ -68,12 +68,15 @@ static WellHttpConn *g_conns = NULL;
 /* Request whose handler is running on this thread: lets Http.respond skip the
  * global request-hash lock for the common synchronous-response case. */
 static WellTlsKey g_current_req_key = WELL_TLS_KEY_INVALID;
+static void current_req_tls_ensure(void) {
+    if (g_current_req_key == WELL_TLS_KEY_INVALID)
+        g_current_req_key = well_tls_key_create(NULL);
+}
 static WellHttpRequest *current_req_get(void) {
     return (WellHttpRequest *)well_tls_get(g_current_req_key);
 }
 static void current_req_set(WellHttpRequest *r) {
-    if (g_current_req_key == WELL_TLS_KEY_INVALID)
-        g_current_req_key = well_tls_key_create(NULL);
+    current_req_tls_ensure();
     well_tls_set(g_current_req_key, r);
 }
 #define WELL_HTTP_REQ_POOL_MAX 64
@@ -91,6 +94,7 @@ static int g_http_sweep_stop = 0;
 
 static void http_lock_init(void) {
     if (g_http_inited) return;
+    current_req_tls_ensure();
     well_mutex_init(&g_http_lock);
     well_cond_init(&g_http_cond);
     g_http_inited = 1;
