@@ -74,10 +74,20 @@ python wellc.py build examples\features.we -o build\features.exe
 python wellc.py emit-c examples\hello.we -o build\hello.c
 ```
 
-运行测试：
+运行测试 / 一键回归：
 
 ```powershell
-python tests\run_tests.py
+python tools\verify.py            # 全量：112 个 .we 用例 + C 测试
+python tools\verify.py --quick    # 只跑 .we 用例
+python tools\verify.py --full     # 全量 + HTTP bench smoke
+```
+
+性能基线（可复现，非临时脚本）：
+
+```powershell
+python tools\bench.py --scenario all --json build\bench\result.json
+python tools\bench.py --scenario http --save-baseline build\bench\baseline.json
+python tools\bench.py --compare build\bench\baseline.json --threshold 30
 ```
 
 编译器查找顺序：环境变量 `WELL_CC` → PATH 中的 `tcc`/`gcc`/`clang` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`。

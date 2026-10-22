@@ -1,0 +1,24 @@
+name: verify
+
+# Provisional POSIX CI. The project is developed on Windows/TCC; this workflow
+# exists to surface Linux/gcc assumptions in the runtime, compiler and tests.
+on:
+  push:
+    paths:
+      - "project/compiler/**"
+      - ".github/workflows/verify.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install C toolchain
+        run: sudo apt-get update && sudo apt-get install -y tcc
+      - name: Regression (.we cases)
+        run: python project/compiler/tools/verify.py --quick

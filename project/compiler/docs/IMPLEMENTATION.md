@@ -498,6 +498,15 @@ python wellc.py emit-c examples\hello.we -o build\hello.c
 
 # 端到端测试（112 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
+
+# 一键回归（推荐）：全部用例 + C 测试；--quick 只跑 .we；--full 加 bench smoke
+python tools\verify.py [--quick|--full]
+
+# 可复现性能基线：http_latency / http_throughput / parser
+python tools\bench.py --scenario all --json build\bench\result.json
+python tools\bench.py --compare build\bench\baseline.json --threshold 30
+# 基线文件与场景说明见 tools/README.md
+# POSIX CI（provisional）：.github/workflows/verify.yml，Linux + tcc 跑 verify.py --quick
 ```
 
 C 编译器查找顺序：`WELL_CC` → PATH 中 `tcc`/`gcc`/`clang` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`。

@@ -1,0 +1,26 @@
+// Benchmark HTTP server template. tools/bench.py substitutes {{PORT}} before
+// building; do not build this file directly.
+module bench.httpserver;
+
+event HttpRequestEvent extends Event {
+    reqId: long;
+    method: String;
+    path: String;
+    query: String;
+    body: String;
+}
+
+controller BenchController extends Controller {
+    run() {
+        Http.route("/bench", "GET", BenchHandler);
+        Http.listen({{PORT}});
+    }
+}
+
+handler BenchHandler extends Handler {
+    onEvent(e: HttpRequestEvent) {
+        Http.respond(e.reqId, 200, "ok");
+    }
+}
+
+entry BenchController;
