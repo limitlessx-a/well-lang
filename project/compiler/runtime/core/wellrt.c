@@ -552,16 +552,33 @@ void well_ctx_init(WellCtx *ctx, long long oid) {
     ctx->pins = NULL;
     ctx->pin_n = 0;
     ctx->pin_cap = 0;
+    ctx->heap_refs = 0;
+    ctx->heap_pins = 0;
+}
+
+/* Grow the frame journal, starting from the inline storage. */
+static void ctx_refs_reserve(WellCtx *ctx, int need) {
+    int ncap;
+    void **nr;
+    if (ctx->cap >= need) return;
+    if (!ctx->refs) {
+        ctx->refs = ctx->inline_refs;
+        ctx->cap = WELL_CTX_INLINE_REFS;
+        if (ctx->cap >= need) return;
+    }
+    ncap = ctx->cap * 2;
+    while (ncap < need) ncap *= 2;
+    nr = (void **)malloc((size_t)ncap * sizeof(void *));
+    if (!nr) well_panic("out of memory (ctx refs)");
+    memcpy(nr, ctx->refs, (size_t)ctx->n * sizeof(void *));
+    if (ctx->heap_refs) free(ctx->refs);
+    ctx->refs = nr;
+    ctx->cap = ncap;
+    ctx->heap_refs = 1;
 }
 
 static void ctx_push(WellCtx *ctx, void *obj) {
-    if (ctx->n == ctx->cap) {
-        int ncap = ctx->cap ? ctx->cap * 2 : 8;
-        void **nr = (void **)realloc(ctx->refs, (size_t)ncap * sizeof(void *));
-        if (!nr) well_panic("out of memory (ctx refs)");
-        ctx->refs = nr;
-        ctx->cap = ncap;
-    }
+    ctx_refs_reserve(ctx, ctx->n + 1);
     ctx->refs[ctx->n++] = obj;
 }
 
@@ -587,11 +604,20 @@ void well_ctx_pin(WellCtx *ctx, long long oid) {
         }
     }
     if (ctx->pin_n == ctx->pin_cap) {
-        int ncap = ctx->pin_cap ? ctx->pin_cap * 2 : 8;
-        WellOidPin *np = (WellOidPin *)realloc(ctx->pins, (size_t)ncap * sizeof(WellOidPin));
-        if (!np) well_panic("out of memory (ctx pins)");
-        ctx->pins = np;
-        ctx->pin_cap = ncap;
+        if (!ctx->pins) {
+            ctx->pins = ctx->inline_pins;
+            ctx->pin_cap = WELL_CTX_INLINE_PINS;
+        }
+        if (ctx->pin_n == ctx->pin_cap) {
+            int ncap = ctx->pin_cap * 2;
+            WellOidPin *np = (WellOidPin *)malloc((size_t)ncap * sizeof(WellOidPin));
+            if (!np) well_panic("out of memory (ctx pins)");
+            memcpy(np, ctx->pins, (size_t)ctx->pin_n * sizeof(WellOidPin));
+            if (ctx->heap_pins) free(ctx->pins);
+            ctx->pins = np;
+            ctx->pin_cap = ncap;
+            ctx->heap_pins = 1;
+        }
     }
     ctx->pins[ctx->pin_n].oid = oid;
     ctx->pins[ctx->pin_n].count = 1;
@@ -652,18 +678,20 @@ void well_ctx_release_from(WellCtx *ctx, int mark) {
 void well_ctx_clear(WellCtx *ctx) {
     int i;
     for (i = 0; i < ctx->n; i++) well_release(ctx->refs[i]);
-    free(ctx->refs);
+    if (ctx->heap_refs && ctx->refs) free(ctx->refs);
     ctx->refs = NULL;
     ctx->n = 0;
     ctx->cap = 0;
+    ctx->heap_refs = 0;
     for (i = 0; i < ctx->pin_n; i++) {
         int k;
         for (k = 0; k < ctx->pins[i].count; k++) well_oid_unpin(ctx->pins[i].oid);
     }
-    free(ctx->pins);
+    if (ctx->heap_pins && ctx->pins) free(ctx->pins);
     ctx->pins = NULL;
     ctx->pin_n = 0;
     ctx->pin_cap = 0;
+    ctx->heap_pins = 0;
 }
 
 /* ---------- ownership ---------- */

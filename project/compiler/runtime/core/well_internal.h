@@ -8,7 +8,8 @@
 #include <windows.h>
 #define WELL_THREAD_LOCAL __declspec(thread)
 typedef CRITICAL_SECTION WellMutex;
-typedef HANDLE WellCond;
+/* CONDITION_VARIABLE is pointer-sized; wrapped to keep the header dependency-free */
+typedef struct WellCondImpl { void *cv; } WellCond;
 typedef HANDLE WellThread;
 #else
 #include <pthread.h>

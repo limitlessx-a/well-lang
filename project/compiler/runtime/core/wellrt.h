@@ -62,6 +62,8 @@ typedef struct WellOidPin {
     int count;
 } WellOidPin;
 
+#define WELL_CTX_INLINE_REFS 16
+#define WELL_CTX_INLINE_PINS 4
 typedef struct WellCtx {
     long long oid;
     void **refs;
@@ -70,6 +72,11 @@ typedef struct WellCtx {
     WellOidPin *pins;
     int pin_n;
     int pin_cap;
+    /* inline storage avoids one malloc/free per handler for the common case */
+    void *inline_refs[WELL_CTX_INLINE_REFS];
+    int heap_refs;
+    WellOidPin inline_pins[WELL_CTX_INLINE_PINS];
+    int heap_pins;
 } WellCtx;
 
 /* runtime */
