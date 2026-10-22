@@ -54,7 +54,11 @@ def find_cc() -> str:
     p = os.path.join(REPO_ROOT, "tool_ai", "tools", "tcc", "tcc", "tcc.exe")
     if os.path.isfile(p):
         return p
-    for name in ("tcc", "gcc", "clang"):
+    # POSIX: TinyCC 0.9.27 has no __atomic_*/__sync_* builtins, which the
+    # multithreaded runtime needs, so prefer gcc/clang there. TCC stays the
+    # default on Windows (where the runtime uses Interlocked instead).
+    names = ("gcc", "clang", "tcc") if os.name != "nt" else ("tcc", "gcc", "clang")
+    for name in names:
         p = shutil.which(name)
         if p:
             return p

@@ -201,20 +201,15 @@ static void well_pool_shutdown(void) {
     g_pool_bytes = 0;
     well_lock_release(&g_pool_lock);
 }
-#ifdef _WIN32
-/* TCC's __declspec(thread) is not per-thread for CreateThread; use Win32 TLS. */
-static DWORD g_panic_tls = TLS_OUT_OF_INDEXES;
+/* Panic target for the current thread (setjmp/longjmp boundary per task). */
+static WellTlsKey g_panic_key = WELL_TLS_KEY_INVALID;
 static jmp_buf *panic_env_get(void) {
-    return (g_panic_tls == TLS_OUT_OF_INDEXES) ? NULL : (jmp_buf *)TlsGetValue(g_panic_tls);
+    return (jmp_buf *)well_tls_get(g_panic_key);
 }
 static void panic_env_set(jmp_buf *p) {
-    if (g_panic_tls != TLS_OUT_OF_INDEXES) TlsSetValue(g_panic_tls, p);
+    if (g_panic_key == WELL_TLS_KEY_INVALID) g_panic_key = well_tls_key_create(NULL);
+    well_tls_set(g_panic_key, p);
 }
-#else
-static WELL_THREAD_LOCAL jmp_buf *g_panic_env = NULL;
-static jmp_buf *panic_env_get(void) { return g_panic_env; }
-static void panic_env_set(jmp_buf *p) { g_panic_env = p; }
-#endif
 static WellMutex g_print_mutex;
 static int g_print_inited = 0;
 
@@ -286,35 +281,26 @@ long long well_int_mod(long long a, long long b) {
     return a % b;
 }
 
-#ifdef _WIN32
-static DWORD g_src_file_tls = TLS_OUT_OF_INDEXES;
-static DWORD g_src_line_tls = TLS_OUT_OF_INDEXES;
+/* Source position of the statement currently running on this thread. */
+static WellTlsKey g_src_file_key = WELL_TLS_KEY_INVALID;
+static WellTlsKey g_src_line_key = WELL_TLS_KEY_INVALID;
 static void src_tls_ensure(void) {
-    if (g_src_file_tls == TLS_OUT_OF_INDEXES) {
-        g_src_file_tls = TlsAlloc();
-        g_src_line_tls = TlsAlloc();
-    }
+    if (g_src_file_key == WELL_TLS_KEY_INVALID)
+        g_src_file_key = well_tls_key_create(NULL);
+    if (g_src_line_key == WELL_TLS_KEY_INVALID)
+        g_src_line_key = well_tls_key_create(NULL);
 }
 void well_source_set(const char *file, int line) {
     src_tls_ensure();
-    if (g_src_file_tls != TLS_OUT_OF_INDEXES)
-        TlsSetValue(g_src_file_tls, (void *)file);
-    if (g_src_line_tls != TLS_OUT_OF_INDEXES)
-        TlsSetValue(g_src_line_tls, (void *)(intptr_t)line);
+    well_tls_set(g_src_file_key, (void *)file);
+    well_tls_set(g_src_line_key, (void *)(intptr_t)line);
 }
 static const char *src_file_get(void) {
-    return (g_src_file_tls == TLS_OUT_OF_INDEXES) ? NULL : (const char *)TlsGetValue(g_src_file_tls);
+    return (const char *)well_tls_get(g_src_file_key);
 }
 static int src_line_get(void) {
-    return (g_src_line_tls == TLS_OUT_OF_INDEXES) ? 0 : (int)(intptr_t)TlsGetValue(g_src_line_tls);
+    return (int)(intptr_t)well_tls_get(g_src_line_key);
 }
-#else
-static __thread const char *g_src_file = NULL;
-static __thread int g_src_line = 0;
-void well_source_set(const char *file, int line) { g_src_file = file; g_src_line = line; }
-static const char *src_file_get(void) { return g_src_file; }
-static int src_line_get(void) { return g_src_line; }
-#endif
 
 void well_panic(const char *msg) {
     jmp_buf *env = panic_env_get();
@@ -360,10 +346,6 @@ void well_init(void) {
     memset(g_destroy, 0, sizeof(g_destroy));
     memset(g_type_desc, 0, sizeof(g_type_desc));
     g_inited = 1;
-#ifdef _WIN32
-    if (g_panic_tls == TLS_OUT_OF_INDEXES)
-        g_panic_tls = TlsAlloc();
-#endif
     well_mutex_init(&g_print_mutex);
     g_print_inited = 1;
     well_register_type(WELL_T_STRING, string_destroy);
@@ -506,20 +488,49 @@ typedef struct {
     int n;
 } WellTempStack;
 
-static WELL_THREAD_LOCAL WellTempStack g_temps;
+static WellTlsKey g_temps_key = WELL_TLS_KEY_INVALID;
+static WellTempStack *temp_stack(void) {
+    WellTempStack *t;
+    if (g_temps_key == WELL_TLS_KEY_INVALID)
+        g_temps_key = well_tls_key_create(free);
+    if (g_temps_key == WELL_TLS_KEY_INVALID) return NULL;
+    t = (WellTempStack *)well_tls_get(g_temps_key);
+    if (!t) {
+        t = (WellTempStack *)calloc(1, sizeof(WellTempStack));
+        if (!t) return NULL;
+        well_tls_set(g_temps_key, t);
+    }
+    return t;
+}
+
+/* Called when a thread ends (Windows TLS slots have no destructor). */
+void well_temp_thread_cleanup(void) {
+    WellTempStack *t;
+    if (g_temps_key == WELL_TLS_KEY_INVALID) return;
+    t = (WellTempStack *)well_tls_get(g_temps_key);
+    if (!t) return;
+    well_tls_set(g_temps_key, NULL);
+    free(t);
+}
 
 void *well_temp_hold(void *p) {
-    if (p && g_temps.n < WELL_TEMP_MAX) g_temps.items[g_temps.n++] = p;
+    WellTempStack *t = temp_stack();
+    if (p && t && t->n < WELL_TEMP_MAX) t->items[t->n++] = p;
     return p;
 }
 
-int well_temp_mark(void) { return g_temps.n; }
+int well_temp_mark(void) {
+    WellTempStack *t = temp_stack();
+    return t ? t->n : 0;
+}
 
 void well_temp_release_to(int mark) {
+    WellTempStack *t = temp_stack();
+    if (!t) return;
     if (mark < 0) mark = 0;
-    if (mark > g_temps.n) mark = g_temps.n;
-    while (g_temps.n > mark) {
-        void *p = g_temps.items[--g_temps.n];
+    if (mark > t->n) mark = t->n;
+    while (t->n > mark) {
+        void *p = t->items[--t->n];
         well_release(p);
     }
 }
@@ -1349,12 +1360,6 @@ void well_shutdown(void) {
         well_mutex_destroy(&g_print_mutex);
         g_print_inited = 0;
     }
-#ifdef _WIN32
-    if (g_panic_tls != TLS_OUT_OF_INDEXES) {
-        TlsFree(g_panic_tls);
-        g_panic_tls = TLS_OUT_OF_INDEXES;
-    }
-#endif
     {
         const char *dbg = getenv("WELL_RC_DEBUG");
         if (dbg && dbg[0] && dbg[0] != '0') {

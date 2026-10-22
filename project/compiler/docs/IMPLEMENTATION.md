@@ -225,6 +225,8 @@ typedef struct WellObj {
 
 - **帧日志**：`WellCtx` 持有 `refs[]`；`well_track` retain+记录，`well_track_owned` 只记录（所有权转移给帧），`well_ctx_clear` 统一 release。
 - **RC 原子化**：`WellObj.rc` 是 `WellAtomicInt`；Windows 用 `InterlockedIncrement/Decrement`，GCC/Clang 用 `__atomic_*`，其他编译器回退单线程；`retain` relaxed，`release` acq_rel，最后一个 release 负责销毁。`g_live` 仍是单线程调试计数。
+  - **POSIX 编译器选择**：TinyCC 0.9.27 的 Linux 端口没有 `__atomic_*`/`__sync_*` 内建函数（会退化成隐式函数声明、链接失败），因此 POSIX 默认优先 gcc/clang；Windows 路径用 Interlocked，TCC 仍是 Windows 默认（见 §7 工具链）。
+  - 线程局部状态（panic 目标、源码位置、临时对象栈、HTTP 当前请求）在 POSIX 上使用 `pthread_key_*`（`well_thread.c` 的 `well_tls_*`），不依赖编译器 `__thread`（TCC 不支持）；Windows 仍用 TLS 槽 / `__declspec(thread)`。
 - **级联释放**：对象 rc=0 时，生成的 `destroy_T` 先 release 所有引用字段，再 `free`。
 - **成环**：允许（运行时不做 DFS 检查）；环随 oid 过期整组回收，见 §3.15。
 - `WELL_RC_DEBUG=1` 时，进程结束打印 `well: live objects at shutdown = N`；正常程序应为 0。
@@ -340,7 +342,7 @@ typedef struct WellStore {
 - 平台线程/锁封装在 `well_thread.c`；Windows 用 `CRITICAL_SECTION` + 事件，POSIX 用 pthread；
 - `print` 语句通过 runtime 锁串行化。
 
-**panic 隔离与定位**：每个 handler 调用有 `setjmp/longjmp` 边界；`g_panic_env` 是线程局部（Windows TLS / GCC `__thread`），handler 内 panic 只终止当前线程的当前任务，释放帧引用，调度器继续处理下一个事件。
+**panic 隔离与定位**：每个 handler 调用有 `setjmp/longjmp` 边界；`g_panic_env` 是线程局部（Windows TLS 槽 / POSIX pthread TLS key，见 §3.2），handler 内 panic 只终止当前线程的当前任务，释放帧引用，调度器继续处理下一个事件。
 - 生成代码在每个语句前调用 `well_source_set(file, line)`；panic 输出格式为 `well panic: <file>:<line>: <msg>`，可定位到 .we 源码行；
 - **未捕获 panic（controller/装配期）以 `WELL_PANIC_EXIT_CODE = 70` 退出**（此前为 1）。
 
@@ -514,12 +516,13 @@ python tools\verify.py [--quick|--full]
 python tools\bench.py --scenario all --json build\bench\result.json
 python tools\bench.py --compare build\bench\baseline.json --threshold 30
 # 基线文件与场景说明见 tools/README.md
-# POSIX CI（provisional）：.github/workflows/verify.yml，Linux + tcc 跑 verify.py --quick
+# POSIX CI（provisional）：.github/workflows/verify.yml，Linux + gcc -O2 跑 verify.py --quick
 ```
 
-C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `tcc`/`gcc`/`clang`。使用 gcc：`WELL_CC=gcc`（自动 `-O2`）。
+C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang，见 §3.2 的 TinyCC 原子内建函数限制）。使用 gcc：`WELL_CC=gcc`（自动 `-O2`）。
 额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`（`WELL_CFLAGS` 覆盖，空串禁用），TCC 使用默认参数（不追加 `-O2`）。`-O2` 可能暴露 C 侧 UB，切换后先跑 `tools/verify.py`。
-本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`，默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 115 用例串行编译过慢（~25s/case），未完整跑完。
+本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 115 用例串行编译过慢（~25s/case），未完整跑完。
+需要本机 MySQL 的 `52_mysql`/`53_mysql_pool` 用 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时测试打印 `SKIP`（CI runner 无 MySQL 时不会误报）。
 
 ---
 

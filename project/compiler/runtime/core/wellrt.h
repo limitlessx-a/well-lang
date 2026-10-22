@@ -224,6 +224,13 @@ void *well_model_find_by_oid(unsigned int type_id, long long oid);
 void well_model_set(void *obj, WellCtx *ctx);
 void well_model_remove(unsigned int type_id, long long oid, WellCtx *ctx);
 
+/* Cache (language-level API). Shares the Model cache table but never writes
+ * the Store; rows are keyed by ctx.oid, so Cache.remove() frees all Cache rows
+ * owned by the current oid. */
+void *well_cache_get_ctx(unsigned int type_id, long long oid, WellCtx *ctx);
+void well_cache_set_ctx(void *obj, WellCtx *ctx);
+void well_cache_remove_ctx(WellCtx *ctx);
+
 /* Strings */
 WellString *well_string_lit(const char *s);
 WellString *well_string_new(const char *s);

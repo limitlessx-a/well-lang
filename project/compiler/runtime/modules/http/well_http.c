@@ -37,6 +37,7 @@ static int (*pclosesocket)(WellSocket);
 #include <netinet/tcp.h>
 #include <unistd.h>
 #include <signal.h>
+#include <poll.h>
 typedef int WellSocket;
 typedef struct {
     unsigned short family;
@@ -66,7 +67,15 @@ static WellHttpRequest *g_requests = NULL;
 static WellHttpConn *g_conns = NULL;
 /* Request whose handler is running on this thread: lets Http.respond skip the
  * global request-hash lock for the common synchronous-response case. */
-static WELL_THREAD_LOCAL WellHttpRequest *g_current_req = NULL;
+static WellTlsKey g_current_req_key = WELL_TLS_KEY_INVALID;
+static WellHttpRequest *current_req_get(void) {
+    return (WellHttpRequest *)well_tls_get(g_current_req_key);
+}
+static void current_req_set(WellHttpRequest *r) {
+    if (g_current_req_key == WELL_TLS_KEY_INVALID)
+        g_current_req_key = well_tls_key_create(NULL);
+    well_tls_set(g_current_req_key, r);
+}
 #define WELL_HTTP_REQ_POOL_MAX 64
 static WellHttpRequest *g_req_pool = NULL;
 static int g_req_pool_n = 0;
@@ -128,6 +137,9 @@ static void http_set_nodelay(WellSocket s) {
     int one = 1;
     psetsockopt(s, WELL_IPPROTO_TCP, WELL_TCP_NODELAY, (const char *)&one, (int)sizeof(one));
 }
+/* accept() has no timeout; on Windows closing the listening socket unblocks it,
+ * so blocking accept is fine there. */
+static int http_wait_readable(WellSocket s, int ms) { (void)s; (void)ms; return 1; }
 static unsigned short http_htons(unsigned short v) { return (unsigned short)((v << 8) | (v >> 8)); }
 #else
 static void load_winsock(void) {
@@ -150,6 +162,17 @@ static int http_set_recv_timeout(WellSocket s, int ms) {
 static void http_set_nodelay(WellSocket s) {
     int one = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
+}
+/* Linux does not wake a blocked accept() when another thread closes the
+ * listening fd, so poll with a short timeout and re-check the running flag. */
+static int http_wait_readable(WellSocket s, int ms) {
+    struct pollfd pfd;
+    int r;
+    pfd.fd = s;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    r = poll(&pfd, 1, ms);
+    return r > 0 && (pfd.revents & POLLIN) != 0;
 }
 static unsigned short http_htons(unsigned short v) { return htons(v); }
 #endif
@@ -446,8 +469,9 @@ static void http_respond_claimed(WellHttpRequest *req, int status, const char *b
 
 void well_http_respond(long long req_id, int status, const char *body) {
     WellHttpRequest *req = NULL;
-    if (g_current_req && g_current_req->id == req_id) {
-        req = g_current_req;
+    WellHttpRequest *cur = current_req_get();
+    if (cur && cur->id == req_id) {
+        req = cur;
     } else {
         http_lock_init();
         well_mutex_lock(&g_http_lock);
@@ -613,10 +637,10 @@ typedef struct HttpTaskCtx {
 
 static void http_task_entry(WellCtx *ctx, void *arg) {
     HttpTaskCtx *t = (HttpTaskCtx *)arg;
-    WellHttpRequest *prev = g_current_req;
-    g_current_req = t->req;
+    WellHttpRequest *prev = current_req_get();
+    current_req_set(t->req);
     if (t->route && t->route->fn) t->route->fn(ctx, t->req);
-    g_current_req = prev;
+    current_req_set(prev);
 }
 
 static void http_task_done(void *arg) {
@@ -802,6 +826,7 @@ static void *http_listener_thread(void *arg) {
         }
         fd = g_http_listen_fd;
         well_mutex_unlock(&g_http_lock);
+        if (!http_wait_readable(fd, 100)) continue;
         s = http_accept(fd);
         if (s == WELL_INVALID_SOCKET) break;
 

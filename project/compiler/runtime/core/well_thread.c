@@ -15,6 +15,21 @@
 #endif
 
 #ifdef _WIN32
+/* Win32 TLS slots have no destructor; owned per-thread state is freed by the
+ * thread wrapper below instead (see well_temp_thread_cleanup). */
+WellTlsKey well_tls_key_create(void (*destructor)(void *)) {
+    (void)destructor;
+    return TlsAlloc();
+}
+
+void *well_tls_get(WellTlsKey key) {
+    return (key == WELL_TLS_KEY_INVALID) ? NULL : TlsGetValue(key);
+}
+
+void well_tls_set(WellTlsKey key, void *value) {
+    if (key != WELL_TLS_KEY_INVALID) TlsSetValue(key, value);
+}
+
 void well_mutex_init(WellMutex *m) { InitializeCriticalSection(m); }
 void well_mutex_destroy(WellMutex *m) { DeleteCriticalSection(m); }
 void well_mutex_lock(WellMutex *m) { EnterCriticalSection(m); }
@@ -57,6 +72,7 @@ static DWORD WINAPI well_thread_proc(LPVOID p) {
     void *arg = s->arg;
     free(s);
     fn(arg);
+    well_temp_thread_cleanup();
     return 0;
 }
 
@@ -130,6 +146,23 @@ void well_thread_detach(WellThread t) { CloseHandle(t); }
 
 void well_sleep_ms(int ms) { Sleep((DWORD)ms); }
 #else
+/* Per-thread storage without compiler TLS: see well_internal.h. */
+WellTlsKey well_tls_key_create(void (*destructor)(void *)) {
+    pthread_key_t key;
+    if (pthread_key_create(&key, destructor) != 0) return WELL_TLS_KEY_INVALID;
+    return (WellTlsKey)key;
+}
+
+void *well_tls_get(WellTlsKey key) {
+    if (key == WELL_TLS_KEY_INVALID) return NULL;
+    return pthread_getspecific((pthread_key_t)key);
+}
+
+void well_tls_set(WellTlsKey key, void *value) {
+    if (key == WELL_TLS_KEY_INVALID) return;
+    pthread_setspecific((pthread_key_t)key, value);
+}
+
 void well_mutex_init(WellMutex *m) { pthread_mutex_init(m, NULL); }
 void well_mutex_destroy(WellMutex *m) { pthread_mutex_destroy(m); }
 void well_mutex_lock(WellMutex *m) { pthread_mutex_lock(m); }

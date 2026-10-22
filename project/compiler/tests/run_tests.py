@@ -21,9 +21,27 @@ WELLC = os.path.join(COMPILER_DIR, "wellc.py")
 BUILD = os.path.join(COMPILER_DIR, "build", "tests")
 CASES = os.path.join(HERE, "cases")
 
+# Cases reported SKIP because an external dependency (requires.txt) is missing.
+SKIPPED = []
+
 
 def norm(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").strip().split("\n"))
+
+
+def missing_requirement(name: str):
+    """Return a description of an unavailable external dependency, else None.
+
+    Cases that need a local service (e.g. MySQL) declare it in requires.txt so
+    CI machines without that service report SKIP instead of a bogus failure.
+    """
+    if name == "mysql":
+        try:
+            s = socket.create_connection(("127.0.0.1", 3306), timeout=0.5)
+        except OSError:
+            return "MySQL at 127.0.0.1:3306"
+        s.close()
+    return None
 
 
 class WsClient:
@@ -438,6 +456,16 @@ def run_case(name: str) -> bool:
     if r.returncode != 0:
         print(f"FAIL {name}: build failed\n{r.stdout}\n{r.stderr}")
         return False
+
+    reqf = os.path.join(d, "requires.txt")
+    if os.path.isfile(reqf):
+        needs = [x.strip() for x in open(reqf, encoding="utf-8") if x.strip()]
+        absent = [missing_requirement(n) for n in needs]
+        absent = [a for a in absent if a]
+        if absent:
+            print(f"SKIP {name} (needs {', '.join(absent)})")
+            SKIPPED.append(name)
+            return True
 
     if os.path.isfile(os.path.join(d, "ws_port.txt")):
         if os.path.isfile(os.path.join(d, "ws_concurrent.txt")):

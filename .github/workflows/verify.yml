@@ -1,7 +1,11 @@
 name: verify
 
-# Provisional POSIX CI. The project is developed on Windows/TCC; this workflow
-# exists to surface Linux/gcc assumptions in the runtime, compiler and tests.
+# POSIX CI. Development happens on Windows/TCC; this workflow surfaces
+# Linux/gcc assumptions in the runtime, compiler and tests.
+#
+# POSIX builds use gcc: TinyCC 0.9.27's Linux port does not implement the
+# __atomic_* builtins the multithreaded runtime relies on, while the Windows
+# runtime path uses Interlocked and keeps TCC as the default there.
 on:
   push:
     paths:
@@ -13,12 +17,14 @@ on:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    env:
+      WELL_CC: gcc
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install C toolchain
-        run: sudo apt-get update && sudo apt-get install -y tcc
+      - name: Show C toolchain
+        run: gcc --version | head -n 1
       - name: Regression (.we cases)
         run: python project/compiler/tools/verify.py --quick

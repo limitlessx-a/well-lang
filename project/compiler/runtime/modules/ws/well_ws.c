@@ -26,6 +26,7 @@ static int (*pclosesocket)(WsSocket);
 #include <netinet/in.h>
 #include <unistd.h>
 #include <signal.h>
+#include <poll.h>
 typedef int WsSocket;
 typedef struct { unsigned short family, port; unsigned long addr; char zero[8]; } WsSockaddr;
 #define WS_INVALID_SOCKET (-1)
@@ -102,6 +103,9 @@ static int ws_recv(WsSocket s, char *b, int n) { return precv(s, b, n, 0); }
 static int ws_send_socket(WsSocket s, const char *b, int n) { return psend(s, b, n, 0); }
 static void ws_close_socket(WsSocket s) { if (s != WS_INVALID_SOCKET) pclosesocket(s); }
 static void ws_shutdown_socket(WsSocket s) { if (s != WS_INVALID_SOCKET) pshutdown(s, 2); }
+/* Windows closesocket() unblocks a blocked accept(), so blocking accept is
+ * fine there; POSIX needs the poll-based helper below. */
+static int ws_wait_readable(WsSocket s, int ms) { (void)s; (void)ms; return 1; }
 static unsigned short ws_htons(unsigned short v) { return (unsigned short)((v << 8) | (v >> 8)); }
 #else
 static void ws_load(void) { signal(SIGPIPE, SIG_IGN); }
@@ -113,6 +117,17 @@ static int ws_recv(WsSocket s, char *b, int n) { return (int)recv(s, b, (size_t)
 static int ws_send_socket(WsSocket s, const char *b, int n) { return (int)send(s, b, (size_t)n, 0); }
 static void ws_close_socket(WsSocket s) { if (s >= 0) close(s); }
 static void ws_shutdown_socket(WsSocket s) { if (s >= 0) shutdown(s, SHUT_RDWR); }
+/* Linux does not wake a blocked accept() when the listening fd is closed from
+ * another thread, so poll with a short timeout and re-check the running flag. */
+static int ws_wait_readable(WsSocket s, int ms) {
+    struct pollfd pfd;
+    int r;
+    pfd.fd = s;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    r = poll(&pfd, 1, ms);
+    return r > 0 && (pfd.revents & POLLIN) != 0;
+}
 static unsigned short ws_htons(unsigned short v) { return htons(v); }
 #endif
 
@@ -615,6 +630,7 @@ static void *ws_listener_thread(void *arg) {
         }
         fd = g_ws_listen_fd;
         well_mutex_unlock(&g_ws_lock);
+        if (!ws_wait_readable(fd, 100)) continue;
         s = ws_accept(fd);
         if (s == WS_INVALID_SOCKET) break;
         c = (WsConn *)calloc(1, sizeof(WsConn));

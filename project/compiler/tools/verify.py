@@ -78,8 +78,10 @@ def main() -> int:
 
     elapsed = time.time() - t0
     good = ok == total and c_ok and bench_ok
+    skipped = len(run_tests.SKIPPED)
     print(
         f"\nverify: {ok}/{total} cases"
+        + (f" ({skipped} skipped: {', '.join(run_tests.SKIPPED)})" if skipped else "")
         + ("" if args.quick else (", C tests passed" if c_ok else ", C tests FAILED"))
         + ("" if bench_ok else ", bench FAILED")
         + f", {elapsed:.1f}s -> {'OK' if good else 'FAILED'}"

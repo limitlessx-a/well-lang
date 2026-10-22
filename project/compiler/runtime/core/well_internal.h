@@ -6,18 +6,32 @@
 
 #if defined(_WIN32)
 #include <windows.h>
-#define WELL_THREAD_LOCAL __declspec(thread)
 typedef CRITICAL_SECTION WellMutex;
 /* CONDITION_VARIABLE is pointer-sized; wrapped to keep the header dependency-free */
 typedef struct WellCondImpl { void *cv; } WellCond;
 typedef HANDLE WellThread;
 #else
 #include <pthread.h>
-#define WELL_THREAD_LOCAL __thread
 typedef pthread_mutex_t WellMutex;
 typedef pthread_cond_t WellCond;
 typedef pthread_t WellThread;
 #endif
+
+/* Explicit thread-local storage. Compiler TLS is not usable everywhere:
+ * TinyCC 0.9.27 does not parse `__thread`, and its `__declspec(thread)` is a
+ * single shared slot rather than per-CreateThread storage. POSIX therefore uses
+ * pthread keys; Windows uses Win32 TLS slots (their destructor argument is
+ * ignored, so owned state registers a per-thread cleanup instead). */
+#if defined(_WIN32)
+typedef DWORD WellTlsKey;
+#define WELL_TLS_KEY_INVALID TLS_OUT_OF_INDEXES
+#else
+typedef unsigned int WellTlsKey;
+#define WELL_TLS_KEY_INVALID ((WellTlsKey)~0u)
+#endif
+WellTlsKey well_tls_key_create(void (*destructor)(void *));
+void *well_tls_get(WellTlsKey key);
+void well_tls_set(WellTlsKey key, void *value);
 
 typedef volatile int WellLock;
 void well_lock_acquire(WellLock *l);
@@ -40,6 +54,10 @@ void well_thread_join(WellThread t);
 /* Fire-and-forget: the thread cleans itself up when it returns. */
 void well_thread_detach(WellThread t);
 void well_sleep_ms(int ms);
+/* Frees this thread's temporary-object stack. Windows TLS slots have no
+ * destructor, so the thread wrapper calls this after the thread body returns;
+ * POSIX registers free() as the pthread key destructor instead. */
+void well_temp_thread_cleanup(void);
 
 /* Cross-module hooks. Public API stays in wellrt.h. */
 void well_containers_register(void);

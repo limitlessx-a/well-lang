@@ -93,7 +93,7 @@ python tools\bench.py --scenario http --save-baseline build\bench\baseline.json
 python tools\bench.py --compare build\bench\baseline.json --threshold 30
 ```
 
-编译器查找顺序：环境变量 `WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认快速 TCC）→ PATH 中的 `tcc`/`gcc`/`clang`。
+编译器查找顺序：环境变量 `WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认快速 TCC）→ PATH 中的 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang：TinyCC 0.9.27 的 Linux 端口没有运行时所需的 `__atomic_*`/`__sync_*` 内建函数，Windows 路径改用 Interlocked，因此 TCC 仍是 Windows 默认）。
 
 额外 C 编译参数用 `WELL_CFLAGS` 传入（如 `-O2 -g`）；当检测到 gcc/clang 时默认追加 `-O2`，TCC 使用默认参数（driver 不追加 `-O2`）；显式设置 `WELL_CFLAGS=""` 可关闭默认 `-O2`。
 
@@ -118,6 +118,11 @@ $env:WELL_CFLAGS = ""
 ```
 
 验证状态（2026-10-22）：GCC 16.2 -O2 下定向 HTTP/WS/JSON/TTL 用例与全部 12 个 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 115 用例串行编译约 25s/case，未完整跑完。
+
+### CI（Linux）
+
+`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑 `tools/verify.py --quick`（Linux runner 上 gcc 由 `WELL_CC=gcc` 指定，自动 `-O2`）。需要本机 MySQL 的 `52_mysql`/`53_mysql_pool` 通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
+
 
 调试引用计数：
 
