@@ -752,6 +752,7 @@ void well_run_loop(void) {
     int workers = 1;
     const char *env = getenv("WELL_WORKERS");
     well_event_init();
+    well_static_freeze(); /* startup over: static fields become read-only */
     if (env && env[0]) {
         int v = atoi(env);
         if (v >= 1 && v <= WELL_MAX_WORKERS) workers = v;

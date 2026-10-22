@@ -1,1 +1,1 @@
-read-only after startup
+read-only

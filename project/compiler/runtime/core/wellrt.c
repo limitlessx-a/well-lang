@@ -656,16 +656,24 @@ void well_set_ref(void *owner, void **slot, void *val) {
     }
 }
 
-/* Static fields belong to oid 0 (startup/assembly data): they are writable only
- * while ctx->oid == 0 (controller run), and read-only afterwards. ctx == NULL is
- * the trusted compiler-generated init path. */
+/* Static fields are assembly-phase data: they belong to the startup ctx oid
+ * (currently 0, but kept as a runtime value so it can change later), are
+ * writable only before well_run_loop(), and read-only afterwards. ctX == NULL
+ * is the trusted compiler-generated init path. */
+static long long g_static_owner_oid = 0;
+static int g_static_frozen = 0;
+
+void well_static_owner_set(long long oid) { g_static_owner_oid = oid; }
+long long well_static_owner_oid(void) { return g_static_owner_oid; }
+void well_static_freeze(void) { g_static_frozen = 1; }
+
 void well_static_check_write(WellCtx *ctx, const char *name) {
     if (!ctx) return;
-    if (ctx->oid != 0) {
+    if (g_static_frozen || ctx->oid != g_static_owner_oid) {
         char msg[256];
         snprintf(msg, sizeof(msg),
-                 "static field %s is read-only after startup (ctx oid=%lld)",
-                 name ? name : "?", ctx->oid);
+                 "static field %s is read-only (assembly oid=%lld, ctx oid=%lld)",
+                 name ? name : "?", g_static_owner_oid, ctx->oid);
         well_panic(msg);
     }
 }
@@ -674,6 +682,16 @@ void well_static_set_ref(WellCtx *ctx, void **slot, void *val, int owned, const 
     void *old;
     if (!slot) return;
     well_static_check_write(ctx, name);
+    if (val) {
+        WellObj *vo = (WellObj *)val;
+        if (vo->type_id != WELL_T_STRING && vo->oid != ctx->oid) {
+            char msg[256];
+            snprintf(msg, sizeof(msg),
+                     "static field %s value oid %lld must equal assembly oid %lld",
+                     name ? name : "?", vo->oid, ctx->oid);
+            well_panic(msg);
+        }
+    }
     old = *slot;
     if (old == val) {
         if (owned && val) well_release(val);
@@ -1361,7 +1379,7 @@ static void force_free_obj(WellObj *o) {
 
 void well_force_cleanup_oid(long long oid) {
     WellObj *p;
-    if (oid == 0) return; /* oid 0 = startup/static data: never reclaimed */
+    if (oid == well_static_owner_oid()) return; /* assembly/static data: never reclaimed */
     p = well_registry_take(oid);
     while (p) {
         WellObj *next = p->reg_next;

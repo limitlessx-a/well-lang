@@ -1396,7 +1396,7 @@ class CodeGen:
                     need_ctx = True
         if need_ctx:
             self.w("WellCtx _static_ctx;")
-            self.w("well_ctx_init(&_static_ctx, 0);")
+            self.w("well_ctx_init(&_static_ctx, well_static_owner_oid());")
             self.w("WellCtx* ctx = &_static_ctx;")
         for sname, st in statics.items():
             for fname, f in st["fields"].items():
@@ -1529,8 +1529,6 @@ class CodeGen:
         for name in self.type_ids:
             self.w(f"well_register_type(T_{name}, destroy_{name});")
             self.w(f"well_register_type_desc(&desc_{name});")
-        if getattr(self.p, "statics", {}):
-            self.w("well_statics_init();")
         if not self.entry:
             self.w('fprintf(stderr, "no entry controller\\n");')
             self.w("return 1;")
@@ -1539,6 +1537,9 @@ class CodeGen:
             self.ind += 1
             self.w("WellCtx ctx;")
             self.w("well_ctx_init(&ctx, 0);")
+            self.w("well_static_owner_set(ctx.oid);")
+            if getattr(self.p, "statics", {}):
+                self.w("well_statics_init();")
             self.w(f"{self.entry}_ensure(&ctx);")
             self.w("well_ctx_clear(&ctx);")
             self.ind -= 1

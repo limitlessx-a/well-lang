@@ -10,7 +10,7 @@
 - `handler`（`onEvent` 事件处理、无字段）
 - `func` 函数
 - `namespace N { f(a:int):int {...} }` 静态函数集合：`N.f(...)` 编译期解析、生成 `static` C 函数（零运行时开销，不占 oid/RC；成员暂只允许函数）
-- `static S { maxLevel: int = 1; title: String = "x"; m(): int {...} }` 静态类（config/工具类）：**启动期（ctx.oid==0）可写、运行期只读**的静态字段 + 函数，`S.f` / `S.m()` 编译期解析为 C 全局变量/静态函数；不可实例化；引用字段赋值自动 release 旧值、退出时统一释放；支持字段默认值 `arr: Array<int> = [1,2,3]`、`m: Map<int> = {"k":1}`、`buf: Bytes = new Bytes()`，以及在启动期赋值（`S.arr = [1,2,3]`）；运行期写会 panic（含容器/Bytes 原地变异，靠 oid 检查拦截）；static 数据（oid 0）永不回收
+- `static S { maxLevel: int = 1; title: String = "x"; m(): int {...} }` 静态类（config/工具类）：**启动期（ctx.oid == 装配期 oid，当前 0）可写、运行期只读**的静态字段 + 函数，`S.f` / `S.m()` 编译期解析为 C 全局变量/静态函数；不可实例化；引用字段赋值自动 release 旧值、退出时统一释放；支持字段默认值 `arr: Array<int> = [1,2,3]`、`m: Map<int> = {"k":1}`、`buf: Bytes = new Bytes()`，以及在启动期赋值（`S.arr = [1,2,3]`）；运行期写会 panic（含容器/Bytes 原地变异，靠 oid 检查拦截）；static 数据（装配期 oid，当前 0）永不回收
 - **事件路由**：`on(EventType, H)` / `on(EventType, H, channel)`；也可省略事件类型：`on(H)` / `on(H, channel)` / `once(H)` / `off(H)`（从 handler 的 `onEvent(e: T)` 参数推断）；`emit(event)` / `emit(event, channel)`
   - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
 - 基础类型：`int / long / bool / double / String / Bytes / void / null`
@@ -32,7 +32,7 @@
 - **成环策略**：允许成环，运行时不做 DFS 检查；环随 oid 过期由 registry 强制整组回收（见 `IMPLEMENTATION §3.15`）
 - **Struct 元数据**：每个 struct/event 生成 `WellTypeDesc`/`WellFieldDesc`（字段名、偏移、类型、容器元素类型），运行时可查询/遍历
 - **Model facade**：Cache（64 分片）+ `Store` 接口 + 默认 `MemoryStore`；`Model.get` 为 Cache→Store→Cache，`Model.peek` 只查 Cache，`set/remove` 写穿
-- **不活跃 oid 清理**：**默认开启（60 秒）**，`WELL_MODEL_TTL_MS` 可覆盖、设为 `0` 关闭；oid 空闲且 `exec_ref==0` 时整组强制回收（含环）+ 丢弃 Cache 行，Store 保留，下次访问自动回源；oid 0（启动期/static 数据）**永不回收**（TTL/强制清理均跳过）
+- **不活跃 oid 清理**：**默认开启（60 秒）**，`WELL_MODEL_TTL_MS` 可覆盖、设为 `0` 关闭；oid 空闲且 `exec_ref==0` 时整组强制回收（含环）+ 丢弃 Cache 行，Store 保留，下次访问自动回源；装配期 oid（当前 0，由启动 ctx 决定）**永不回收**（TTL/强制清理均跳过该 oid）
 - **行级二进制序列化**：`well_encode` / `well_decode`，支持标量、String、Array/Map/Linked、ref（type_id+oid）；ref 可用 resolver 恢复
 - **JSON 解析**：`Json.parse(Type, String)` 按 Struct 元数据解析为 struct/event，支持嵌套对象、Array/Map/Linked、String 转义/Unicode、ref
 - **File/Host API**：`File.read/write/exists/remove`、`Host.nowMs/env/log`

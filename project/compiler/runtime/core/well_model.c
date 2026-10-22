@@ -210,8 +210,8 @@ void well_model_cleanup(long long now_ms, long long ttl_ms) {
         ActEntry **pp = &g_act[b];
         while (*pp) {
             ActEntry *a = *pp;
-            if (a->oid == 0) {
-                /* oid 0 = startup/static data; never reclaimed automatically */
+            if (a->oid == well_static_owner_oid()) {
+                /* assembly/static data (startup ctx oid); never reclaimed */
                 pp = &a->next;
                 continue;
             }

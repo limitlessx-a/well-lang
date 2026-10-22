@@ -81,13 +81,14 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 `static` 语义（2026-10-22 加入，用于 config/工具类）：
 - 成员：`name: Type [= 默认值];` 字段 + 函数；字段可写（`S.f = expr`），函数可读写 `S.f`；
 - **不可实例化**：`new S()`、`var x: S` 都是编译错误（`static S cannot be used as a value type`）；
-- 字段默认值支持：字面量/const、容器字面量（`arr: Array<int> = [1,2,3];`、`m: Map<int> = {"k":1};`）、`new Bytes()/new Array<T>()/new Map<T>()`；标量直接作为 C 全局初始化，其余在 `well_statics_init()` 中用 oid 0 的信任上下文构造一次（对象 oid=0，后续只读）；其余值在**启动期**（controller `run`，ctx.oid==0）赋值；
+- 字段默认值支持：字面量/const、容器字面量（`arr: Array<int> = [1,2,3];`、`m: Map<int> = {"k":1};`）、`new Bytes()/new Array<T>()/new Map<T>()`；标量直接作为 C 全局初始化，其余在 `well_statics_init()` 中用装配期 oid 的信任上下文（`well_static_owner_oid()`，当前 0）构造一次（对象 oid = 装配期 oid，后续只读）；其余值在**启动期**（controller `run`，ctx.oid == 装配期 oid）赋值；
 - 启动期支持**容器字面量赋值**：`Cfg.arr = [1,2,3];` / `Cfg.m = {"k":1};`（codegen 先构造临时容器再转移所有权给 static；运行期写会先被只读检查拦截，不会构造临时对象）；
 - 引用字段赋值走 `well_static_set_ref`：释放旧值、retain 新值（owned 值转移所有权）；进程退出前 `well_statics_shutdown()` 统一 release，保证 `WELL_RC_DEBUG` 干净；
 - 字段没有 oid，**不参与 oid 写检查**；C 名字修饰 `S__field` / `S__f`；
-- **运行期只读（已强制）**：所有 static 字段（引用与标量）仅在 `ctx.oid == 0` 的启动期可写；handler/timer/HTTP 等运行期（ctx.oid≠0）写会 panic `static field S.f is read-only after startup`。
+- **运行期只读（已强制）**：所有 static 字段（引用与标量）仅在启动期（`well_run_loop` 之前，且 `ctx.oid == 装配期 oid`）可写；`well_run_loop` 启动时 `well_static_freeze()` 冻结；运行期写会 panic `static field S.f is read-only (assembly oid=..., ctx oid=...)`。
+- 引用字段的值必须与装配期 oid 一致（`value.oid == ctx.oid`，String 无 oid 例外），防止把运行期 oid 的业务对象塞进 static。
 - static 容器/Bytes 的**原地变异**也被 oid 检查拦截（对象 oid=0 vs handler oid≠0：`Array.push/sort/reverse`、`Bytes.*`、`Map/Linked` 写操作）。
-- static 数据（oid 0）**不参与自动 TTL 清理**（oid 0 豁免），进程退出时统一 release；需要运行期可变状态请用 Model/oid。
+- static 数据（装配期 oid，当前 0）**不参与自动 TTL 清理**（按装配期 oid 豁免），进程退出时统一 release；需要运行期可变状态请用 Model/oid。
 - namespace 内的函数在启动期可读写 `S.f`，运行期同样只读。
 
 ### 2.2 类型
@@ -216,7 +217,7 @@ typedef struct WellObj {
 > **状态（2026-10-22）**：对象图实现已移除（`well_graph_add_edge/remove_edge` 为 no-op 桩，`WellObj.graph_edges` 保留为 reserved 字段）。成环被允许，由 oid 空闲清理整组回收（见 §3.3「不活跃清理」）。
 
 - 历史设计（未启用）：`graph_edges` 出边表 + 加边前 DFS 判环，命中 panic `"DAG violation"`；因每次引用写入 O(V+E)、且环已由 oid 整组清理兜底，未启用。
-- 现在的回收路径：自动路径 `WELL_MODEL_TTL_MS` **默认开启**（默认 60 秒，设为 `0`/负数关闭）→ 对空闲 oid 组强制释放；`oid 0`（启动期/static 数据）**永不回收**：TTL 扫描与 `well_force_cleanup_oid` 均跳过 oid 0。
+- 现在的回收路径：自动路径 `WELL_MODEL_TTL_MS` **默认开启**（默认 60 秒，设为 `0`/负数关闭）→ 对空闲 oid 组强制释放；装配期 oid（`well_static_owner_oid()`，当前 0，由启动 ctx 决定）**永不回收**：TTL 扫描与 `well_force_cleanup_oid` 均跳过该 oid。
 - 约束：清理按 oid 整组强杀、**不检查组外引用**；跨 oid 引用与 static 持有业务对象的风险见 §3.3。
 
 ### 3.3 Model / Cache / Store
@@ -248,8 +249,8 @@ typedef struct WellStore {
 - 未写回 Store 的缓存修改可能被其他 Model 覆盖；跨 Model/Store 的数据一致性由用户负责。
 - 同一 oid 的旧对象可能仍被 handler/event 持有；Cache 替换不会立即释放旧对象。
 - 同一对象在 Model 中只允许一个 key；同 key 不同类型可共存。
-- **不活跃清理（默认开启）**：默认 TTL 60 秒（`WELL_MODEL_TTL_MS` 可覆盖，`0`/负数关闭）；记录 oid 活动时间；清理条件为调度器空闲 + `exec_ref==0` + 超过 TTL；只驱逐 Cache/内存对象，Store 保留；下次 `Model.get` 回源；`oid 0` 豁免。
-- 清理期间持有 act 锁并 force-free，嵌套的 release 可能触发事件 unpin；实现用线程上下文标记让 `well_oid_pin/unpin/touch` 在该上下文内跳过重复加锁，避免自旋死锁。`oid 0` 在强制清理入口处直接返回，任何路径都不会回收启动期/static 数据。
+- **不活跃清理（默认开启）**：默认 TTL 60 秒（`WELL_MODEL_TTL_MS` 可覆盖，`0`/负数关闭）；记录 oid 活动时间；清理条件为调度器空闲 + `exec_ref==0` + 超过 TTL；只驱逐 Cache/内存对象，Store 保留；下次 `Model.get` 回源；装配期 oid（当前 0）豁免。
+- 清理期间持有 act 锁并 force-free，嵌套的 release 可能触发事件 unpin；实现用线程上下文标记让 `well_oid_pin/unpin/touch` 在该上下文内跳过重复加锁，避免自旋死锁。装配期 oid 在强制清理入口处直接返回，任何路径都不会回收启动期/static 数据。
 - **环与跨 oid 约束**（重要）：
   - 同一 oid 组内的环允许存在，由清理整组回收；
   - 清理**不检查组外引用**：其他 oid 的对象、`static` 字段、模块 C 结构若持有该组对象，清理后会悬空。oid 写检查阻止普通字段跨 oid 引用，但 `static`/全局容器不检查；
@@ -282,7 +283,7 @@ typedef struct WellStore {
 - `pop()` 把元素的引用所有权转移给调用方（codegen 标记为 owned）；`shift()` 同理（O(n)）。
 - Array 方法：`push/pop/get/set/slice/concat/join/indexOf/includes/clear/shift/unshift/sort/reverse`。
   - `sort()` 原地升序插入排序，支持 `int/long/bool/double/String` 元素（其他元素类型报编译错误）；`reverse()` 原地反转。
-  - `sort/reverse` 与其它容器写操作一致，**会做 oid 检查**（`object.oid == ctx.oid`）；在 handler 里对启动期创建的数组（oid=0）排序/反转会 panic `well oid violation: Array.sort/Array.reverse`。
+  - `sort/reverse` 与其它容器写操作一致，**会做 oid 检查**（`object.oid == ctx.oid`）；在 handler 里对启动期创建的数组（装配期 oid，当前 0）排序/反转会 panic `well oid violation: Array.sort/Array.reverse`。
   - `slice(a,b)` / `concat(other)` 返回新数组（引用元素 retain，`is_ref` 沿用源数组）；`join(sep)` 仅支持 `Array<String>`；
   - `indexOf/includes` 按元素类型比较（标量按值、String 按内容、其他引用按指针），比较方式由 codegen 传 kind。
 - Map 方法：`get/set/has/delete/keys/values/clear`；`keys()` → `Array<String>`，`values()` → `Array<T>`（均为新数组、插入序）。
