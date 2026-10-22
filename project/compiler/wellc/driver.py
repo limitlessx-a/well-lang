@@ -48,14 +48,16 @@ def find_cc() -> str:
     env = os.environ.get("WELL_CC")
     if env:
         return env
+    # Prefer the repo-local TinyCC (fast compile, no optimization) so that a
+    # gcc/clang installed on PATH does not silently become the default and slow
+    # down every build/test. Use WELL_CC=gcc/clang explicitly for optimized builds.
+    p = os.path.join(REPO_ROOT, "tool_ai", "tools", "tcc", "tcc", "tcc.exe")
+    if os.path.isfile(p):
+        return p
     for name in ("tcc", "gcc", "clang"):
         p = shutil.which(name)
         if p:
             return p
-    # bundled TinyCC fallback (this workspace)
-    p = os.path.join(REPO_ROOT, "tool_ai", "tools", "tcc", "tcc", "tcc.exe")
-    if os.path.isfile(p):
-        return p
     raise BuildError("no C compiler found; set WELL_CC or install tcc/gcc/clang")
 
 

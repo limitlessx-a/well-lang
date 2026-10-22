@@ -91,7 +91,7 @@ python tools\bench.py --scenario http --save-baseline build\bench\baseline.json
 python tools\bench.py --compare build\bench\baseline.json --threshold 30
 ```
 
-编译器查找顺序：环境变量 `WELL_CC` → PATH 中的 `tcc`/`gcc`/`clang` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`。
+编译器查找顺序：环境变量 `WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认快速 TCC）→ PATH 中的 `tcc`/`gcc`/`clang`。要使用刚安装的 gcc：`WELL_CC=gcc`（自动 `-O2`）。
 额外 C 编译参数用 `WELL_CFLAGS` 传入（如 `-O2 -g`）；当检测到 gcc/clang 时默认追加 `-O2`，TCC 保持无优化；显式设置 `WELL_CFLAGS=""` 可关闭默认 `-O2`。
 
 调试引用计数：

@@ -65,7 +65,7 @@ python tools/verify.py --full     # 全部 + HTTP bench smoke
 python tools/bench.py --scenario all --json build/bench/result.json
 ```
 
-工具链查找顺序：`WELL_CC` 环境变量 → PATH 中 `tcc`/`gcc`/`clang` → 仓库内 `tool_ai/tools/tcc/...`。额外参数用 `WELL_CFLAGS`；gcc/clang 默认自动 `-O2`，TCC 无优化（显式 `WELL_CFLAGS=""` 可关闭自动 `-O2`）。
+工具链查找顺序：`WELL_CC` 环境变量 → 仓库内 `tool_ai/tools/tcc/...`（Windows 存在时，默认 TCC）→ PATH 中 `tcc`/`gcc`/`clang`。要使用 gcc：`WELL_CC=gcc`（自动 `-O2`）。额外参数用 `WELL_CFLAGS`；gcc/clang 默认自动 `-O2`，TCC 无优化（显式 `WELL_CFLAGS=""` 可关闭自动 `-O2`）。
 
 编译流水线：
 
