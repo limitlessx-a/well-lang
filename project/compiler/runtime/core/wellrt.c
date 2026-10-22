@@ -842,15 +842,16 @@ static void bytes_reserve(WellBytes *b, long long need) {
 }
 
 void well_bytes_push(WellBytes *b, int byte, WellCtx *ctx) {
-    (void)ctx;
     if (!b) well_panic("push on null Bytes");
+    well_check_oid((void *)b, ctx, "Bytes.push");
     bytes_reserve(b, b->len + 1);
     b->data[b->len++] = (unsigned char)(byte & 0xFF);
 }
 
 void well_bytes_append(WellBytes *b, WellBytes *src, WellCtx *ctx) {
-    (void)ctx;
-    if (!b || !src || src->len == 0) return;
+    if (!b) well_panic("append on null Bytes");
+    well_check_oid((void *)b, ctx, "Bytes.append");
+    if (!src || src->len == 0) return;
     bytes_reserve(b, b->len + src->len);
     memcpy(b->data + b->len, src->data, (size_t)src->len);
     b->len += src->len;
@@ -858,8 +859,9 @@ void well_bytes_append(WellBytes *b, WellBytes *src, WellCtx *ctx) {
 
 void well_bytes_append_str(WellBytes *b, WellString *s, WellCtx *ctx) {
     size_t n;
-    (void)ctx;
-    if (!b || !s) return;
+    if (!b) well_panic("appendStr on null Bytes");
+    well_check_oid((void *)b, ctx, "Bytes.appendStr");
+    if (!s) return;
     n = strlen(s->data);
     bytes_reserve(b, b->len + (long long)n);
     memcpy(b->data + b->len, s->data, n);
@@ -872,14 +874,16 @@ long long well_bytes_get(WellBytes *b, long long i) {
 }
 
 void well_bytes_set(WellBytes *b, long long i, int byte, WellCtx *ctx) {
-    (void)ctx;
-    if (!b || i < 0 || i >= b->len) well_panic("Bytes.set: index out of range");
+    if (!b) well_panic("set on null Bytes");
+    well_check_oid((void *)b, ctx, "Bytes.set");
+    if (i < 0 || i >= b->len) well_panic("Bytes.set: index out of range");
     b->data[i] = (unsigned char)(byte & 0xFF);
 }
 
 void well_bytes_clear(WellBytes *b, WellCtx *ctx) {
-    (void)ctx;
-    if (b) b->len = 0;
+    if (!b) return;
+    well_check_oid((void *)b, ctx, "Bytes.clear");
+    b->len = 0;
 }
 
 /* Treats the buffer as text (NUL terminated); binary payloads should stay Bytes. */

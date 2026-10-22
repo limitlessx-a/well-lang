@@ -1,0 +1,31 @@
+module demo.bytesoid;
+
+static Cfg {
+    buf: Bytes;
+}
+
+event GoEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        Cfg.buf = new Bytes();
+        on(GoEvent, GoHandler);
+        emit(new GoEvent(1) { n: 1 });
+        emit(new GoEvent(1) { n: 2 });
+    }
+}
+
+handler GoHandler extends Handler {
+    onEvent(e: GoEvent) {
+        if (e.n == 1) {
+            Cfg.buf.appendStr("x");
+        } else {
+            Cfg.buf.push(65);
+        }
+        print("should not print");
+    }
+}
+
+entry MainController;

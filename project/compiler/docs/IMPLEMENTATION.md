@@ -90,7 +90,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 
 `bool / int / long / float / double / String / Bytes / void / null`、用户 struct/event，以及 `Array<T>` / `Map<T>` / `Linked<T>`（同质；`Map` 键为 String）。
 - `String` 是引用类型（`WellString*`），默认 `""`，不可变，字面量驻留；长度与下标都按 **字节**（与 `String.length` 一致）；字节长度缓存在 `WellString.len`，`s.length` / `s[i]` / `trim/startsWith/endsWith/split` 的长度计算为 O(1)（解析循环里不会退化成 O(n²)）。
-- `Bytes` 是可变字节缓冲（`WellBytes*`），`new Bytes()` 创建；不是容器类型、不参与 oid 写入检查，用于增量拼装文本/二进制负载（避免 String `+` 的 O(n²)）。
+- `Bytes` 是可变字节缓冲（`WellBytes*`），`new Bytes()` 创建；用于增量拼装文本/二进制负载（避免 String `+` 的 O(n²)）。**写操作参与 oid/FROZEN 检查**（`push/set/append/appendStr/clear` 与容器写一致）：handler 里不能修改启动期创建（oid=0）或其它 oid 的 Bytes，会 panic `well oid violation`。
 - `int`/`bool` → C `int`；`long` → `long long`；`double`/`float` → `double`；`Bytes` → `WellBytes*`。
 - `Array<T>` → `WellArray*`；`Map<T>` → `WellMap*`；`Linked<T>` → `WellLinked*`；三者是引用类型，带 oid。
 - 所有引用类型可为 `null`。
@@ -472,7 +472,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（89 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（90 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 
