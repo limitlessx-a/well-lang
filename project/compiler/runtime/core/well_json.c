@@ -463,6 +463,7 @@ typedef struct JOut {
     char *p;
     size_t len;
     size_t cap;
+    int indent;
 } JOut;
 
 static void jo_need(JOut *o, size_t extra) {
@@ -536,15 +537,75 @@ static void jo_escaped(JOut *o, const char *s, long long n) {
     jo_putc(o, '"');
 }
 
+static void jo_nl(JOut *o, int depth) {
+    int i, n;
+    if (o->indent <= 0) return;
+    jo_putc(o, '\n');
+    n = depth * o->indent;
+    for (i = 0; i < n; i++) jo_putc(o, ' ');
+}
+
+static void jo_sep(JOut *o, int depth, int first) {
+    if (!first) jo_putc(o, ',');
+    jo_nl(o, depth);
+}
+
+static void jo_key(JOut *o, const char *k) {
+    jo_escaped(o, k, (long long)strlen(k));
+    jo_putc(o, ':');
+    if (o->indent > 0) jo_putc(o, ' ');
+}
+
 static void jo_value(JOut *o, WellValue v, int kind, unsigned int type_id, int depth);
+static void jo_obj(JOut *o, void *obj, const WellTypeDesc *d, int depth);
+
+static void jo_array_elems(JOut *o, WellArray *a, int elem_kind, unsigned int elem_type_id, int depth) {
+    long long n, j;
+    if (!a) { jo_puts(o, "null"); return; }
+    jo_putc(o, '[');
+    n = well_array_len(a);
+    for (j = 0; j < n; j++) {
+        jo_sep(o, depth + 1, j == 0);
+        jo_value(o, well_array_get(a, j), elem_kind, elem_type_id, depth + 1);
+    }
+    if (n > 0) jo_nl(o, depth);
+    jo_putc(o, ']');
+}
+
+static void jo_map_elems(JOut *o, WellMap *m, int elem_kind, unsigned int elem_type_id, int depth) {
+    long long n, j;
+    if (!m) { jo_puts(o, "null"); return; }
+    jo_putc(o, '{');
+    n = well_map_len(m);
+    for (j = 0; j < n; j++) {
+        WellString *k = well_map_key_at(m, j);
+        jo_sep(o, depth + 1, j == 0);
+        jo_escaped(o, k ? k->data : "", k ? k->len : 0);
+        jo_putc(o, ':');
+        if (o->indent > 0) jo_putc(o, ' ');
+        jo_value(o, well_map_value_at(m, j), elem_kind, elem_type_id, depth + 1);
+    }
+    if (n > 0) jo_nl(o, depth);
+    jo_putc(o, '}');
+}
+
+static void jo_linked_elems(JOut *o, WellLinked *l, int elem_kind, unsigned int elem_type_id, int depth) {
+    WellLinkedNode *n;
+    int first = 1;
+    if (!l) { jo_puts(o, "null"); return; }
+    jo_putc(o, '[');
+    for (n = well_linked_first(l); n; n = well_linked_next(n)) {
+        jo_sep(o, depth + 1, first);
+        first = 0;
+        jo_value(o, well_linked_value(n), elem_kind, elem_type_id, depth + 1);
+    }
+    if (!first) jo_nl(o, depth);
+    jo_putc(o, ']');
+}
 
 static void jo_obj(JOut *o, void *obj, const WellTypeDesc *d, int depth) {
     int i;
-    if (!obj) {
-        jo_puts(o, "null");
-        return;
-    }
-    if (!d) {
+    if (!obj || !d) {
         jo_puts(o, "null");
         return;
     }
@@ -552,9 +613,8 @@ static void jo_obj(JOut *o, void *obj, const WellTypeDesc *d, int depth) {
     for (i = 0; i < d->field_count; i++) {
         const WellFieldDesc *f = &d->fields[i];
         char *base = (char *)obj + f->offset;
-        if (i) jo_putc(o, ',');
-        jo_escaped(o, f->name, (long long)strlen(f->name));
-        jo_putc(o, ':');
+        jo_sep(o, depth + 1, i == 0);
+        jo_key(o, f->name);
         switch (f->kind) {
         case WELL_FIELD_INT:
             jo_long(o, (long long)(*(int *)base));
@@ -579,62 +639,25 @@ static void jo_obj(JOut *o, void *obj, const WellTypeDesc *d, int depth) {
             jo_obj(o, r, r ? well_type_desc(f->type_id) : NULL, depth + 1);
             break;
         }
-        case WELL_FIELD_ARRAY: {
-            WellArray *a = *(WellArray **)base;
-            long long j, n;
-            if (!a) { jo_puts(o, "null"); break; }
-            jo_putc(o, '[');
-            n = well_array_len(a);
-            for (j = 0; j < n; j++) {
-                if (j) jo_putc(o, ',');
-                jo_value(o, well_array_get(a, j), f->elem_kind, f->elem_type_id, depth + 1);
-            }
-            jo_putc(o, ']');
+        case WELL_FIELD_ARRAY:
+            jo_array_elems(o, *(WellArray **)base, f->elem_kind, f->elem_type_id, depth + 1);
             break;
-        }
-        case WELL_FIELD_MAP: {
-            WellMap *m = *(WellMap **)base;
-            long long j, n;
-            if (!m) { jo_puts(o, "null"); break; }
-            jo_putc(o, '{');
-            n = well_map_len(m);
-            for (j = 0; j < n; j++) {
-                WellString *k = well_map_key_at(m, j);
-                if (j) jo_putc(o, ',');
-                if (!k) jo_puts(o, "\"\"");
-                else jo_escaped(o, k->data, k->len);
-                jo_putc(o, ':');
-                jo_value(o, well_map_value_at(m, j), f->elem_kind, f->elem_type_id, depth + 1);
-            }
-            jo_putc(o, '}');
+        case WELL_FIELD_MAP:
+            jo_map_elems(o, *(WellMap **)base, f->elem_kind, f->elem_type_id, depth + 1);
             break;
-        }
-        case WELL_FIELD_LINKED: {
-            WellLinked *l = *(WellLinked **)base;
-            WellLinkedNode *n;
-            int first = 1;
-            if (!l) { jo_puts(o, "null"); break; }
-            jo_putc(o, '[');
-            for (n = well_linked_first(l); n; n = well_linked_next(n)) {
-                if (!first) jo_putc(o, ',');
-                first = 0;
-                jo_value(o, well_linked_value(n), f->elem_kind, f->elem_type_id, depth + 1);
-            }
-            jo_putc(o, ']');
+        case WELL_FIELD_LINKED:
+            jo_linked_elems(o, *(WellLinked **)base, f->elem_kind, f->elem_type_id, depth + 1);
             break;
-        }
         default:
             jo_puts(o, "null");
         }
     }
+    if (d->field_count > 0) jo_nl(o, depth);
     jo_putc(o, '}');
 }
 
 static void jo_value(JOut *o, WellValue v, int kind, unsigned int type_id, int depth) {
-    if (depth > 64) {
-        jo_puts(o, "null");
-        return;
-    }
+    if (depth > 64) { jo_puts(o, "null"); return; }
     switch (kind) {
     case WELL_FIELD_INT:
         jo_long(o, v.i);
@@ -662,22 +685,89 @@ static void jo_value(JOut *o, WellValue v, int kind, unsigned int type_id, int d
     }
 }
 
-WellString *well_json_stringify(void *obj) {
-    JOut o;
+static void jo_begin(JOut *o, int indent) {
+    memset(o, 0, sizeof(*o));
+    if (indent < 0) indent = 0;
+    if (indent > 8) indent = 8;
+    o->indent = indent;
+}
+
+static WellString *jo_finish(JOut *o) {
     WellString *r;
+    jo_need(o, 1);
+    o->p[o->len] = 0;
+    r = well_string_new(o->p);
+    free(o->p);
+    return r;
+}
+
+WellString *well_json_stringify(void *obj, int indent) {
+    JOut o;
     const WellTypeDesc *d;
-    memset(&o, 0, sizeof(o));
+    jo_begin(&o, indent);
     if (!obj) {
-        r = well_string_new("null");
-        return r;
+        jo_puts(&o, "null");
+        return jo_finish(&o);
     }
     d = well_type_desc(((WellObj *)obj)->type_id);
     if (!d) well_panic("Json.stringify: unsupported value");
     jo_obj(&o, obj, d, 0);
-    jo_need(&o, 1);
-    o.p[o.len] = 0;
-    r = well_string_new(o.p);
-    free(o.p);
+    return jo_finish(&o);
+}
+
+WellString *well_json_stringify_array(WellArray *a, int elem_kind, unsigned int elem_type_id, int indent) {
+    JOut o;
+    jo_begin(&o, indent);
+    jo_array_elems(&o, a, elem_kind, elem_type_id, 0);
+    return jo_finish(&o);
+}
+
+WellString *well_json_stringify_map(WellMap *m, int elem_kind, unsigned int elem_type_id, int indent) {
+    JOut o;
+    jo_begin(&o, indent);
+    jo_map_elems(&o, m, elem_kind, elem_type_id, 0);
+    return jo_finish(&o);
+}
+
+WellString *well_json_stringify_linked(WellLinked *l, int elem_kind, unsigned int elem_type_id, int indent) {
+    JOut o;
+    jo_begin(&o, indent);
+    jo_linked_elems(&o, l, elem_kind, elem_type_id, 0);
+    return jo_finish(&o);
+}
+
+WellString *well_json_stringify_long(long long v, int indent) {
+    JOut o;
+    jo_begin(&o, indent);
+    jo_long(&o, v);
+    return jo_finish(&o);
+}
+
+WellString *well_json_stringify_double(double v, int indent) {
+    JOut o;
+    jo_begin(&o, indent);
+    jo_double(&o, v);
+    return jo_finish(&o);
+}
+
+WellString *well_json_stringify_bool(int v, int indent) {
+    JOut o;
+    jo_begin(&o, indent);
+    jo_puts(&o, v ? "true" : "false");
+    return jo_finish(&o);
+}
+
+WellString *well_json_stringify_str(WellString *s, int indent) {
+    JOut o;
+    jo_begin(&o, indent);
+    if (!s) jo_puts(&o, "null");
+    else jo_escaped(&o, s->data, s->len);
+    return jo_finish(&o);
+}
+
+WellString *well_json_stringify_str_take(WellString *s, int indent) {
+    WellString *r = well_json_stringify_str(s, indent);
+    well_release(s);
     return r;
 }
 

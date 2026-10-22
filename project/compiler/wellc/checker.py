@@ -1065,13 +1065,32 @@ class Checker:
         if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name == "Json":
             jname = e.func.name
             if jname == "stringify":
-                if len(e.args) != 1:
-                    self.err("Json.stringify(value) expects 1 argument")
+                if len(e.args) not in (1, 2):
+                    self.err("Json.stringify(value[, indent]) expects 1 or 2 arguments")
                 at = self.check_expr(e.args[0], env)
-                if at != "null" and at not in self.structs:
-                    self.err("Json.stringify: argument must be a struct/event (or null)")
                 e.ty = "String"
                 e.builtin = "json_stringify"
+                e.json_str_kind = None
+                if len(e.args) == 2:
+                    it = self.check_expr(e.args[1], env)
+                    if it not in ("int", "long"):
+                        self.err("Json.stringify: indent must be int/long")
+                    e.json_indent = e.args[1]
+                if at == "null" or at in self.structs:
+                    e.json_str_kind = "struct"
+                elif at in ("int", "long", "double", "float", "bool", "String"):
+                    e.json_str_kind = "double" if at in ("double", "float") else at
+                else:
+                    ckind, cet = self.container_info(at)
+                    if ckind:
+                        if cet.startswith(("Array<", "Map<", "Linked<")):
+                            self.err("Json.stringify: nested container element type is not supported")
+                        if cet not in ("int", "long", "float", "double", "bool", "String") and cet not in self.structs:
+                            self.err(f"Json.stringify: unsupported container element type {cet}")
+                        e.json_str_kind = ckind
+                        e.json_elem_ty = cet
+                    else:
+                        self.err(f"Json.stringify: unsupported argument type {at}")
                 return
             if jname not in ("parse", "tryParse"):
                 self.err(f"unknown Json method {jname}")

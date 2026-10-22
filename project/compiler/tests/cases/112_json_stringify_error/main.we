@@ -1,0 +1,9 @@
+module demo.jsonstringifyerr;
+
+controller MainController extends Controller {
+    run() {
+        print(Json.stringify(1, "x"));
+    }
+}
+
+entry MainController;

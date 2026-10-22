@@ -170,7 +170,15 @@ void *well_decode(unsigned int type_id, long long oid,
 /* JSON parsing (metadata-driven into a struct/event) */
 void *well_json_parse(unsigned int type_id, const char *text, long long oid);
 void *well_json_try_parse(unsigned int type_id, const char *text, long long oid);
-WellString *well_json_stringify(void *obj);
+WellString *well_json_stringify(void *obj, int indent);
+WellString *well_json_stringify_array(WellArray *a, int elem_kind, unsigned int elem_type_id, int indent);
+WellString *well_json_stringify_map(WellMap *m, int elem_kind, unsigned int elem_type_id, int indent);
+WellString *well_json_stringify_linked(WellLinked *l, int elem_kind, unsigned int elem_type_id, int indent);
+WellString *well_json_stringify_long(long long v, int indent);
+WellString *well_json_stringify_double(double v, int indent);
+WellString *well_json_stringify_bool(int v, int indent);
+WellString *well_json_stringify_str(WellString *s, int indent);
+WellString *well_json_stringify_str_take(WellString *s, int indent);
 
 /* frame journal */
 void well_ctx_init(WellCtx *ctx, long long oid);

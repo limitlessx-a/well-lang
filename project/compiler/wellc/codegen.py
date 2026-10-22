@@ -129,6 +129,22 @@ class CodeGen:
             return "WELL_FIELD_DOUBLE"
         return "WELL_FIELD_STRING"
 
+    def json_elem_kind(self, et: str) -> str:
+        if et == "int":
+            return "WELL_FIELD_INT"
+        if et == "long":
+            return "WELL_FIELD_LONG"
+        if et == "bool":
+            return "WELL_FIELD_BOOL"
+        if et in ("float", "double"):
+            return "WELL_FIELD_DOUBLE"
+        if et == "String":
+            return "WELL_FIELD_STRING"
+        return "WELL_FIELD_REF"
+
+    def json_elem_type_id(self, et: str) -> str:
+        return f"T_{et}" if et in self.type_ids else "0"
+
     def elem_kind_code(self, et: str) -> str:
         """Runtime element compare kind for Array.indexOf/includes."""
         if et in ("int", "long", "bool"):
@@ -426,7 +442,31 @@ class CodeGen:
             arg = self.gen_expr(e.args[1])
             return f"(({ty}*)well_json_parse(T_{ty}, well_string_cstr({arg}), ctx->oid))"
         if getattr(e, "builtin", None) == "json_stringify":
-            return f"well_json_stringify((void*)({self.gen_expr(e.args[0])}))"
+            ind = (f"(int)({self.gen_expr(e.json_indent)})"
+                   if getattr(e, "json_indent", None) is not None else "0")
+            arg = self.gen_expr(e.args[0])
+            kind = getattr(e, "json_str_kind", "struct")
+            if kind == "struct":
+                return f"well_json_stringify((void*)({arg}), {ind})"
+            if kind in ("int", "long"):
+                return f"well_json_stringify_long((long long)({arg}), {ind})"
+            if kind == "double":
+                return f"well_json_stringify_double((double)({arg}), {ind})"
+            if kind == "bool":
+                return f"well_json_stringify_bool((int)({arg}), {ind})"
+            if kind == "String":
+                fn = "well_json_stringify_str_take" if self.is_owned(e.args[0]) else "well_json_stringify_str"
+                return f"{fn}({arg}, {ind})"
+            et = getattr(e, "json_elem_ty", "String")
+            ek = self.json_elem_kind(et)
+            tid = self.json_elem_type_id(et)
+            if kind == "array":
+                return f"well_json_stringify_array((WellArray*)({arg}), {ek}, {tid}, {ind})"
+            if kind == "map":
+                return f"well_json_stringify_map((WellMap*)({arg}), {ek}, {tid}, {ind})"
+            if kind == "linked":
+                return f"well_json_stringify_linked((WellLinked*)({arg}), {ek}, {tid}, {ind})"
+            return f"well_json_stringify((void*)({arg}), {ind})"
         if getattr(e, "builtin", None) == "json_try_parse":
             ty = e.json_type
             arg = self.gen_arg_temp(e.args[1])

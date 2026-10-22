@@ -1,0 +1,20 @@
+module demo.jsontop;
+
+controller MainController extends Controller {
+    run() {
+        var a: Array<int> = [1, 2];
+        print(Json.stringify(a));
+        var b: Array<String> = ["a", "b"];
+        print(Json.stringify(b));
+        var m: Map<int> = {"k": 9};
+        print(Json.stringify(m));
+        print(Json.stringify(5));
+        print(Json.stringify(2.5));
+        print(Json.stringify(true));
+        print(Json.stringify("hi"));
+        print(Json.stringify(null));
+        print(Json.stringify(a, 2));
+    }
+}
+
+entry MainController;
