@@ -185,6 +185,43 @@ class CodeGen:
     def enum_macro(self, enum: str, member: str) -> str:
         return f"{enum}_{member}"
 
+    def gen_enum_helpers(self):
+        for name, en in getattr(self.p, "enums", {}).items():
+            members = en["members"]
+            if en["type"] == "String":
+                self.w(f"static WellString *{name}__toString(WellString *v) {{")
+                self.ind += 1
+                self.w('if (!v) return well_string_lit("");')
+                for mn, val in members:
+                    self.w(f'if (well_string_eq(v, well_string_lit("{c_escape(str(val))}"))) return well_string_lit("{c_escape(mn)}");')
+                self.w('return well_string_lit("");')
+                self.ind -= 1
+                self.w("}")
+            else:
+                self.w(f"static int {name}__fromInt(long long v) {{")
+                self.ind += 1
+                self.w("switch (v) {")
+                self.ind += 1
+                for mn, val in members:
+                    self.w(f"case {val}: return {val};")
+                self.w("default: return 0;")
+                self.ind -= 1
+                self.w("}")
+                self.ind -= 1
+                self.w("}")
+                self.w(f"static WellString *{name}__toString(long long v) {{")
+                self.ind += 1
+                self.w("switch (v) {")
+                self.ind += 1
+                for mn, val in members:
+                    self.w(f'case {val}: return well_string_lit("{c_escape(mn)}");')
+                self.w('default: return well_string_lit("");')
+                self.ind -= 1
+                self.w("}")
+                self.ind -= 1
+                self.w("}")
+            self.w("")
+
     def gen_channel(self, e) -> str:
         if e is None:
             return "0"
@@ -380,6 +417,10 @@ class CodeGen:
             return "well_host_now_ms()"
         if getattr(e, "builtin", None) == "host_env":
             return f"well_host_env(well_string_cstr({self.gen_expr(e.args[0])}))"
+        if getattr(e, "enum_op", None) == "from_int":
+            return f"{e.enum_name}__fromInt((long long)({self.gen_expr(e.args[0])}))"
+        if getattr(e, "enum_op", None) == "to_string":
+            return f"{e.enum_name}__toString({self.gen_expr(e.args[0])})"
         if getattr(e, "builtin", None) == "json_parse":
             ty = e.json_type
             arg = self.gen_expr(e.args[1])
@@ -598,6 +639,60 @@ class CodeGen:
                 self.gen_stmt(s.els)
                 self.ind -= 1
             self.w("}")
+        elif isinstance(s, Switch):
+            ct = getattr(s.expr, "ty", None)
+            expr = self.gen_expr(s.expr)
+            if ct == "String":
+                owned = self.is_owned(s.expr)
+                self.w("{")
+                self.ind += 1
+                if owned:
+                    self.w(f"WellString *_sw = {expr};")
+                    self.w("well_track_owned(ctx, _sw);")
+                    expr = "_sw"
+                first = True
+                for val, body in s.cases:
+                    cond = f'well_string_eq({expr}, {self.gen_expr(val)})'
+                    if first:
+                        self.w(f"if ({cond}) {{")
+                        first = False
+                    else:
+                        self.w(f"}} else if ({cond}) {{")
+                    self.ind += 1
+                    self.gen_block(body)
+                    self.ind -= 1
+                if s.default:
+                    if first:
+                        self.w("{")
+                        first = False
+                    else:
+                        self.w("} else {")
+                    self.ind += 1
+                    self.gen_block(s.default)
+                    self.ind -= 1
+                if not first:
+                    self.w("}")
+                else:
+                    self.w(f"(void)({expr});")
+                self.ind -= 1
+                self.w("}")
+            else:
+                self.w(f"switch ((long long)({expr})) {{")
+                self.ind += 1
+                for val, body in s.cases:
+                    self.w(f"case (long long)({self.gen_expr(val)}): {{")
+                    self.ind += 1
+                    self.gen_block(body)
+                    self.ind -= 1
+                    self.w("} break;")
+                if s.default:
+                    self.w("default: {")
+                    self.ind += 1
+                    self.gen_block(s.default)
+                    self.ind -= 1
+                    self.w("} break;")
+                self.ind -= 1
+                self.w("}")
         elif isinstance(s, While):
             self.w(f"while ({self.gen_expr(s.cond)}) {{")
             self.ind += 1
@@ -1054,6 +1149,7 @@ class CodeGen:
         self.w("#include <stdlib.h>")
         self.w("")
         self.gen_enums_consts()
+        self.gen_enum_helpers()
         self.gen_type_defs()
         self.gen_type_meta()
         self.gen_constructors()

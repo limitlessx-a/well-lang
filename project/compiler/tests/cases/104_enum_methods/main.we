@@ -1,0 +1,25 @@
+module demo.enummethods;
+
+enum Status {
+    IDLE;
+    RUNNING;
+    DONE;
+}
+
+enum Color {
+    RED = "red";
+    BLUE = "blue";
+}
+
+controller MainController extends Controller {
+    run() {
+        print(Status.fromInt(1));
+        print(Status.fromInt(99));
+        print(Status.toString(1));
+        print(Status.toString(99));
+        print(Color.toString("red"));
+        print(Color.toString("unknown"));
+    }
+}
+
+entry MainController;

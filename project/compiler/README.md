@@ -3,7 +3,7 @@
 `wellc` 把 `.we` 源码编译为 C99，再由 C 编译器生成可执行文件。当前是可工作的 MVP，已打通：
 
 - `module` / `import`（本地相对/点路径解析，声明合并）
-- `const` / `enum`（int、String；enum 不再承担事件名）
+- `const` / `enum`（int、String；enum 不再承担事件名；`E.fromInt(v)` / `E.toString(v)`）
 - `struct`（单继承字段展平）、`event`（事件类型即身份，无 `bind`）
 - 根类型继承可省略：`struct S` ≡ `extends Vo`，`event E` ≡ `extends Event`，`controller C` ≡ `extends Controller`，`handler H` ≡ `extends Handler`
 - `controller`（`on/once/off/start/stop/emit/run`）；`start(C)` 单例幂等，`stop(C)` 注销该 controller 类型的订阅并允许重新 start
@@ -57,7 +57,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（103 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（107 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```
@@ -95,7 +95,7 @@ $env:WELL_RC_DEBUG = "1"
 - handler panic 会隔离并继续调度；panic 输出带 `file:line`；controller/装配期未捕获 panic 以退出码 **70** 退出。
 - `print` 语句通过 runtime 锁串行化，避免多线程输出交错。
 - 没有实现 Array/Map 的完整 JS 方法（`shift/unshift/slice/concat/join/indexOf/includes`、Map `keys/values/entries`），也没有 `map/filter/forEach`（需要 lambda）。
-- 没有实现泛型（除内置 Array/Map）、接口、异常、`switch`、通用 `for-in`（只支持 Map 键迭代）、持久化、热更新；`invoke` 已从语言中删除（D-21），不是遗漏。
+- 没有实现泛型（除内置 Array/Map）、接口、异常、通用 `for-in`（只支持 Map 键迭代）、持久化、热更新；`switch/case` 与 enum `fromInt/toString` 已支持；`invoke` 已从语言中删除（D-21），不是遗漏。
 - 允许成环：不立即释放，随 oid 过期整组回收；长寿命/热点 oid 的环需要显式回收或子 oid 拆分。
 - 字段引用写入同时校验 `target.oid == ctx.oid` 与 `value.oid == target.oid`；event 构造豁免。
 - controller 的 `ctx.oid = 0`：不要在 controller 里创建业务数据；业务数据应在 handler（目标 oid）中创建。

@@ -63,6 +63,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 | `const N: int = 1;` | ✅ | 生成 C 宏 |
 | `enum E { A = 1; B; }` | ✅ | int 自增 |
 | `enum E { A = "A"; }` | ✅ | String 枚举，生成字符串宏（普通常量，不承担事件名） |
+| `E.fromInt(v)` / `E.toString(v)` | ✅ | int 枚举：整数→枚举值（未知→0）、值→成员名 String（未知→""）；String 枚举只支持 `toString`（值→成员名） |
 | `struct S extends Base { f: T; }` | ✅ | 继承字段展平（无多态）；`extends Base` 可省略，默认 `Vo` |
 | `event E extends Event { ... }` | ✅ | 事件类型即身份；无 `bind`，无名字注册表；`extends Event` 可省略，默认 `Event` |
 | `controller C extends Controller { run(){...} }` | ✅ | 单例装配器；`start(C)` 幂等，无 `start(C, oid)`；`extends Controller` 可省略，默认 `Controller` |
@@ -103,7 +104,9 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 
 ### 2.3 语句
 
-`var`（可带类型）、赋值、`if/else`、`while`、`for(init;cond;step)`、`for (x of array)`、`for (k in map)`、`return`、`break`、`continue`、块。
+`var`（可带类型）、赋值、`if/else`、`while`、`for(init;cond;step)`、`for (x of array)`、`for (k in map)`、`switch/case/default`、`return`、`break`、`continue`、块。
+
+- `switch (expr) { case <常量>: 语句...; default: 语句...; }`：expr 支持 `int/long/String`；**无 fallthrough**（每个 case 自动 break）；case 值必须是字面量/const/枚举成员；`break` 在 switch 内表示退出 switch（switch 也计入 breakable 结构）；String switch 生成 `well_string_eq` 的 if/else 链。
 
 ### 2.4 表达式
 
@@ -490,7 +493,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（103 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（107 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

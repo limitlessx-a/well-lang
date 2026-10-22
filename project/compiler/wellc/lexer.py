@@ -4,7 +4,7 @@ from dataclasses import dataclass
 KEYWORDS = {
     "module", "import", "entry", "const", "enum", "struct", "event",
     "controller", "handler", "func", "namespace", "static", "extends",
-    "var", "new", "if", "else", "while",
+    "var", "new", "if", "else", "while", "switch",
     "for", "return", "break", "continue", "true", "false", "null",
     "void", "bool", "int", "long", "float", "double", "String",
 }

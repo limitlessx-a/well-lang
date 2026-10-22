@@ -25,6 +25,17 @@ class Parser:
     def at_id(self) -> bool:
         return self.peek().kind == "id"
 
+    def at_word(self, w: str) -> bool:
+        t = self.peek()
+        return t.kind == "id" and t.value == w
+
+    def eat_word(self, w: str) -> Token:
+        t = self.peek()
+        if t.kind != "id" or t.value != w:
+            self.err(f"expected '{w}'")
+        self.i += 1
+        return t
+
     def eat(self, value: str) -> Token:
         t = self.peek()
         if t.value != value or t.kind not in ("op", "kw"):
@@ -297,6 +308,58 @@ class Parser:
         return FuncDecl(name, params, ret, body)
 
     # ---------- statements ----------
+    def parse_case_value(self):
+        t = self.peek()
+        if t.kind == "op" and t.value == "-":
+            self.i += 1
+            return Unary("-", self.parse_case_value())
+        if t.kind == "int":
+            self.i += 1
+            return IntLit(int(t.value, 0))
+        if t.kind == "str":
+            self.i += 1
+            return StrLit(t.value)
+        if t.kind == "kw" and t.value in ("true", "false"):
+            self.i += 1
+            return BoolLit(t.value == "true")
+        if t.kind == "id":
+            node = Ident(self.eat_id())
+            while self.at("."):
+                self.eat(".")
+                node = Member(node, self.eat_id())
+            return node
+        self.err("case value must be a literal/const/enum member")
+
+    def parse_switch(self) -> Switch:
+        self.eat("switch")
+        self.eat("(")
+        expr = self.parse_expr()
+        self.eat(")")
+        self.eat("{")
+        cases = []
+        default = None
+        while not self.at("}"):
+            if self.at_word("case"):
+                self.eat_word("case")
+                val = self.parse_case_value()
+                self.eat(":")
+            elif self.at_word("default"):
+                self.eat_word("default")
+                self.eat(":")
+                stmts = []
+                while not self.at("}"):
+                    stmts.append(self.parse_stmt())
+                default = Block(stmts)
+                break
+            else:
+                self.err("expected 'case', 'default' or '}' in switch")
+            stmts = []
+            while not (self.at_word("case") or self.at_word("default") or self.at("}")):
+                stmts.append(self.parse_stmt())
+            cases.append((val, Block(stmts)))
+        self.eat("}")
+        return Switch(expr, cases, default)
+
     def parse_block(self) -> Block:
         self.eat("{")
         stmts = []
@@ -331,6 +394,8 @@ class Parser:
         if t.kind == "kw":
             if t.value == "var":
                 return self.parse_var_decl()
+            if t.value == "switch":
+                return self.parse_switch()
             if t.value == "if":
                 self.eat("if")
                 self.eat("(")

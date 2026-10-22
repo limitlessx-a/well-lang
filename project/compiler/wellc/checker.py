@@ -27,6 +27,7 @@ class Checker:
         self.current_namespace = None
         self.cur_ret = "void"
         self.loop_depth = 0
+        self.break_depth = 0
 
     # ---------- public ----------
     def run(self):
@@ -157,6 +158,7 @@ class Checker:
                 kind = "int"
             normalized = []
             auto = 0
+            seen_vals = set()
             for mn, mv in d.members:
                 if kind == "String":
                     if mv is not None and not isinstance(mv, str):
@@ -167,6 +169,9 @@ class Checker:
                         val = auto
                     else:
                         val = int(mv)
+                    if val in seen_vals:
+                        self.err(f"enum {name}: duplicate value {val} (member {mn})")
+                    seen_vals.add(val)
                     normalized.append((mn, val))
                     auto = val + 1
             self.enums[name] = {"type": kind, "members": normalized}
@@ -231,12 +236,14 @@ class Checker:
         if m.ret:
             self.check_type_name(m.ret.name)
         ret = m.ret.name if m.ret else "void"
-        old_ret, old_loop = self.cur_ret, self.loop_depth
+        old_ret, old_loop, old_break = self.cur_ret, self.loop_depth, self.break_depth
         self.cur_ret = ret
         self.loop_depth = 0
+        self.break_depth = 0
         self.check_block(m.body, env)
         self.cur_ret = old_ret
         self.loop_depth = old_loop
+        self.break_depth = old_break
         if ret != "void" and not self.block_returns(m.body):
             self.err(f"{m.name}: not all paths return a value")
 
@@ -304,6 +311,21 @@ class Checker:
             return self.block_returns(s)
         if isinstance(s, If):
             return s.els is not None and self.stmt_returns(s.then) and self.stmt_returns(s.els)
+        if isinstance(s, Switch):
+            if s.default is None:
+                return False
+            return all(self.stmt_returns(b) for _, b in s.cases) and self.stmt_returns(s.default)
+        return False
+
+    def is_const_case(self, e) -> bool:
+        if isinstance(e, (IntLit, BoolLit, StrLit)):
+            return True
+        if isinstance(e, Unary) and e.op == "-" and isinstance(e.expr, IntLit):
+            return True
+        if isinstance(e, Ident) and e.name in self.consts:
+            return True
+        if isinstance(e, Member) and getattr(e, "is_enum", False):
+            return True
         return False
 
     def check_block(self, b: Block, env):
@@ -345,7 +367,9 @@ class Checker:
         elif isinstance(s, While):
             self.check_cond(s.cond, env)
             self.loop_depth += 1
+            self.break_depth += 1
             self.check_stmt(s.body, dict(env))
+            self.break_depth -= 1
             self.loop_depth -= 1
         elif isinstance(s, For):
             fenv = dict(env)
@@ -354,7 +378,9 @@ class Checker:
             if s.cond:
                 self.check_cond(s.cond, fenv)
             self.loop_depth += 1
+            self.break_depth += 1
             self.check_stmt(s.body, dict(fenv))
+            self.break_depth -= 1
             self.loop_depth -= 1
             if s.step:
                 self.check_stmt(s.step, fenv)
@@ -382,11 +408,45 @@ class Checker:
                 if self.cur_ret == "void":
                     self.err("return with a value in a void function")
                 self.check_assignable(self.cur_ret, vt)
+        elif isinstance(s, Switch):
+            ct = self.check_expr(s.expr, env)
+            if ct not in ("int", "long", "String"):
+                self.err("switch expression must be int/long/String")
+            seen = set()
+            self.break_depth += 1
+            for val, body in s.cases:
+                vt = self.check_expr(val, env)
+                if ct == "String":
+                    if vt != "String" or not isinstance(val, StrLit):
+                        self.err("String switch case value must be a string literal")
+                    k = ("str", val.value)
+                else:
+                    self.check_assignable(ct, vt)
+                    if not self.is_const_case(val):
+                        self.err("case value must be a constant")
+                    if isinstance(val, IntLit):
+                        k = ("int", val.value)
+                    elif isinstance(val, Unary) and val.op == "-" and isinstance(val.expr, IntLit):
+                        k = ("int", -val.expr.value)
+                    else:
+                        k = None
+                if k is not None:
+                    if k in seen:
+                        self.err("duplicate case value")
+                    seen.add(k)
+                self.check_block(body, dict(env))
+            if s.default:
+                self.check_block(s.default, dict(env))
+            self.break_depth -= 1
         elif isinstance(s, Block):
             self.check_block(s, dict(env))
         elif isinstance(s, (Break, Continue)):
-            if self.loop_depth <= 0:
-                self.err(f"{'break' if isinstance(s, Break) else 'continue'} outside of a loop")
+            if isinstance(s, Break):
+                if self.break_depth <= 0:
+                    self.err("break outside of a loop/switch")
+            else:
+                if self.loop_depth <= 0:
+                    self.err("continue outside of a loop")
         else:
             self.err(f"unknown statement {type(s).__name__}")
 
@@ -705,6 +765,33 @@ class Checker:
         for a in e.args:
             if isinstance(a, (ArrayLit, ObjectLit)):
                 self.err("container literal cannot be used as a call argument; assign it to a variable first")
+        # EnumName.fromInt / EnumName.toString
+        if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name in self.enums:
+            en = self.enums[e.func.obj.name]
+            ename = e.func.obj.name
+            m = e.func.name
+            if m == "fromInt":
+                if len(e.args) != 1:
+                    self.err(f"{ename}.fromInt(value) expects 1 argument")
+                at = self.check_expr(e.args[0], env)
+                if at not in ("int", "long"):
+                    self.err(f"{ename}.fromInt: value must be int/long")
+                if en["type"] != "int":
+                    self.err(f"{ename}.fromInt: only int enums are supported")
+                e.ty = "int"
+                e.enum_op = "from_int"
+                e.enum_name = ename
+                return
+            if m == "toString":
+                if len(e.args) != 1:
+                    self.err(f"{ename}.toString(value) expects 1 argument")
+                at = self.check_expr(e.args[0], env)
+                self.check_assignable(en["type"], at)
+                e.ty = "String"
+                e.enum_op = "to_string"
+                e.enum_name = ename
+                return
+            self.err(f"unknown enum method {m}")
         # NamespaceName.func(...)
         if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and            (e.func.obj.name in self.namespaces or e.func.obj.name in self.statics):
             ns = e.func.obj.name

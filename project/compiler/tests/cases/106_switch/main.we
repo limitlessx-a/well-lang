@@ -1,0 +1,43 @@
+module demo.switchcase;
+
+enum Kind {
+    A = 1;
+    B = 2;
+}
+
+controller MainController extends Controller {
+    run() {
+        var x: int = 2;
+        switch (x) {
+            case 1: print("one");
+            case 2: print("two"); break;
+            default: print("def");
+        }
+        switch (3) {
+            case 1: print("no");
+            default: print("def2");
+        }
+        var k: int = Kind.B;
+        switch (k) {
+            case Kind.A: print("A");
+            case Kind.B: print("B");
+            default: print("?");
+        }
+        var y: String = "b";
+        switch (y) {
+            case "a": print("sa");
+            case "b": print("sb");
+            default: print("sd");
+        }
+        var i: int = 0;
+        while (i < 3) {
+            i = i + 1;
+            switch (i) {
+                case 2: continue;
+                default: print("loop ", i);
+            }
+        }
+    }
+}
+
+entry MainController;

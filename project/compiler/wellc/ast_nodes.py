@@ -166,6 +166,13 @@ class Block(Stmt):
     stmts: list[Stmt]
 
 
+@dataclass
+class Switch(Stmt):
+    expr: Expr
+    cases: list          # [(case value Expr, Block)]
+    default: Optional[Block]
+
+
 # ---------- declarations ----------
 @dataclass
 class FieldDecl:
