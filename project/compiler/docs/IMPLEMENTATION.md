@@ -517,7 +517,7 @@ python tools\bench.py --compare build\bench\baseline.json --threshold 30
 
 C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `tcc`/`gcc`/`clang`。使用 gcc：`WELL_CC=gcc`（自动 `-O2`）。
 额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`（`WELL_CFLAGS` 覆盖，空串禁用），TCC 保持无优化。`-O2` 可能暴露 C 侧 UB，切换后先跑 `tools/verify.py`。
-本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`）；另装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，用户 PATH）。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 113 用例串行编译过慢（~25s/case），未完整跑完。
+本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`，默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 113 用例串行编译过慢（~25s/case），未完整跑完。
 
 ---
 

@@ -92,8 +92,31 @@ python tools\bench.py --scenario http --save-baseline build\bench\baseline.json
 python tools\bench.py --compare build\bench\baseline.json --threshold 30
 ```
 
-编译器查找顺序：环境变量 `WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认快速 TCC）→ PATH 中的 `tcc`/`gcc`/`clang`。要使用刚安装的 gcc：`WELL_CC=gcc`（自动 `-O2`）。
+编译器查找顺序：环境变量 `WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认快速 TCC）→ PATH 中的 `tcc`/`gcc`/`clang`。
+
 额外 C 编译参数用 `WELL_CFLAGS` 传入（如 `-O2 -g`）；当检测到 gcc/clang 时默认追加 `-O2`，TCC 保持无优化；显式设置 `WELL_CFLAGS=""` 可关闭默认 `-O2`。
+
+### C 工具链（本机）
+
+| 工具链 | 位置 / 版本 | 用途 |
+|---|---|---|
+| TinyCC | 仓库内 `tool_ai/tools/tcc/`，0.9.27 | **默认**，编译快、无优化，适合日常构建/测试 |
+| MinGW-w64 GCC | `D:\Soft\gcc`，16.2.0（x86_64-ucrt-posix-seh） | 性能验证/优化构建；`bin` 已在用户 PATH |
+
+```powershell
+# 新开终端后可直接使用 gcc
+gcc --version
+
+# 用 gcc 构建（driver 自动追加 -O2）
+$env:WELL_CC = "gcc"
+python wellc.py build examples\features.we -o build\features_gcc.exe
+
+# 自定义 flags，或显式关闭自动 -O2
+$env:WELL_CFLAGS = "-O2 -g"
+$env:WELL_CFLAGS = ""
+```
+
+验证状态（2026-10-22）：GCC 16.2 -O2 下定向 HTTP/WS/JSON/TTL 用例与全部 12 个 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 113 用例串行编译约 25s/case，未完整跑完。
 
 调试引用计数：
 

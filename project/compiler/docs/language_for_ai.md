@@ -65,7 +65,22 @@ python tools/verify.py --full     # 全部 + HTTP bench smoke
 python tools/bench.py --scenario all --json build/bench/result.json
 ```
 
-工具链查找顺序：`WELL_CC` 环境变量 → 仓库内 `tool_ai/tools/tcc/...`（Windows 存在时，默认 TCC）→ PATH 中 `tcc`/`gcc`/`clang`。要使用 gcc：`WELL_CC=gcc`（自动 `-O2`）。额外参数用 `WELL_CFLAGS`；gcc/clang 默认自动 `-O2`，TCC 无优化（显式 `WELL_CFLAGS=""` 可关闭自动 `-O2`）。
+工具链查找顺序：`WELL_CC` 环境变量 → 仓库内 `tool_ai/tools/tcc/...`（Windows 存在时，默认 TCC）→ PATH 中 `tcc`/`gcc`/`clang`。
+
+**本机工具链（2026-10-22）**：
+
+| 工具链 | 位置 / 版本 | 用途 |
+|---|---|---|
+| TinyCC 0.9.27 | 仓库 `tool_ai/tools/tcc/` | 默认，快速编译、无优化 |
+| MinGW-w64 GCC 16.2.0 | `D:\Soft\gcc`（x86_64-ucrt-posix-seh），`bin` 已加入用户 PATH | 优化构建/性能验证 |
+
+```powershell
+$env:WELL_CC = "gcc"      # 自动 -O2
+$env:WELL_CFLAGS = "-O2 -g"  # 可选覆盖
+python wellc.py build app.we -o build\app.exe
+```
+
+额外参数用 `WELL_CFLAGS`；gcc/clang 默认自动 `-O2`，TCC 无优化（显式 `WELL_CFLAGS=""` 可关闭自动 `-O2`）。`-O2` 可能暴露 C 侧 UB，切换后先跑 `tools/verify.py`。
 
 编译流水线：
 
@@ -378,7 +393,8 @@ wellc/driver.py   合并 import、调用 C 编译器、选择运行时模块源�
 ```bash
 python wellc.py build src.we -o out.exe
 # 实际执行：cc -I runtime/core -I runtime/modules/http ... -o out.exe build/src.c + runtime 源文件
-# Windows 用 TCC；Linux/macOS 可用 WELL_CC=gcc/clang（POSIX 路径尚未正式验证）
+# Windows：默认 TCC；本机已装 MinGW-w64 GCC 16.2，可用 WELL_CC=gcc 自动 -O2
+# Linux/macOS：可用 WELL_CC=gcc/clang（POSIX 路径尚未正式验证）
 ```
 
 TCC 0.9.27 是默认验证环境；本机另装了 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`）。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；优化参数由 `WELL_CFLAGS`/自动 `-O2` 控制。
@@ -622,7 +638,7 @@ main:
 - 无 tracing GC 的全局暂停；TTL 清理已改为锁外 bulk free。
 
 **慢/贵的部分**
-- **TCC 优化很有限**：常见表现是函数调用不内联、循环不做展开/向量化；driver 对 gcc/clang 默认追加 `-O2`（`WELL_CFLAGS` 可覆盖）。本机用 MinGW-w64 GCC 16.2.0 实测 CPU parser 微基准：TCC ≈11–14 µs/parse → GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络场景受 Python 客户端/OS 抖动影响，p99 有改善迹象但吞吐无稳定差异；Linux/gcc 尚未正式验证；
+- **TCC 优化很有限**：常见表现是函数调用不内联、循环不做展开/向量化；driver 对 gcc/clang 默认追加 `-O2`（`WELL_CFLAGS` 可覆盖）。本机用 MinGW-w64 GCC 16.2.0 实测 CPU parser 微基准：TCC ≈11–14 µs/parse → GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络场景受 Python 客户端/OS 抖动影响，p99 有改善迹象但吞吐无稳定差异；Windows/MinGW gcc 已做定向验证（全量 113 用例未完整跑完），Linux/gcc 尚未正式验证；
 - **RC 原子操作**：每次 retain/release 都有原子指令；对象图大/引用密集时成本线性；
 - **安全检查**：oid 检查、容器边界/类型、String 字节操作等；
 - **每请求分配**：HTTP 请求结构池化，但 event 对象、path/query/body String、容器等仍分配；
