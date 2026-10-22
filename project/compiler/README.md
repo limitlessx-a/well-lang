@@ -75,13 +75,28 @@ cd compiler
 python wellc.py run examples\hello.we
 python wellc.py build examples\features.we -o build\features.exe
 python wellc.py emit-c examples\hello.we -o build\hello.c
+
+# 只做词法/语法/语义检查：不生成可执行文件，不写 build/
+python wellc.py check examples\hello.we
+python wellc.py check examples\hello.we --json
 ```
+
+`check` 复用 `load_program` + `Checker`，同时检查 import 是否可以解析（解析失败给 warning）。人类可读模式每行 `FILE:LINE:COL: severity: message`；`--json` 只输出一个 JSON 对象：
+
+```json
+{"ok": false, "file": "...", "diagnostics": [
+  {"file": "...", "line": 3, "col": 7, "endLine": 3, "endCol": 24,
+   "severity": "error", "message": "...", "code": "semantic"}
+]}
+```
+
+退出码：无 error 为 0（仅 warning 也算 0），有 error 为 1，参数/IO 错误为 2。`project/vscode_extension` 插件的错误检查即调用 `wellc.py check --json`；`tools/verify.py` 也带一个 `check-cli` 自测（覆盖无 entry 的库文件、编译错误用例、未解析 import）。
 
 运行测试 / 一键回归：
 
 ```powershell
-python tools\verify.py            # 全量：115 个 .we 用例 + C 测试
-python tools\verify.py --quick    # 只跑 .we 用例
+python tools\verify.py            # 全量：115 个 .we 用例 + C 测试（含 check-cli 自测）
+python tools\verify.py --quick    # 只跑 .we 用例 + check-cli 自测
 python tools\verify.py --full     # 全量 + HTTP bench smoke
 ```
 

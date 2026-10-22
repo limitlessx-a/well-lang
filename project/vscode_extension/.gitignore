@@ -1,0 +1,8 @@
+# dependencies / build output
+node_modules/
+out/
+build/
+*.vsix
+
+# test scratch
+test/tmp/

@@ -10,6 +10,7 @@ from .parser import Parser, ParseError
 from .checker import Checker, CheckError
 from .codegen import CodeGen
 from .ast_nodes import Program
+from .diagnostics import from_check_error, from_parse_error, locate_import
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMPILER_DIR = os.path.dirname(HERE)
@@ -42,6 +43,10 @@ RUNTIME_SOURCES += list(MODULE_SOURCES.values())
 
 class BuildError(Exception):
     pass
+
+
+class CheckIOError(Exception):
+    """The check subcommand could not read a source file (exit code 2)."""
 
 
 def find_cc() -> str:
@@ -241,3 +246,109 @@ def emit_c(path: str, out: str | None = None) -> str:
         with open(out, "w", encoding="utf-8") as f:
             f.write(code)
     return code
+
+
+# --------------------------------------------------------------------------
+# check: parse + semantic analysis only (no C compiler, no build/ output)
+# --------------------------------------------------------------------------
+
+def _read_source(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        raise CheckIOError(f"cannot read {path}: {e}") from e
+
+
+def _scan_for_check(path: str, cache: dict, order: list, diags: list) -> None:
+    """Parse ``path`` and every locally resolvable import, collecting errors.
+
+    ``cache`` maps abspath -> {src, prog, toks, broken}.  ``order`` is the
+    discovery (pre-order DFS) order and is also used to rank diagnostics.
+    A parse/duplicate-declaration error marks the file ``broken`` so the
+    merged checker is skipped (load_program would raise the same error).
+    """
+    ap = os.path.abspath(path)
+    if ap in cache:
+        return
+    entry = {"src": None, "prog": None, "toks": None, "broken": True}
+    cache[ap] = entry
+    order.append(ap)
+    src = _read_source(ap)
+    entry["src"] = src
+    try:
+        toks = lex(src, ap)
+        prog = Parser(toks, ap).parse_program()
+    except (LexError, ParseError) as e:
+        diags.append(from_parse_error(e, ap))
+        return
+    entry["prog"] = prog
+    entry["toks"] = toks
+    try:
+        _check_duplicate_decls(prog, ap)
+    except CheckError as e:
+        diags.append(from_check_error(e, ap, src, toks))
+        return
+    entry["broken"] = False
+    base = os.path.dirname(ap)
+    for imp in prog.imports:
+        ip = _resolve_import(imp.path, base)
+        if ip and ip not in cache:
+            _scan_for_check(ip, cache, order, diags)
+
+
+def _dedupe_diags(diags: list) -> list:
+    out = []
+    seen = set()
+    for d in diags:
+        key = (d["file"], d["line"], d["col"], d["endLine"], d["endCol"],
+               d["severity"], d["message"], d["code"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(d)
+    return out
+
+
+def check_file(path: str) -> tuple[dict, int]:
+    """Check a .we file and return ``(result, exit_code)``.
+
+    ``result`` is JSON-serialisable: ``{"ok": bool, "file": str,
+    "diagnostics": [...]}``.  Exit code is 0 when there is no error (warnings
+    are fine), 1 when at least one error is reported.  Library files without
+    an ``entry`` are valid and report ``ok: true``.
+    """
+    path = os.path.abspath(path)
+    diags: list = []
+    cache: dict = {}
+    order: list = []
+    _scan_for_check(path, cache, order, diags)
+
+    # Unresolved imports are warnings: the program still parses, it just
+    # cannot be merged completely, so report them even when other errors exist.
+    for p in order:
+        entry = cache[p]
+        prog = entry["prog"]
+        if prog is None:
+            continue
+        for imp in prog.imports:
+            if _resolve_import(imp.path, os.path.dirname(p)) is None:
+                diags.append(locate_import(p, entry["src"], imp.path, entry["toks"]))
+
+    broken = any(entry["broken"] for entry in cache.values())
+    if not broken:
+        try:
+            prog = load_program(path)
+            Checker(prog, path).run()
+        except (LexError, ParseError) as e:  # pragma: no cover - already parsed above
+            diags.append(from_parse_error(e, path))
+        except CheckError as e:
+            diags.append(from_check_error(e, path, cache[path]["src"], cache[path]["toks"]))
+
+    diags = _dedupe_diags(diags)
+    rank = {p: i for i, p in enumerate(order)}
+    diags.sort(key=lambda d: (rank.get(d["file"], len(order)), d["line"], d["col"],
+                              0 if d["severity"] == "error" else 1))
+    ok = not any(d["severity"] == "error" for d in diags)
+    return {"ok": ok, "file": path, "diagnostics": diags}, 0 if ok else 1
+

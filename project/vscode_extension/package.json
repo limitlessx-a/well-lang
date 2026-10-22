@@ -1,0 +1,190 @@
+{
+  "name": "well-language",
+  "displayName": "Well Language",
+  "description": "Well (.we) 语言支持：语法高亮、错误检查、格式化、自动导入与整理包",
+  "version": "0.1.0",
+  "publisher": "well-lang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/limitlessx-a/well-lang.git",
+    "directory": "project/vscode_extension"
+  },
+  "engines": {
+    "vscode": "^1.81.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters",
+    "Linters"
+  ],
+  "keywords": [
+    "well",
+    "we",
+    "actor",
+    "oid"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:well",
+    "onCommand:well.checkDocument",
+    "onCommand:well.formatDocument",
+    "onCommand:well.organizeImports",
+    "onCommand:well.importSymbol",
+    "onCommand:well.showCompilerOutput"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "well",
+        "aliases": [
+          "Well",
+          "well"
+        ],
+        "extensions": [
+          ".we"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "well",
+        "scopeName": "source.well",
+        "path": "./syntaxes/well.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "well",
+        "path": "./snippets/well.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "well.checkDocument",
+        "title": "Well: 检查当前文件",
+        "category": "Well"
+      },
+      {
+        "command": "well.formatDocument",
+        "title": "Well: 格式化当前文件",
+        "category": "Well"
+      },
+      {
+        "command": "well.organizeImports",
+        "title": "Well: 整理包/导入",
+        "category": "Well"
+      },
+      {
+        "command": "well.importSymbol",
+        "title": "Well: 自动导入光标处符号",
+        "category": "Well"
+      },
+      {
+        "command": "well.showCompilerOutput",
+        "title": "Well: 显示编译器输出",
+        "category": "Well"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "well.organizeImports",
+          "when": "editorLangId == well",
+          "group": "well@1"
+        },
+        {
+          "command": "well.importSymbol",
+          "when": "editorLangId == well",
+          "group": "well@2"
+        }
+      ]
+    },
+    "configurationDefaults": {
+      "[well]": {
+        "editor.defaultFormatter": "well-lang.well-language",
+        "editor.insertSpaces": true,
+        "editor.tabSize": 4,
+        "editor.detectIndentation": false
+      }
+    },
+    "configuration": {
+      "title": "Well",
+      "properties": {
+        "well.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用 Well 语言支持（语法高亮始终生效）。"
+        },
+        "well.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "用于运行 wellc 的 Python 解释器（命令名或绝对路径）。"
+        },
+        "well.compilerPath": {
+          "type": "string",
+          "default": "",
+          "description": "wellc.py 的路径；留空时在工作区中自动查找 compiler/wellc.py。"
+        },
+        "well.diagnostics.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用错误检查（词法/语法/语义）。"
+        },
+        "well.diagnostics.delayMs": {
+          "type": "number",
+          "default": 400,
+          "description": "编辑后延迟多少毫秒触发检查。"
+        },
+        "well.format.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用格式化（使用编辑器插入空格/制表位设置）。"
+        },
+        "well.imports.sort": {
+          "type": "string",
+          "enum": [
+            "path",
+            "none"
+          ],
+          "default": "path",
+          "description": "整理导入时的排序方式。"
+        },
+        "well.imports.removeUnused": {
+          "type": "boolean",
+          "default": true,
+          "description": "整理导入时移除未使用的导入（仅当被导入文件可解析时判断）。"
+        },
+        "well.index.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/build/**",
+            "**/out/**",
+            "**/.git/**",
+            "**/.svn/**"
+          ],
+          "description": "自动导入索引排除的 glob（相对工作区）。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "compile:tests": "tsc src/formatter.ts src/wellParse.ts src/imports.ts --outDir build/ts --module commonjs --target ES2020 --strict --skipLibCheck",
+    "test": "npm run compile && npm run compile:tests && node --test test/",
+    "test:activation": "npm run compile && node test/activation.test.js",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/vscode": "1.81.0",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.9.0"
+  }
+}

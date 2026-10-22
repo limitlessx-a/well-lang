@@ -7,6 +7,7 @@ Usage:
     python tools/verify.py --full     # all tests + a short HTTP bench smoke
 """
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -56,6 +57,68 @@ def run_we_cases() -> tuple[int, int]:
     return ok, len(names)
 
 
+def check_cli() -> bool:
+    """Fast smoke test for `python wellc.py check --json FILE`.
+
+    Runs in --quick and --full so CI catches a broken diagnostics contract.
+    Uses sys.executable (not a bare `python`) so it works on any machine.
+    """
+    wellc = os.path.join(COMPILER_DIR, "wellc.py")
+    examples = os.path.join(COMPILER_DIR, "examples", "lib", "http_parser.we")
+    cases = [
+        # path, want ok, want exit, needs a positioned error
+        (os.path.join(run_tests.CASES, "01_hello", "main.we"), True, 0, False),
+        (os.path.join(run_tests.CASES, "08_compile_error", "main.we"), False, 1, True),
+        (os.path.join(run_tests.CASES, "11_bad_event", "main.we"), False, 1, False),
+        (examples, True, 0, False),
+    ]
+    for path, want_ok, want_exit, want_loc in cases:
+        label = os.path.relpath(path, COMPILER_DIR)
+        try:
+            r = subprocess.run(
+                [sys.executable, wellc, "check", "--json", path],
+                cwd=COMPILER_DIR, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"FAIL check-cli: {label}: cannot run wellc.py check: {e}")
+            return False
+        if r.returncode != want_exit:
+            print(f"FAIL check-cli: {label}: exit {r.returncode}, want {want_exit}"
+                  f" (stderr: {r.stderr.strip()[:300]})")
+            return False
+        try:
+            data = json.loads(r.stdout)
+        except ValueError:
+            print(f"FAIL check-cli: {label}: stdout is not JSON: {r.stdout[:300]!r}")
+            return False
+        if not isinstance(data, dict) or "ok" not in data or "diagnostics" not in data:
+            print(f"FAIL check-cli: {label}: malformed JSON object: {str(data)[:300]}")
+            return False
+        if data["ok"] is not want_ok:
+            print(f"FAIL check-cli: {label}: ok={data['ok']!r}, want {want_ok!r}")
+            return False
+        if not isinstance(data["diagnostics"], list):
+            print(f"FAIL check-cli: {label}: diagnostics is not a list")
+            return False
+        errors = [d for d in data["diagnostics"] if d.get("severity") == "error"]
+        if (want_ok and errors) or (not want_ok and not errors):
+            print(f"FAIL check-cli: {label}: error diagnostics mismatch "
+                  f"({len(errors)} errors)")
+            return False
+        if want_loc:
+            for d in errors:
+                line, col = d.get("line"), d.get("col")
+                end_line, end_col = d.get("endLine"), d.get("endCol")
+                if not all(isinstance(v, int) and v >= 1
+                           for v in (line, col, end_line, end_col)):
+                    print(f"FAIL check-cli: {label}: error without a valid "
+                          f"line/col range: {d}")
+                    return False
+    print("check-cli: OK")
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Well compiler regression runner")
     ap.add_argument("--quick", action="store_true", help="only .we cases (skip C tests/bench)")
@@ -68,6 +131,7 @@ def main() -> int:
         return 2
 
     ok, total = run_we_cases()
+    cli_ok = check_cli()
     c_ok = True
     if not args.quick:
         c_ok = run_tests.run_c_tests()
@@ -84,7 +148,7 @@ def main() -> int:
         bench_ok = r.returncode == 0
 
     elapsed = time.time() - t0
-    good = ok == total and c_ok and bench_ok
+    good = ok == total and c_ok and bench_ok and cli_ok
     skipped_names = list(run_tests.SKIPPED)
     ran = ok - len(skipped_names)
     print(

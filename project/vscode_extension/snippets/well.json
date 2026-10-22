@@ -1,0 +1,278 @@
+{
+  "module": {
+    "prefix": "module",
+    "body": [
+      "module ${1:demo.app};",
+      "",
+      "$0"
+    ],
+    "description": "Well: 模块声明"
+  },
+  "import": {
+    "prefix": "import",
+    "body": [
+      "import ${1:lib.util};",
+      "$0"
+    ],
+    "description": "Well: 导入声明（点路径）"
+  },
+  "import-path": {
+    "prefix": "importpath",
+    "body": [
+      "import \"${1:lib/util.we}\";",
+      "$0"
+    ],
+    "description": "Well: 导入声明（文件路径）"
+  },
+  "struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:NameVo} extends ${2:Vo} {",
+      "\t${3:id}: ${4:long};",
+      "}",
+      "$0"
+    ],
+    "description": "Well: struct 声明"
+  },
+  "event": {
+    "prefix": "event",
+    "body": [
+      "event ${1:PingEvent} extends ${2:Event} {",
+      "\t${3:n}: ${4:int};",
+      "}",
+      "$0"
+    ],
+    "description": "Well: event 声明"
+  },
+  "controller": {
+    "prefix": "controller",
+    "body": [
+      "controller ${1:MainController} extends ${2:Controller} {",
+      "\trun() {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Well: controller 声明"
+  },
+  "controller-entry": {
+    "prefix": "ctrlentry",
+    "body": [
+      "controller ${1:MainController} extends ${2:Controller} {",
+      "\trun() {",
+      "\t\t$0",
+      "\t}",
+      "}",
+      "",
+      "entry ${1:MainController};"
+    ],
+    "description": "Well: controller + entry 程序骨架"
+  },
+  "handler": {
+    "prefix": "handler",
+    "body": [
+      "handler ${1:NameHandler} extends ${2:Handler} {",
+      "\tonEvent(e: ${3:PingEvent}) {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Well: handler 声明（含 onEvent）"
+  },
+  "onevent": {
+    "prefix": "onevent",
+    "body": [
+      "onEvent(e: ${1:PingEvent}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Well: onEvent 方法"
+  },
+  "static": {
+    "prefix": "static",
+    "body": [
+      "static ${1:AppConfig} {",
+      "\t${2:limit}: ${3:int} = ${4:10};",
+      "",
+      "\t${5:getLimit}(): ${6:int} {",
+      "\t\treturn ${7:limit};",
+      "\t}",
+      "}"
+    ],
+    "description": "Well: static 块声明"
+  },
+  "namespace": {
+    "prefix": "namespace",
+    "body": [
+      "namespace ${1:Utils} {",
+      "\t${2:add}(a: int, b: int): int {",
+      "\t\treturn a + b;",
+      "\t}",
+      "}"
+    ],
+    "description": "Well: namespace 声明"
+  },
+  "func": {
+    "prefix": "func",
+    "body": [
+      "func ${1:name}(${2:a}: ${3:int}): ${4:int} {",
+      "\treturn $0;",
+      "}"
+    ],
+    "description": "Well: 顶层函数声明"
+  },
+  "enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Status} {",
+      "\t${2:IDLE};",
+      "\t${3:RUNNING};",
+      "\t${4:DONE};",
+      "}"
+    ],
+    "description": "Well: enum 声明"
+  },
+  "const": {
+    "prefix": "const",
+    "body": [
+      "const ${1:MAX}: ${2:int} = ${3:10};"
+    ],
+    "description": "Well: 常量声明"
+  },
+  "var": {
+    "prefix": "var",
+    "body": [
+      "var ${1:name}: ${2:int} = ${3:0};"
+    ],
+    "description": "Well: 局部变量声明"
+  },
+  "if": {
+    "prefix": "if",
+    "body": [
+      "if (${1:cond}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Well: if 语句"
+  },
+  "ifelse": {
+    "prefix": "ifelse",
+    "body": [
+      "if (${1:cond}) {",
+      "\t$0",
+      "} else {",
+      "",
+      "}"
+    ],
+    "description": "Well: if / else 语句"
+  },
+  "for": {
+    "prefix": "for",
+    "body": [
+      "for (var ${1:i}: ${2:int} = 0; ${1:i} < ${3:3}; ${1:i} = ${1:i} + 1) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Well: C 风格 for 循环"
+  },
+  "foreach": {
+    "prefix": "foreach",
+    "body": [
+      "for (var ${1:item} of ${2:items}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Well: for..of 遍历 Array/Linked 值"
+  },
+  "forin": {
+    "prefix": "forin",
+    "body": [
+      "for (var ${1:key} in ${2:map}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Well: for..in 遍历 Map 键"
+  },
+  "while": {
+    "prefix": "while",
+    "body": [
+      "while (${1:cond}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Well: while 循环"
+  },
+  "switch": {
+    "prefix": "switch",
+    "body": [
+      "switch (${1:x}) {",
+      "\tcase ${2:1}:",
+      "\t\t$0",
+      "\t\tbreak;",
+      "\tdefault:",
+      "\t\tbreak;",
+      "}"
+    ],
+    "description": "Well: switch / case / default"
+  },
+  "case": {
+    "prefix": "case",
+    "body": [
+      "case ${1:value}:",
+      "\t$0",
+      "\tbreak;"
+    ],
+    "description": "Well: switch 的 case 分支"
+  },
+  "on": {
+    "prefix": "on",
+    "body": [
+      "on(${1:PingEvent}, ${2:PingHandler});"
+    ],
+    "description": "Well: 订阅事件 on(Event, Handler)"
+  },
+  "emit": {
+    "prefix": "emit",
+    "body": [
+      "emit(new ${1:PingEvent}(${2:0}) {",
+      "\t${3:n}: ${4:1}",
+      "});"
+    ],
+    "description": "Well: 构造并发送事件"
+  },
+  "timer-once": {
+    "prefix": "timeronce",
+    "body": [
+      "var ${1:timerId}: long = Timer.once(${2:1000}, ${3:LaterHandler});"
+    ],
+    "description": "Well: 一次性定时器 Timer.once"
+  },
+  "model-get": {
+    "prefix": "modelget",
+    "body": [
+      "var ${1:vo}: ${2:UserVo} = Model.get(${3:UserVo}, ${4:oid});"
+    ],
+    "description": "Well: Model.get 读取 oid 对象"
+  },
+  "model-set": {
+    "prefix": "modelset",
+    "body": [
+      "Model.set(${1:vo});"
+    ],
+    "description": "Well: Model.set 写入 oid 对象"
+  },
+  "print": {
+    "prefix": "print",
+    "body": [
+      "print(\"${1:msg}\", ${2:value});"
+    ],
+    "description": "Well: 打印输出"
+  },
+  "http-route": {
+    "prefix": "httproute",
+    "body": [
+      "Http.route(\"${1:/hello}\", \"${2:GET}\", ${3:HelloHandler});"
+    ],
+    "description": "Well: Http 路由注册"
+  }
+}
