@@ -27,4 +27,15 @@ jobs:
           gcc --version | head -n 1
           python -c "import sys; sys.path.insert(0, 'project/compiler'); from wellc.driver import find_cc, cc_flags; print('cc:', find_cc()); print('cflags:', cc_flags())"
       - name: Regression (.we cases)
-        run: python project/compiler/tools/verify.py --quick
+        shell: bash
+        run: |
+          set +e
+          python project/compiler/tools/verify.py --quick > verify.log 2>&1
+          status=$?
+          tail -n 60 verify.log
+          if [ "$status" -ne 0 ]; then
+            # The full log needs repository admin rights to download, but
+            # ::error:: annotations are visible on the public check run.
+            grep -E '^(FAIL|SKIP|verify:)' verify.log | head -n 25 | sed 's/^/::error::/'
+          fi
+          exit "$status"
