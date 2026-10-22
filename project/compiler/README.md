@@ -15,6 +15,7 @@
   - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
 - 基础类型：`int / long / bool / double / String / Bytes / void / null`
   - 整数 `/`、`%` 除数为 0 会 panic（带源码行号）；编译期字面量除零/常量溢出直接报错；运行期溢出未做语言级检查（C 有符号溢出为 UB，不要依赖 wrap）
+  - `String +` 单次拼接正常，但循环 `s = s + x` 是 O(n²)；大量拼接用 `Bytes`（20k 次实测约 0.6s vs Bytes ≈1–2ms）
 - 容器：`Array<T>`（`[]`）、`Map<T>`（`{}`，String 键、值同质）、`Linked<T>`（双向链表）
   - `a.push/pop/shift/unshift`、`a.get/set`、`a[i]`、`a.length`、`a.sort()`（int/long/double/String）、`a.reverse()`、`for (x of a)`
   - `a.slice(起,止)`、`a.concat(other)`、`a.join(sep)`（仅 `Array<String>`）、`a.indexOf(v)`、`a.includes(v)`、`a.clear()`

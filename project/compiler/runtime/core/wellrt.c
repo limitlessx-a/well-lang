@@ -794,15 +794,15 @@ static void string_set_hash(WellString *s) {
 
 static void string_destroy(void *p) {
     WellString *s = (WellString *)p;
-    free(s->data);
+    /* data lives inline in the same allocation (see string_alloc_n) */
     free(s);
 }
 
 static WellString *string_alloc_n(const char *src, size_t n) {
-    WellString *s = (WellString *)malloc(sizeof(WellString));
+    /* Header + bytes in one allocation: half the malloc/free calls for Strings. */
+    WellString *s = (WellString *)malloc(sizeof(WellString) + n + 1);
     if (!s) well_panic("out of memory (String)");
-    s->data = (char *)malloc(n + 1);
-    if (!s->data) well_panic("out of memory (String data)");
+    s->data = (char *)(s + 1);
     if (n && src) memcpy(s->data, src, n);
     s->data[n] = 0;
     s->hdr.rc = 1;
@@ -850,13 +850,27 @@ WellString *well_string_lit(const char *src) {
 }
 
 WellString *well_string_concat(WellString *a, WellString *b) {
-    const char *sa = a ? a->data : "";
-    const char *sb = b ? b->data : "";
-    size_t la = strlen(sa), lb = strlen(sb);
-    WellString *s = (WellString *)malloc(sizeof(WellString));
+    const char *sa;
+    const char *sb;
+    size_t la, lb;
+    WellString *s;
+    /* Empty operands are common (s = "" + x); reuse the non-empty side. */
+    if (!a || a->len == 0) {
+        if (!b) return well_string_lit("");
+        well_retain(b);
+        return b;
+    }
+    if (!b || b->len == 0) {
+        well_retain(a);
+        return a;
+    }
+    sa = a->data;
+    sb = b->data;
+    la = (size_t)a->len;
+    lb = (size_t)b->len;
+    s = (WellString *)malloc(sizeof(WellString) + la + lb + 1);
     if (!s) well_panic("out of memory (String)");
-    s->data = (char *)malloc(la + lb + 1);
-    if (!s->data) well_panic("out of memory (String data)");
+    s->data = (char *)(s + 1);
     memcpy(s->data, sa, la);
     memcpy(s->data + la, sb, lb);
     s->data[la + lb] = 0;

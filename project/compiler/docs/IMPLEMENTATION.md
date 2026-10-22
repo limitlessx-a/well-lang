@@ -206,6 +206,8 @@ typedef struct WellObj {
 
 每个 struct/event 的第一个字段是 `WellObj hdr`；`String` 是 `{ WellObj hdr; char* data; }`。
 
+`WellString` 的 header 与字节数据在**同一块 malloc** 中（`data` 指向 header 之后），减少一次分配/释放；空操作数拼接（`"" + b`、`a + ""`）直接 retain 另一侧，不分配/复制。
+
 ### 3.2 引用计数（设计稿 A 方案）
 
 | 事件 | 计数 |

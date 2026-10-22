@@ -466,7 +466,7 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 #### 3.4.2 有意语义（设计选择，不是待修 bug）
 
 - switch **无 fallthrough**，case 值必须常量；
-- String 的 `length`/下标/切片按**字节**；UTF-8 用 `codePointAt` / `fromCodePoint`；大量拼接用 `Bytes`（`String +` 是 O(n²)）；
+- String 的 `length`/下标/切片按**字节**；UTF-8 用 `codePointAt` / `fromCodePoint`；单次 `a + b` 是 O(n+m) 分配+复制，正常；但循环 `s = s + x` 累计是 O(n²)，不要当 builder 用；大量拼接用 `Bytes`（本机 20k 次追加约 0.6s，Bytes 约 1–2ms）；
 - `Json.parse` 失败 **panic**；需要可恢复解析用 `Json.tryParse` 返回 `null`；
 - 整数 `/`、`%` 除零 **panic**（带 file:line）；字面量常量除零/溢出是编译错误。
 
