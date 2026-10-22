@@ -1,0 +1,17 @@
+module demo.utf8points;
+
+controller MainController extends Controller {
+    run() {
+        var emoji: String = String.fromCodePoint(128512);
+        var s: String = "a" + String.fromCodePoint(233) + emoji;
+        print(s.codePointAt(0));
+        print(s.codePointAt(1));
+        print(s.codePointAt(3));
+        print(s.codePointAt(99));
+        print(String.fromCodePoint(233));
+        print(emoji);
+        print(String.fromCodePoint(0xD800));
+    }
+}
+
+entry MainController;

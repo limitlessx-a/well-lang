@@ -170,6 +170,7 @@ void *well_decode(unsigned int type_id, long long oid,
 /* JSON parsing (metadata-driven into a struct/event) */
 void *well_json_parse(unsigned int type_id, const char *text, long long oid);
 void *well_json_try_parse(unsigned int type_id, const char *text, long long oid);
+WellString *well_json_stringify(void *obj);
 
 /* frame journal */
 void well_ctx_init(WellCtx *ctx, long long oid);
@@ -224,7 +225,10 @@ int well_string_eq(WellString *a, WellString *b);
 long long well_string_len(WellString *s);
 
 /* String helpers, all byte oriented (consistent with String.length). */
-long long well_str_byte_at(WellString *s, long long i); /* -1 when out of range */
+long long well_str_byte_at(WellString *s, long long i);
+long long well_str_code_point_at(WellString *s, long long i);
+long long well_str_code_point_at_take(WellString *s, long long i);
+WellString *well_string_from_code_point(long long cp); /* -1 when out of range */
 WellString *well_str_from_byte(int code);               /* low 8 bits */
 WellString *well_str_substring(WellString *s, long long start, long long end);
 long long well_str_index_of(WellString *s, WellString *needle);

@@ -156,7 +156,7 @@ class CodeGen:
             return True
         if isinstance(e, Call) and getattr(e, "model_op", None) in ("get", "peek", "findByOid"):
             return True
-        if isinstance(e, Call) and getattr(e, "builtin", None) in ("json_parse", "json_try_parse", "file_read", "host_env", "mysql_query_json", "mysql_query_json_pool", "str_from_int"):
+        if isinstance(e, Call) and getattr(e, "builtin", None) in ("json_parse", "json_try_parse", "json_stringify", "file_read", "host_env", "mysql_query_json", "mysql_query_json_pool", "str_from_int", "str_from_codepoint"):
             return True
         if isinstance(e, Binary) and e.op == "+" and getattr(e, "ty", None) == "String":
             return True
@@ -425,6 +425,8 @@ class CodeGen:
             ty = e.json_type
             arg = self.gen_expr(e.args[1])
             return f"(({ty}*)well_json_parse(T_{ty}, well_string_cstr({arg}), ctx->oid))"
+        if getattr(e, "builtin", None) == "json_stringify":
+            return f"well_json_stringify((void*)({self.gen_expr(e.args[0])}))"
         if getattr(e, "builtin", None) == "json_try_parse":
             ty = e.json_type
             arg = self.gen_arg_temp(e.args[1])
@@ -440,6 +442,8 @@ class CodeGen:
             return f"well_str_from_byte((int)({self.gen_expr(e.args[0])}))"
         if getattr(e, "builtin", None) == "str_from_int":
             return f"well_str_from_int((long long)({self.gen_expr(e.args[0])}))"
+        if getattr(e, "builtin", None) == "str_from_codepoint":
+            return f"well_string_from_code_point((long long)({self.gen_expr(e.args[0])}))"
         if getattr(e, "method_op", None):
             op = e.method_op
             obj = self.gen_expr(e.method_obj)
@@ -492,6 +496,11 @@ class CodeGen:
                 return f"well_map_set({obj}, {self.gen_expr(e.args[0])}, {self.box_value(self.gen_expr(e.args[1]), e.elem_ty)}, ctx)"
             if op == "map_delete":
                 return f"well_map_delete({obj}, {self.gen_expr(e.args[0])}, ctx)"
+            if op == "str_code_point_at":
+                if self.is_owned(e.method_obj):
+                    return (f"well_str_code_point_at_take({obj}, "
+                            f"(long long)({self.gen_expr(e.args[0])}))")
+                return f"well_str_code_point_at({obj}, (long long)({self.gen_expr(e.args[0])}))"
             if op == "str_byte_at":
                 return f"well_str_byte_at{take}({obj}, (long long)({self.gen_expr(e.args[0])}))"
             if op == "str_substring":

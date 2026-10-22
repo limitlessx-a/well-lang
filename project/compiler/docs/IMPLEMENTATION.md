@@ -121,6 +121,7 @@ String 方法（全部字节语义）：
 | 调用 | 语义 |
 |---|---|
 | `s.byteAt(i)` / `s.charCodeAt(i)` / `s[i]` | 第 i 个字节的无符号值；越界 `-1` |
+| `s.codePointAt(i)` | 从字节下标 i 解码一个 UTF-8 码点；越界/非法序列返回 `-1` |
 | `s.substring(a, b)` / `s.slice(a, b)` | 区间 `[a, b)`；越界自动 clamp |
 | `s.indexOf(x)` / `s.indexOf(x, from)` | 子串位置，未找到 `-1` |
 | `s.contains(x)` / `s.startsWith(x)` / `s.endsWith(x)` | `bool` |
@@ -129,6 +130,7 @@ String 方法（全部字节语义）：
 | `s.replace(old, new)` | 全部替换（非重叠、从左到右）；`old` 不能为空；未命中时共享原串（retain） |
 | `s.split(sep)` | `Array<String>`；`sep` 为空串时不切分 |
 | `String.fromByte(n)` | 取低 8 位构造单字节 String |
+| `String.fromCodePoint(cp)` | UTF-8 编码一个码点；非法码点（含代理区）→ U+FFFD |
 | `String.fromInt(n)` | 整数转十进制字符串（`long`/`int`/`bool`） |
 
 Bytes（可变字节缓冲）：
@@ -166,6 +168,7 @@ Bytes（可变字节缓冲）：
 | `IdUtil.getId()` | 返回 `long`：`serverId + timestamp + sequence`，线程安全；`WELL_SERVER_ID` 0..1023 |
 | `Json.parse(Type, String)` | 按元数据解析 JSON 为 struct/event；嵌套对象、容器、ref、字符串转义/Unicode；失败 panic |
 | `Json.tryParse(Type, String)` | 同上但**失败返回 `null`**（不 panic），部分构造的根对象会被释放 |
+| `Json.stringify(value)` | 按 Struct/Event 元数据序列化为 JSON String；支持嵌套 struct/event、Array/Map/Linked（元素类型来自字段元数据）、String 转义、null、非有限 double→null；深度 >64 输出 null |
 | `File.read/write/exists/remove` | 文件读写/存在/删除；失败 panic |
 | `Host.nowMs/env/log` | 当前毫秒时间、环境变量、stderr 日志 |
 | `Http.route/listen/respond/stop` | HTTP/1.1 服务器：多连接、keep-alive、handler 在 worker 上异步响应 |
@@ -365,7 +368,7 @@ typedef struct WellStore {
 
 ### 3.10 JSON 解析
 
-- 语言 API：`Json.parse(Type, String)` 返回 `Type*`（失败 panic）；`Json.tryParse(Type, String)` 失败返回 `null`；
+- 语言 API：`Json.parse(Type, String)` 返回 `Type*`（失败 panic）；`Json.tryParse(Type, String)` 失败返回 `null`；`Json.stringify(value)` 返回 String（当前参数限 struct/event/null，容器字段完整支持）；
 - 顶层必须是 object（或 `null`）；未知字段跳过；
 - 元数据字段名匹配；缺失字段保留默认值；
 - 标量：int/long/bool/double；
@@ -493,7 +496,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（107 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（109 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

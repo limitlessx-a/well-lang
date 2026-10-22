@@ -1,0 +1,43 @@
+module demo.jsonstringify;
+
+struct Inner {
+    x: int;
+    name: String;
+}
+
+struct Item {
+    a: int;
+    b: long;
+    c: double;
+    ok: bool;
+    s: String;
+    inner: Inner;
+    arr: Array<int>;
+    names: Array<String>;
+    m: Map<int>;
+}
+
+controller MainController extends Controller {
+    run() {
+        var item: Item = new Item();
+        item.a = 1;
+        item.b = 2000000000;
+        item.c = 1.5;
+        item.ok = true;
+        item.s = "he\"llo";
+        var inner: Inner = new Inner();
+        inner.x = 7;
+        inner.name = "in";
+        item.inner = inner;
+        var arr: Array<int> = [1, 2, 3];
+        item.arr = arr;
+        var names: Array<String> = ["a", "b"];
+        item.names = names;
+        var m: Map<int> = {"k": 9};
+        item.m = m;
+        print(Json.stringify(item));
+        print(Json.stringify(item.inner));
+    }
+}
+
+entry MainController;

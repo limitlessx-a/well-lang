@@ -1064,6 +1064,15 @@ class Checker:
         # Json.parse(Type, String) / Json.tryParse(Type, String)
         if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name == "Json":
             jname = e.func.name
+            if jname == "stringify":
+                if len(e.args) != 1:
+                    self.err("Json.stringify(value) expects 1 argument")
+                at = self.check_expr(e.args[0], env)
+                if at != "null" and at not in self.structs:
+                    self.err("Json.stringify: argument must be a struct/event (or null)")
+                e.ty = "String"
+                e.builtin = "json_stringify"
+                return
             if jname not in ("parse", "tryParse"):
                 self.err(f"unknown Json method {jname}")
             if len(e.args) != 2:
@@ -1124,6 +1133,15 @@ class Checker:
                     self.err("String.fromByte: code must be int/long")
                 e.ty = "String"
                 e.builtin = "str_from_byte"
+                return
+            if e.func.name == "fromCodePoint":
+                if len(e.args) != 1:
+                    self.err("String.fromCodePoint(cp) expects 1 argument")
+                it = self.check_expr(e.args[0], env)
+                if it not in ("int", "long"):
+                    self.err("String.fromCodePoint: cp must be int/long")
+                e.ty = "String"
+                e.builtin = "str_from_codepoint"
                 return
             if e.func.name == "fromInt":
                 if len(e.args) != 1:
@@ -1518,6 +1536,14 @@ class Checker:
                 self.err("String index must be int/long")
             e.ty = "int"
             e.method_op = "str_byte_at"
+        elif name == "codePointAt":
+            if len(e.args) != 1:
+                self.err("String.codePointAt(index) expects 1 argument")
+            it = self.check_expr(e.args[0], env)
+            if it not in ("int", "long"):
+                self.err("String.codePointAt: index must be int/long")
+            e.ty = "int"
+            e.method_op = "str_code_point_at"
         elif name in ("substring", "slice"):
             if len(e.args) != 2:
                 self.err(f"String.{name}(start, end) expects 2 arguments")

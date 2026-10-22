@@ -1128,6 +1128,66 @@ long long well_str_byte_at(WellString *s, long long i) {
     return (long long)(unsigned char)s->data[i];
 }
 
+long long well_str_code_point_at(WellString *s, long long i) {
+    const unsigned char *p;
+    unsigned char b0;
+    unsigned cp;
+    int len, k;
+    if (!s || i < 0 || i >= s->len) return -1;
+    p = (const unsigned char *)s->data + i;
+    b0 = p[0];
+    if (b0 < 0x80) return (long long)b0;
+    if (b0 >= 0xC2 && b0 <= 0xDF) { len = 2; cp = b0 & 0x1F; }
+    else if (b0 >= 0xE0 && b0 <= 0xEF) { len = 3; cp = b0 & 0x0F; }
+    else if (b0 >= 0xF0 && b0 <= 0xF4) { len = 4; cp = b0 & 0x07; }
+    else return -1;
+    if (i + len > s->len) return -1;
+    for (k = 1; k < len; k++) {
+        unsigned char c = p[k];
+        if ((c & 0xC0) != 0x80) return -1;
+        cp = (cp << 6) | (unsigned)(c & 0x3F);
+    }
+    if (len == 3 && cp < 0x800) return -1;
+    if (len == 4 && cp < 0x10000) return -1;
+    if (cp >= 0xD800 && cp <= 0xDFFF) return -1;
+    if (cp > 0x10FFFF) return -1;
+    return (long long)cp;
+}
+
+long long well_str_code_point_at_take(WellString *s, long long i) {
+    long long v = well_str_code_point_at(s, i);
+    well_release(s);
+    return v;
+}
+
+WellString *well_string_from_code_point(long long cp) {
+    char buf[5];
+    int n;
+    if (cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+        cp = 0xFFFD;
+    if (cp < 0x80) {
+        buf[0] = (char)cp;
+        n = 1;
+    } else if (cp < 0x800) {
+        buf[0] = (char)(0xC0 | (cp >> 6));
+        buf[1] = (char)(0x80 | (cp & 0x3F));
+        n = 2;
+    } else if (cp < 0x10000) {
+        buf[0] = (char)(0xE0 | (cp >> 12));
+        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (cp & 0x3F));
+        n = 3;
+    } else {
+        buf[0] = (char)(0xF0 | (cp >> 18));
+        buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[3] = (char)(0x80 | (cp & 0x3F));
+        n = 4;
+    }
+    buf[n] = 0;
+    return well_string_new(buf);
+}
+
 WellString *well_str_from_byte(int code) {
     char c = (char)(unsigned char)(code & 0xFF);
     return string_alloc_n(&c, 1);
