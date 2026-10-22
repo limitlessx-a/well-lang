@@ -6,6 +6,10 @@ name: verify
 # POSIX builds use gcc: TinyCC 0.9.27's Linux port does not implement the
 # __atomic_* builtins the multithreaded runtime relies on, while the Windows
 # runtime path uses Interlocked and keeps TCC as the default there.
+#
+# Jobs:
+#   linux - 115 .we cases + 12 C tests + check-cli (every compiler push/PR)
+#   bench - optional HTTP bench smoke (workflow_dispatch with run_bench=true)
 on:
   push:
     paths:
@@ -13,6 +17,11 @@ on:
       - ".github/workflows/verify.yml"
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_bench:
+        description: "同时跑 HTTP bench smoke（默认关闭，避免计时噪声）"
+        type: boolean
+        default: false
 
 jobs:
   linux:
@@ -26,16 +35,33 @@ jobs:
         run: |
           gcc --version | head -n 1
           python -c "import sys; sys.path.insert(0, 'project/compiler'); from wellc.driver import find_cc, cc_flags; print('cc:', find_cc()); print('cflags:', cc_flags())"
-      - name: Regression (.we cases)
+      - name: Regression (.we cases + C tests + check-cli)
         shell: bash
         run: |
           set +e
-          python project/compiler/tools/verify.py --quick > verify.log 2>&1
+          python project/compiler/tools/verify.py > verify.log 2>&1
           status=$?
-          tail -n 60 verify.log
+          tail -n 80 verify.log
           if [ "$status" -ne 0 ]; then
             # The full log needs repository admin rights to download, but
             # ::error:: annotations are visible on the public check run.
-            grep -E '^(FAIL|SKIP|verify:)' verify.log | head -n 25 | sed 's/^/::error::/'
+            grep -E '^(FAIL|SKIP|verify:)' verify.log | head -n 30 | sed 's/^/::error::/'
           fi
           exit "$status"
+
+  bench:
+    # Manual only: bench numbers are noisy on shared runners, so they are not
+    # part of the push/PR gate.
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_bench == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Show C toolchain
+        run: gcc --version | head -n 1
+      - name: HTTP bench smoke
+        run: |
+          python project/compiler/tools/bench.py \
+            --scenario http --iterations 200 --clients 2 --seconds 1

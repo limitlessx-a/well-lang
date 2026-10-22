@@ -214,7 +214,7 @@ function disposable() {
 
 const configStore = {
   "well.enable": true,
-  "well.pythonPath": "python",
+  "well.pythonPath": process.platform === "win32" ? "python" : "python3",
   "well.compilerPath": "",
   "well.diagnostics.enable": true,
   "well.diagnostics.delayMs": 300,

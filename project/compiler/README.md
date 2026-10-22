@@ -136,7 +136,9 @@ $env:WELL_CFLAGS = ""
 
 ### CI（Linux）
 
-`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑 `tools/verify.py --quick`（POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2`）。2026-10-22 已跑通：113/113 通过，`52_mysql`/`53_mysql_pool` 因 runner 无 MySQL 自动跳过。C 测试/bench 尚未纳入 CI。需要本机 MySQL 的用例通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
+`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑完整 `tools/verify.py`（**115 个 `.we` 用例 + 12 个 C 测试 + check-cli**；POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2`）。2026-10-23 起 **CI 已转正**：C 测试纳入每次 push/PR 的 Linux 门禁；`52_mysql`/`53_mysql_pool` 因 runner 无 MySQL 自动 SKIP。bench（HTTP 压测/解析器基线）不进入 push 门禁，通过 `workflow_dispatch` 勾选 `run_bench=true` 手动触发，避免共享 runner 的计时噪声。需要本机 MySQL 的用例通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
+
+插件 CI 在 `.github/workflows/extension.yml`：`project/vscode_extension/**` 变化时跑 `npm test`（TypeScript 编译 + 格式化/import/语法/激活冒烟 4 组测试）。
 
 
 调试引用计数：

@@ -1,0 +1,33 @@
+name: extension
+
+# VS Code 插件 CI：TypeScript 编译 + 4 组测试
+# （格式化 / import 解析 / 语法 JSON / 激活冒烟，含真实 wellc check 诊断）。
+#
+# 说明：这里用 `npm install --no-package-lock`，避免依赖本地生成的
+# package-lock.json 中指向国内镜像的 resolved URL；CI 直接用默认 npm registry。
+on:
+  push:
+    paths:
+      - "project/vscode_extension/**"
+      - ".github/workflows/extension.yml"
+  pull_request:
+    paths:
+      - "project/vscode_extension/**"
+      - ".github/workflows/extension.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: project/vscode_extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dev dependencies
+        run: npm install --no-package-lock --no-audit --no-fund
+      - name: Compile + tests
+        run: npm test
