@@ -1,0 +1,40 @@
+module demo.ttldefault;
+
+struct ItemVo extends Vo {
+    n: int;
+}
+
+event ItemEvent extends Event {
+    n: int;
+}
+
+event TickEvent extends Event {
+    id: long;
+    interval: long;
+    fires: long;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(ItemEvent, ItemHandler);
+        Timer.once(1600, TickHandler);
+        emit(new ItemEvent(7) { n: 1 });
+    }
+}
+
+handler ItemHandler extends Handler {
+    onEvent(e: ItemEvent) {
+        var vo = new ItemVo();
+        vo.n = 1;
+        Model.set(vo);
+        print("created");
+    }
+}
+
+handler TickHandler extends Handler {
+    onEvent(e: TickEvent) {
+        print("tick");
+    }
+}
+
+entry MainController;

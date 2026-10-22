@@ -20,6 +20,9 @@ static WellLock g_act_lock = 0;
 static long long g_last_cleanup_ms = 0;
 static int g_activity_enabled = -1;
 
+/* Idle oid reclamation is ON by default (60s); WELL_MODEL_TTL_MS=0 disables it. */
+#define MODEL_DEFAULT_TTL_MS 60000LL
+
 void well_model_activity_enable(void) {
     g_activity_enabled = 1;
 }
@@ -27,7 +30,8 @@ void well_model_activity_enable(void) {
 static int activity_enabled(void) {
     if (g_activity_enabled < 0) {
         const char *env = getenv("WELL_MODEL_TTL_MS");
-        g_activity_enabled = (env && atoi(env) > 0) ? 1 : 0;
+        if (!env || !env[0]) g_activity_enabled = 1;      /* default: enabled */
+        else g_activity_enabled = (atoi(env) > 0) ? 1 : 0; /* explicit 0/negative: off */
     }
     return g_activity_enabled;
 }
@@ -36,11 +40,28 @@ static long long g_model_ttl_ms = 0;
 static long long getenv_ttl_cached(void) {
     if (g_model_ttl_ms == 0) {
         const char *env = getenv("WELL_MODEL_TTL_MS");
-        g_model_ttl_ms = (env && env[0]) ? (long long)atoi(env) : -1;
-        if (g_model_ttl_ms < 0) g_model_ttl_ms = -1;
+        g_model_ttl_ms = (env && env[0]) ? (long long)atoi(env) : MODEL_DEFAULT_TTL_MS;
     }
     return g_model_ttl_ms;
 }
+
+/* While cleanup holds g_act_lock it force-frees objects; their destruction can
+ * release events, which unpins payload oids and would re-enter g_act_lock on the
+ * same thread (non-recursive spinlock). Track that context per thread. */
+#ifdef _WIN32
+static DWORD g_act_tls = TLS_OUT_OF_INDEXES;
+static int act_context_held(void) {
+    return g_act_tls != TLS_OUT_OF_INDEXES && TlsGetValue(g_act_tls) != NULL;
+}
+static void act_context_set(int held) {
+    if (g_act_tls == TLS_OUT_OF_INDEXES) g_act_tls = TlsAlloc();
+    if (g_act_tls != TLS_OUT_OF_INDEXES) TlsSetValue(g_act_tls, held ? (void *)1 : NULL);
+}
+#else
+static __thread int g_act_tls_held = 0;
+static int act_context_held(void) { return g_act_tls_held; }
+static void act_context_set(int held) { g_act_tls_held = held; }
+#endif
 
 static unsigned act_bucket(long long oid) {
     unsigned long long x = (unsigned long long)oid;
@@ -66,32 +87,46 @@ static ActEntry *act_get_locked(long long oid, long long now) {
     return a;
 }
 
-void well_model_touch_oid(long long oid) {
-    long long now;
-    if (!activity_enabled()) return;
-    now = well_mono_ms();
-    well_lock_acquire(&g_act_lock);
+static void act_touch_locked(long long oid, long long now) {
     act_get_locked(oid, now)->last_active_ms = now;
-    well_lock_release(&g_act_lock);
 }
 
-void well_oid_pin(long long oid) {
-    well_lock_acquire(&g_act_lock);
+static void act_pin_locked(long long oid) {
     act_get_locked(oid, well_mono_ms())->exec_ref++;
-    well_lock_release(&g_act_lock);
 }
 
-void well_oid_unpin(long long oid) {
-    unsigned b;
+static void act_unpin_locked(long long oid) {
+    unsigned b = act_bucket(oid);
     ActEntry *a;
-    well_lock_acquire(&g_act_lock);
-    b = act_bucket(oid);
     for (a = g_act[b]; a; a = a->next) {
         if (a->oid == oid) {
             if (a->exec_ref > 0) a->exec_ref--;
             break;
         }
     }
+}
+
+void well_model_touch_oid(long long oid) {
+    long long now;
+    if (!activity_enabled()) return;
+    now = well_mono_ms();
+    if (act_context_held()) { act_touch_locked(oid, now); return; }
+    well_lock_acquire(&g_act_lock);
+    act_touch_locked(oid, now);
+    well_lock_release(&g_act_lock);
+}
+
+void well_oid_pin(long long oid) {
+    if (act_context_held()) { act_pin_locked(oid); return; }
+    well_lock_acquire(&g_act_lock);
+    act_pin_locked(oid);
+    well_lock_release(&g_act_lock);
+}
+
+void well_oid_unpin(long long oid) {
+    if (act_context_held()) { act_unpin_locked(oid); return; }
+    well_lock_acquire(&g_act_lock);
+    act_unpin_locked(oid);
     well_lock_release(&g_act_lock);
 }
 
@@ -170,10 +205,16 @@ void well_model_cleanup(long long now_ms, long long ttl_ms) {
     int b;
     if (ttl_ms <= 0) return;
     well_lock_acquire(&g_act_lock);
+    act_context_set(1);
     for (b = 0; b < ACT_BUCKETS; b++) {
         ActEntry **pp = &g_act[b];
         while (*pp) {
             ActEntry *a = *pp;
+            if (a->oid == 0) {
+                /* oid 0 = startup/static data; never reclaimed automatically */
+                pp = &a->next;
+                continue;
+            }
             if (now_ms - a->last_active_ms < ttl_ms) {
                 pp = &a->next;
                 continue;
@@ -200,6 +241,7 @@ void well_model_cleanup(long long now_ms, long long ttl_ms) {
             pp = &a->next;
         }
     }
+    act_context_set(0);
     well_lock_release(&g_act_lock);
 }
 

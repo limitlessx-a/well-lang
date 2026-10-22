@@ -212,7 +212,7 @@ typedef struct WellObj {
 > **状态（2026-10-22）**：对象图实现已移除（`well_graph_add_edge/remove_edge` 为 no-op 桩，`WellObj.graph_edges` 保留为 reserved 字段）。成环被允许，由 oid 空闲清理整组回收（见 §3.3「不活跃清理」）。
 
 - 历史设计（未启用）：`graph_edges` 出边表 + 加边前 DFS 判环，命中 panic `"DAG violation"`；因每次引用写入 O(V+E)、且环已由 oid 整组清理兜底，未启用。
-- 现在的回收路径：仅自动路径 `WELL_MODEL_TTL_MS`（默认关闭）→ 对空闲 oid 组强制释放。
+- 现在的回收路径：自动路径 `WELL_MODEL_TTL_MS` **默认开启**（默认 60 秒，设为 `0`/负数关闭）→ 对空闲 oid 组强制释放；`oid 0`（启动期/static 数据）豁免，不参与自动清理。
 - 约束：清理按 oid 整组强杀、**不检查组外引用**；跨 oid 引用与 static 持有业务对象的风险见 §3.3。
 
 ### 3.3 Model / Cache / Store
@@ -244,7 +244,8 @@ typedef struct WellStore {
 - 未写回 Store 的缓存修改可能被其他 Model 覆盖；跨 Model/Store 的数据一致性由用户负责。
 - 同一 oid 的旧对象可能仍被 handler/event 持有；Cache 替换不会立即释放旧对象。
 - 同一对象在 Model 中只允许一个 key；同 key 不同类型可共存。
-- **不活跃清理**：`WELL_MODEL_TTL_MS` > 0 时启用；记录 oid 活动时间；清理条件为调度器空闲 + `exec_ref==0` + 超过 TTL；只驱逐 Cache，Store 保留；下次 `Model.get` 回源。
+- **不活跃清理（默认开启）**：默认 TTL 60 秒（`WELL_MODEL_TTL_MS` 可覆盖，`0`/负数关闭）；记录 oid 活动时间；清理条件为调度器空闲 + `exec_ref==0` + 超过 TTL；只驱逐 Cache/内存对象，Store 保留；下次 `Model.get` 回源；`oid 0` 豁免。
+- 清理期间持有 act 锁并 force-free，嵌套的 release 可能触发事件 unpin；实现用线程上下文标记让 `well_oid_pin/unpin/touch` 在该上下文内跳过重复加锁，避免自旋死锁。
 - **环与跨 oid 约束**（重要）：
   - 同一 oid 组内的环允许存在，由清理整组回收；
   - 清理**不检查组外引用**：其他 oid 的对象、`static` 字段、模块 C 结构若持有该组对象，清理后会悬空。oid 写检查阻止普通字段跨 oid 引用，但 `static`/全局容器不检查；
@@ -470,7 +471,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（88 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（89 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 
