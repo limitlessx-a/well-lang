@@ -27,7 +27,7 @@
 - 语句：`var`、赋值、`if/else`、`while`、`for`、`return`、`break/continue`
 - 表达式：算术/比较/逻辑、字符串拼接、`String.length`、成员访问、`new`、对象初始化
 - **String 字节方法**：`s[i]` / `byteAt(i)` / `charCodeAt(i)`、`substring/slice(a,b)`、`indexOf(x[,from])`、`contains/startsWith/endsWith`、`trim`、`toLower/toUpper`、`split(sep)`、`replace(old, new)`、`String.fromByte(n)`、`String.fromInt(n)`、`s.codePointAt(i)`、`String.fromCodePoint(cp)`（长度与下标均按字节，与 `String.length` 一致；码点方法按 UTF-8 解码）
-- **Bytes 可变字节缓冲**：`new Bytes()`、`b.length`、`push/get/set/append/appendStr/clear/toString`；用于增量拼装负载，避免 String `+` 的 O(n²)；写操作参与 oid 检查（运行期不能改启动期/其它 oid 的 Bytes）
+- **Bytes 可变字节缓冲**：`new Bytes()`、`b.length`、`push/get/set/append/appendStr/clear/toString`；用于增量拼装负载，避免**循环累积** String `+` 的 O(n²)；单次拼接是 O(总长度)；写操作参与 oid 检查（运行期不能改启动期/其它 oid 的 Bytes）
 - **Well 版 HTTP 解析器（验证项目）**：`examples/lib/http_parser.we`（纯 Well 解析 request line/headers/body），由 `tests/cases/65_well_http_parser`、`66_http_parser_route` 覆盖，证明协议层可在 Well 内实现
 - **性能基线**：`examples/http_parser_bench` 可复现；当前 Well 解析器 ≈13.3 µs/次 vs C ≈0.75 µs/次（≈18×），瓶颈是每字段多次分配，分析见 `document/HTTP-解析器性能基线.md`
 - **TCC vs GCC -O2（本机初步）**：CPU parser 微基准 ≈11–14 µs/parse → ≈6–8 µs/parse（约 1.8×）；HTTP 压测受 Python 客户端/OS 抖动影响，未观察到稳定吞吐差异；gcc -O2 编译明显更慢

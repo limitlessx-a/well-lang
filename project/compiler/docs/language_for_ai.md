@@ -229,7 +229,7 @@ continue;
 a == b, a != b, a < b, a <= b, a > b, a >= b
 a && b, a || b, !a
 cond ? x : y
-"a" + "b"              // String 拼接（O(n²)，大量拼接用 Bytes）
+"a" + "b"              // 单次拼接 O(len(a)+len(b))；循环累积才 O(n²)，用 Bytes
 arr[i], map["k"], obj.field
 new UserVo(), new PingEvent(oid) { n: 1 }, new Bytes()
 [1, 2, 3], {"k": 1}    // 容器字面量（受限，见下）
