@@ -281,7 +281,7 @@ handler PingHandler {
 on(PingEvent, PingHandler);    // 允许：PingEvent 继承 BasePingEvent
 ```
 - channel 是 long：0 默认、>0 普通、`ALL` 只用于订阅；
-- emit 是异步派发；event 的 oid 决定进入哪个 oid 队列；
+- emit 是异步派发；event 的 oid 是调度目标：`new PingEvent(0)` 的 oid 为 0，`emit` 时用 `IdUtil` 生成一个新的非 0 oid；`new PingEvent(targetOid)` 则直接进入 targetOid 的队列，`emit` 不改写它的 oid；
 - 同一 oid 事件 FIFO 串行；不同 oid 可并行；
 - `once` 在订阅锁内 claim，至多执行一次；`off/stop` 置 inactive。
 
@@ -442,7 +442,7 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 ### 3.2 事件 / static
 
 1. event 构造后冻结，字段只读；不要存到 static/跨 oid 结构；
-2. emit 会改写 oid=0 的 event 为新 oid；
+2. `emit` 对 **oid==0** 的 event 会先分配一个新 oid（`IdUtil`），再入队；非 0 oid 的 event（`new PingEvent(targetOid)`）不会被改写。因此 oid=0 的 event 要到 emit 时才会得到最终目标 oid；不要把它放进 static/装配期数据；
 3. static 只放配置/只读数据；不要尝试运行期写；
 4. `controller`/`handler` 不支持继承，父类逻辑不会执行；`struct`/`event` 只支持字段展平，无多态。
 
