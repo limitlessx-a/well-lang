@@ -87,6 +87,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 - 字段没有 oid，**不参与 oid 写检查**；C 名字修饰 `S__field` / `S__f`；
 - **运行期只读（已强制）**：所有 static 字段（引用与标量）仅在启动期（`well_run_loop` 之前，且 `ctx.oid == 装配期 oid`）可写；`well_run_loop` 启动时 `well_static_freeze()` 冻结；运行期写会 panic `static field S.f is read-only (assembly oid=..., ctx oid=...)`。
 - 引用字段的值必须与装配期 oid 一致（`value.oid == ctx.oid`，String 无 oid 例外），防止把运行期 oid 的业务对象塞进 static。
+- **引用字段类型不能出现 event**（直接声明、容器元素、或经 struct 字段间接可达都会被编译期拒绝）：`emit` 会改写 event 的 oid，static 持有的 event 会因此变成非装配期 oid、可能被 TTL 清理；需要事件对象请在 handler 内局部创建。
 - static 容器/Bytes 的**原地变异**也被 oid 检查拦截（对象 oid=0 vs handler oid≠0：`Array.push/sort/reverse`、`Bytes.*`、`Map/Linked` 写操作）。
 - static 数据（装配期 oid，当前 0）**不参与自动 TTL 清理**（按装配期 oid 豁免），进程退出时统一 release；需要运行期可变状态请用 Model/oid。
 - namespace 内的函数在启动期可读写 `S.f`，运行期同样只读。
@@ -476,7 +477,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（94 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（97 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

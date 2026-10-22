@@ -54,6 +54,7 @@ class Checker:
         for sname, st in self.statics.items():
             for fname, f in st["fields"].items():
                 self.check_type_name(f.type.name)
+                self.check_static_field_type(sname, fname, f.type.name, set())
                 if f.default is None:
                     continue
                 d = f.default
@@ -238,6 +239,22 @@ class Checker:
         self.loop_depth = old_loop
         if ret != "void" and not self.block_returns(m.body):
             self.err(f"{m.name}: not all paths return a value")
+
+    def check_static_field_type(self, sname, fname, ty, seen):
+        """Events (directly or reachable through structs/containers) are not
+        allowed in static fields: emit mutates an event's oid after storage."""
+        if ty in self.structs:
+            if self.structs[ty]["kind"] == "event":
+                self.err(f"static {sname}.{fname}: event type {ty} is not allowed in static fields")
+            if ty in seen:
+                return
+            seen.add(ty)
+            for sf in self.structs[ty]["fields"]:
+                self.check_static_field_type(sname, fname, sf.type.name, seen)
+            return
+        kind, et = self.container_info(ty)
+        if kind:
+            self.check_static_field_type(sname, fname, et, seen)
 
     def check_decl_types(self):
         for name, st in self.structs.items():

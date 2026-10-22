@@ -1,0 +1,21 @@
+module demo.staticeventnest;
+
+event GoEvent extends Event {
+    n: int;
+}
+
+struct Holder {
+    ev: GoEvent;
+}
+
+static Cfg {
+    h: Holder;
+}
+
+controller MainController extends Controller {
+    run() {
+        print(1);
+    }
+}
+
+entry MainController;

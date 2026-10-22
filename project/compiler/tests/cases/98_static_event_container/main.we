@@ -1,0 +1,17 @@
+module demo.staticeventarr;
+
+event GoEvent extends Event {
+    n: int;
+}
+
+static Cfg {
+    evs: Array<GoEvent>;
+}
+
+controller MainController extends Controller {
+    run() {
+        print(1);
+    }
+}
+
+entry MainController;
