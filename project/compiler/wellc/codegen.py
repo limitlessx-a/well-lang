@@ -418,9 +418,9 @@ class CodeGen:
                         f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}, "
                         f"{self.elem_kind_code(e.elem_ty)})")
             if op == "array_sort":
-                return f"well_array_sort({obj}, {self.sort_kind_code(e.elem_ty)})"
+                return f"well_array_sort({obj}, {self.sort_kind_code(e.elem_ty)}, ctx)"
             if op == "array_reverse":
-                return f"well_array_reverse({obj})"
+                return f"well_array_reverse({obj}, ctx)"
             if op == "array_clear":
                 return f"well_array_clear({obj}, ctx)"
             if op == "array_shift":

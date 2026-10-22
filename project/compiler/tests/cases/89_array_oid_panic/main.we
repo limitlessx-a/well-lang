@@ -1,0 +1,32 @@
+module demo.arrayoid;
+
+static Cfg {
+    arr: Array<int>;
+}
+
+event ItemEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        var a: Array<int> = [3, 1, 2];
+        Cfg.arr = a;
+        on(ItemEvent, ItemHandler);
+        emit(new ItemEvent(1) { n: 1 });
+        emit(new ItemEvent(1) { n: 2 });
+    }
+}
+
+handler ItemHandler extends Handler {
+    onEvent(e: ItemEvent) {
+        if (e.n == 1) {
+            Cfg.arr.sort();
+        } else {
+            Cfg.arr.reverse();
+        }
+        print("should not print");
+    }
+}
+
+entry MainController;

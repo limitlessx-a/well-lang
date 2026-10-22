@@ -279,6 +279,7 @@ typedef struct WellStore {
 - `pop()` 把元素的引用所有权转移给调用方（codegen 标记为 owned）；`shift()` 同理（O(n)）。
 - Array 方法：`push/pop/get/set/slice/concat/join/indexOf/includes/clear/shift/unshift/sort/reverse`。
   - `sort()` 原地升序插入排序，支持 `int/long/bool/double/String` 元素（其他元素类型报编译错误）；`reverse()` 原地反转。
+  - `sort/reverse` 与其它容器写操作一致，**会做 oid 检查**（`object.oid == ctx.oid`）；在 handler 里对启动期创建的数组（oid=0）排序/反转会 panic `well oid violation: Array.sort/Array.reverse`。
   - `slice(a,b)` / `concat(other)` 返回新数组（引用元素 retain，`is_ref` 沿用源数组）；`join(sep)` 仅支持 `Array<String>`；
   - `indexOf/includes` 按元素类型比较（标量按值、String 按内容、其他引用按指针），比较方式由 codegen 传 kind。
 - Map 方法：`get/set/has/delete/keys/values/clear`；`keys()` → `Array<String>`，`values()` → `Array<T>`（均为新数组、插入序）。
@@ -471,7 +472,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（88 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（89 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

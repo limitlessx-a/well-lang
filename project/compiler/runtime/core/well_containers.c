@@ -230,9 +230,11 @@ static int array_cmp_kind(WellValue x, WellValue y, int kind) {
 }
 
 /* In-place ascending sort (insertion sort; keeps element refcounts untouched). */
-void well_array_sort(WellArray *a, int kind) {
+void well_array_sort(WellArray *a, int kind, WellCtx *ctx) {
     long long n, i, j;
-    if (!a || a->len < 2) return;
+    if (!a) well_panic("sort on null array");
+    well_check_oid((void *)a, ctx, "Array.sort");
+    if (a->len < 2) return;
     n = a->len;
     for (i = 1; i < n; i++) {
         WellValue v = a->items[i];
@@ -245,9 +247,11 @@ void well_array_sort(WellArray *a, int kind) {
     }
 }
 
-void well_array_reverse(WellArray *a) {
+void well_array_reverse(WellArray *a, WellCtx *ctx) {
     long long i, j;
-    if (!a || a->len < 2) return;
+    if (!a) well_panic("reverse on null array");
+    well_check_oid((void *)a, ctx, "Array.reverse");
+    if (a->len < 2) return;
     for (i = 0, j = a->len - 1; i < j; i++, j--) {
         WellValue t = a->items[i];
         a->items[i] = a->items[j];

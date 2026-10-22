@@ -275,9 +275,9 @@ WellString *well_array_join(WellArray *a, WellString *sep);
 long long well_array_index_of(WellArray *a, WellValue v, int kind);
 int well_array_includes(WellArray *a, WellValue v, int kind);
 void well_array_clear(WellArray *a, WellCtx *ctx);
-/* sort kind: WELL_FIELD_INT / LONG / DOUBLE / STRING */
-void well_array_sort(WellArray *a, int kind);
-void well_array_reverse(WellArray *a);
+/* sort kind: WELL_FIELD_INT / LONG / DOUBLE / STRING; oid-checked mutations */
+void well_array_sort(WellArray *a, int kind, WellCtx *ctx);
+void well_array_reverse(WellArray *a, WellCtx *ctx);
 WellValue well_array_shift(WellArray *a, WellCtx *ctx);
 void well_array_unshift(WellArray *a, WellValue v, WellCtx *ctx);
 /* take variants (owned receiver) */
