@@ -1,0 +1,9 @@
+module demo.modelcleanuperr;
+
+controller MainController extends Controller {
+    run() {
+        print(Model.cleanup("1000"));
+    }
+}
+
+entry MainController;

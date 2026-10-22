@@ -166,9 +166,10 @@ void well_model_remove(unsigned int type_id, long long oid, WellCtx *ctx) {
     well_cache_remove(type_id, oid);
 }
 
-void well_model_cleanup(long long now_ms, long long ttl_ms) {
+int well_model_cleanup(long long now_ms, long long ttl_ms) {
     int b;
-    if (ttl_ms <= 0) return;
+    int cleaned = 0;
+    if (ttl_ms < 0) ttl_ms = 0;
     well_lock_acquire(&g_act_lock);
     for (b = 0; b < ACT_BUCKETS; b++) {
         ActEntry **pp = &g_act[b];
@@ -194,6 +195,7 @@ void well_model_cleanup(long long now_ms, long long ttl_ms) {
                 if (rows == 0) {
                     *pp = a->next;
                     free(a);
+                    cleaned++;
                     continue;
                 }
             }
@@ -201,6 +203,14 @@ void well_model_cleanup(long long now_ms, long long ttl_ms) {
         }
     }
     well_lock_release(&g_act_lock);
+    return cleaned;
+}
+
+/* Explicit, one-shot cleanup: frees oid groups idle for at least ttl_ms with no
+ * running/queued work. Returns the number of oid groups reclaimed. */
+int well_model_cleanup_manual(long long ttl_ms) {
+    well_event_init();
+    return well_model_cleanup(well_mono_ms(), ttl_ms);
 }
 
 void well_model_cleanup_if_due(void) {
@@ -212,7 +222,7 @@ void well_model_cleanup_if_due(void) {
     now = well_mono_ms();
     if (now - g_last_cleanup_ms < 1000) return;
     g_last_cleanup_ms = now;
-    well_model_cleanup(now, (long long)getenv_ttl_cached());
+    (void)well_model_cleanup(now, (long long)getenv_ttl_cached());
 }
 
 void well_model_shutdown(void) {

@@ -202,6 +202,8 @@ void *well_model_peek_ctx(unsigned int type_id, long long oid, WellCtx *ctx);
 void *well_model_find_by_oid(unsigned int type_id, long long oid);
 void well_model_set(void *obj, WellCtx *ctx);
 void well_model_remove(unsigned int type_id, long long oid, WellCtx *ctx);
+/* one-shot idle-oid cleanup; returns reclaimed oid groups */
+int well_model_cleanup_manual(long long ttl_ms);
 
 /* Strings */
 WellString *well_string_lit(const char *s);

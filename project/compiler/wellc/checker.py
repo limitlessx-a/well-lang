@@ -1242,6 +1242,14 @@ class Checker:
                 e.ty = "void"
                 e.model_op = "set"
                 return
+            if name == "cleanup":
+                if len(e.args) != 1:
+                    self.err("Model.cleanup(ttlMs) expects 1 argument")
+                if self.check_expr(e.args[0], env) not in ("int", "long"):
+                    self.err("Model.cleanup: ttlMs must be int/long")
+                e.ty = "int"
+                e.model_op = "cleanup"
+                return
             if name == "remove":
                 if len(e.args) != 2 or not isinstance(e.args[0], Ident):
                     self.err("Model.remove(Type, oid) expects a type name and oid")

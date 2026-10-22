@@ -1,0 +1,47 @@
+module demo.modelcleanup;
+
+struct ItemVo extends Vo {
+    n: int;
+}
+
+event ItemEvent extends Event {
+    n: int;
+}
+
+event CleanEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(ItemEvent, ItemHandler);
+        on(CleanEvent, CleanHandler);
+        emit(new ItemEvent(7) { n: 1 });
+        emit(new ItemEvent(7) { n: 2 });
+    }
+}
+
+handler ItemHandler extends Handler {
+    onEvent(e: ItemEvent) {
+        var vo = Model.get(ItemVo, oid);
+        if (vo == null) {
+            vo = new ItemVo();
+            vo.n = e.n;
+            Model.set(vo);
+        } else {
+            vo.n = e.n;
+            Model.set(vo);
+        }
+        if (e.n == 2) {
+            emit(new CleanEvent(99) { n: 0 });
+        }
+    }
+}
+
+handler CleanHandler extends Handler {
+    onEvent(e: CleanEvent) {
+        print("cleaned ", Model.cleanup(0));
+    }
+}
+
+entry MainController;

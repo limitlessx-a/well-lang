@@ -502,6 +502,8 @@ class CodeGen:
             return f"(({self.ctype(e.model_type)})well_model_peek_ctx(T_{e.model_type}, (long long)({self.gen_expr(e.args[1])}), ctx))"
         if getattr(e, "model_op", None) == "findByOid":
             return f"(({self.ctype(e.model_type)})well_model_get_ctx(T_{e.model_type}, (long long)({self.gen_expr(e.args[1])}), ctx))"
+        if getattr(e, "model_op", None) == "cleanup":
+            return f"well_model_cleanup_manual((long long)({self.gen_expr(e.args[0])}))"
         if getattr(e, "model_op", None) == "remove":
             return f"well_model_remove(T_{e.model_type}, (long long)({self.gen_expr(e.args[1])}), ctx)"
         if getattr(e, "model_op", None) == "set":
