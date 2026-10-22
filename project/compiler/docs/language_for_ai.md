@@ -13,7 +13,7 @@
 1. **oid 是唯一的数据所有者**：一个对象/事件/容器只属于一个 oid；handler/controller 只能写 `ctx.oid` 拥有的数据（static/装配期数据另有规则）。
 2. **禁止跨 oid 引用业务对象**：字段赋值、容器插入都会检查 `value.oid == owner.oid`（String 例外）；违反会 panic `well oid violation`。
 3. **`Model.get` 返回 owned 引用**（可空）；交给变量/帧日志管理，不要手工 `free`，也不要长期缓存裸指针。
-4. **不要跨 oid 缓存对象**：Model 对象可能被 TTL 强杀（默认 60s），强杀**不检查 rc**；把业务对象塞进 `static`/模块 C 全局是悬空指针的来源。
+4. **TTL 回收以 `exec_ref` 租约为准（不是 rc）**：清理只在 `exec_ref==0` 且调度器无该 oid 任务时发生；handler/`Model.get/peek` 会 pin，在飞 event 会 pin 其引用的 Model oid，普通字段/容器禁止跨 oid，static 只允许装配期 oid 对象——因此**正常 Well 代码不会因 TTL 悬空**。C/FFI 裸指针未 `well_oid_pin` 属例外。
 5. **handler 是 run-to-completion**：没有 `await/yield`；在 handler 里做阻塞 I/O（File/MySQL/大循环）会卡住该 oid 的 runner，也会占住一个 worker。
 6. **controller 的 `ctx.oid == 0`（装配期 oid）**：不要在那里创建 Model 业务数据；业务对象应在事件 handler 中以事件 oid 创建。
 7. **event 构造完成后被冻结**：字段只读；不要保存 event 到 static/跨 oid 结构；`emit` 会改写 event 的 oid。
@@ -467,9 +467,14 @@ Model.remove(T,oid): Store.delete -> Cache.remove
 - 默认 **开启，60 秒**：`WELL_MODEL_TTL_MS` 覆盖，`0`/负数关闭；
 - 活动时间由 **`Cache.get/set`（即 `Model.get/peek/findByOid/set`）以及事件派发 `dispatch_event`** 刷新；单纯的 `well_oid_pin` 不刷新 last_active。
 - 注意：`Model.peek` 也会 touch（它走 `well_cache_get`），所以**轮询 peek 会把 oid 保活**；不要用 peek 做“只读探测”而误以为不会延长生命周期。
-- 清理条件：oid 空闲 ≥ TTL 且 `exec_ref == 0`（没有 handler/pin）且调度器无该 oid 排队/运行任务；
+- 清理条件：oid 空闲 ≥ TTL 且 `exec_ref == 0`（没有 handler/Model pin/在飞事件 payload 引用）且调度器无该 oid 排队/运行任务；
 - 清理是**整组强杀**：`well_oid_take_objects(oid)` 按 oid 取出 registry 中该组全部对象，`well_force_free_objects` 逐个释放；
-- **不看 rc**：即使组外还有引用（static、其他 oid、C 模块），也会被释放 → 悬空；
+- **“不看 rc”的含义**：清理判据是 `exec_ref==0` + 调度器空闲，而不是 rc。语言层的组外引用由 `exec_ref` 与 oid 检查覆盖：
+  - handler 帧、`Model.get/peek/findByOid` 通过 ctx pin 该 oid，帧结束才 unpin；
+  - queued/running event 在 emit 时 pin payload 中 Model 对象的 oid；
+  - 普通字段/容器的跨 oid 写被拒绝；static 值必须是装配期 oid（String 例外），不能持有运行期 oid 业务对象。
+  所以正常 Well 代码在 `exec_ref==0` 时不存在组外语言层引用，整组释放不会悬空。
+  - **例外**：C/FFI 直接保存 `WellObj*` 且未 `well_oid_pin`、或直接调用内部 `well_force_cleanup_oid` 绕过条件；当前 event payload pin 只对 `WELL_FLAG_IN_MODEL` 对象加 pin（把未 `Model.set` 的局部对象跨 oid 放进 event 属于边角情况，建议业务数据走 Model）。
 - 同时丢弃该 oid 的 Cache 行；Store 字节保留；下一次访问从 Store 解码新对象；
 - 装配期 oid（当前 0）**永不回收**：TTL 扫描与 `well_force_cleanup_oid` 都跳过；
 - 清理是隔离 + 分批的：默认每轮最多 `WELL_MODEL_TTL_BATCH=64` 个 oid；每个 oid：
@@ -663,12 +668,12 @@ main:
 
 **vs C**
 - Well 生成 C，直接使用 C 运行时；性能同源但多了 RC/oid 检查/池/调度，TCC 无优化时明显慢于 `-O2` C；
-- C 需要手动管理生命周期；Well 用 RC + 帧日志 + TTL 降低负担，但换来运行时成本与“强杀不看 rc”的语义风险；
+- C 需要手动管理生命周期；Well 用 RC + 帧日志 + TTL 降低负担，TTL 强杀以 `exec_ref` 租约为准（C 侧裸指针需自行 pin）；
 - C 的线程/锁由用户负责；Well 提供 oid actor 和内置 HTTP/WS/Timer，业务代码通常无锁。
 
 **vs C++ / Rust**
 - C++/Rust 编译期优化、零成本抽象更强；Well 的 handler/event/Model 是运行时调度，灵活但开销更高；
-- Rust 编译期保证内存/线程安全；Well 靠 oid 写检查 + 约定，跨 oid/static 仍可悬空；
+- Rust 编译期保证内存/线程安全；Well 靠 oid 写检查 + pin 约定，语言层跨 oid/static 有检查，C/FFI 裸指针需遵守 pin 规则；
 - Well 的学习/生成成本低（语法小），适合 AI 生成短服务；Rust 生态/安全更强。
 
 **vs Go**
@@ -816,7 +821,7 @@ controller Main {
 | 错误 | 后果 |
 |---|---|
 | 在 controller `run` 里 `new` 业务对象并 `Model.set` | 对象 oid=0，属于装配期，后续 TTL 豁免但业务语义错误；跨 oid 写检查会拒绝 |
-| 把 Model 业务对象存进 `static` 字段/模块 C 全局 | TTL 60s 后整组强杀（不看 rc），留下悬空指针 |
+| 在 C/FFI 中保存 `WellObj*` 但不 `well_oid_pin` | TTL 强杀后悬空；语言层 static/跨 oid 有检查，C 侧需自己 pin |
 | 在 handler 里长期保存裸对象指针（超出本次事件/帧） | 对象可能被释放；用 oid + `Model.get` 重新取 |
 | 跨 oid 字段/容器引用 | panic `well oid violation`（String 除外） |
 | 把 event 放进 static/跨 oid 容器 | event 构造后冻结，且 emit 会改 oid；static 直接禁止 event 类型 |
