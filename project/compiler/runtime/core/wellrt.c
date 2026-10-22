@@ -1379,13 +1379,22 @@ static void force_free_obj(WellObj *o) {
     well_obj_free(o);
 }
 
-void well_force_cleanup_oid(long long oid) {
-    WellObj *p;
-    if (oid == well_static_owner_oid()) return; /* assembly/static data: never reclaimed */
-    p = well_registry_take(oid);
+/* Detach all objects of an oid from the registry (assembly oid is exempt).
+ * The returned list must be passed to well_force_free_objects() *outside* any
+ * global scheduler/activity locks. */
+WellObj *well_oid_take_objects(long long oid) {
+    if (oid == well_static_owner_oid()) return NULL;
+    return well_registry_take(oid);
+}
+
+void well_force_free_objects(WellObj *p) {
     while (p) {
         WellObj *next = p->reg_next;
         force_free_obj(p);
         p = next;
     }
+}
+
+void well_force_cleanup_oid(long long oid) {
+    well_force_free_objects(well_oid_take_objects(oid));
 }

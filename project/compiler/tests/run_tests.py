@@ -539,6 +539,7 @@ def run_c_tests() -> bool:
         ("pool_test", "pool reuse ok"),
         ("store_reload_test", "store reload ok"),
         ("cleanup_race_test", "cleanup race ok"),
+        ("cleanup_batch_test", "cleanup batch ok"),
         ("store_pure_test", "pure memory store ok"),
         ("work_stealing_test", "work stealing ok"),
     ]

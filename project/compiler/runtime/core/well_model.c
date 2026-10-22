@@ -45,24 +45,6 @@ static long long getenv_ttl_cached(void) {
     return g_model_ttl_ms;
 }
 
-/* While cleanup holds g_act_lock it force-frees objects; their destruction can
- * release events, which unpins payload oids and would re-enter g_act_lock on the
- * same thread (non-recursive spinlock). Track that context per thread. */
-#ifdef _WIN32
-static DWORD g_act_tls = TLS_OUT_OF_INDEXES;
-static int act_context_held(void) {
-    return g_act_tls != TLS_OUT_OF_INDEXES && TlsGetValue(g_act_tls) != NULL;
-}
-static void act_context_set(int held) {
-    if (g_act_tls == TLS_OUT_OF_INDEXES) g_act_tls = TlsAlloc();
-    if (g_act_tls != TLS_OUT_OF_INDEXES) TlsSetValue(g_act_tls, held ? (void *)1 : NULL);
-}
-#else
-static __thread int g_act_tls_held = 0;
-static int act_context_held(void) { return g_act_tls_held; }
-static void act_context_set(int held) { g_act_tls_held = held; }
-#endif
-
 static unsigned act_bucket(long long oid) {
     unsigned long long x = (unsigned long long)oid;
     x ^= x >> 33;
@@ -85,6 +67,25 @@ static ActEntry *act_get_locked(long long oid, long long now) {
     a->next = g_act[b];
     g_act[b] = a;
     return a;
+}
+
+static ActEntry *act_find_locked(long long oid) {
+    ActEntry *a;
+    for (a = g_act[act_bucket(oid)]; a; a = a->next)
+        if (a->oid == oid) return a;
+    return NULL;
+}
+
+static void act_remove_locked(ActEntry *a) {
+    ActEntry **pp = &g_act[act_bucket(a->oid)];
+    while (*pp) {
+        if (*pp == a) {
+            *pp = a->next;
+            free(a);
+            return;
+        }
+        pp = &(*pp)->next;
+    }
 }
 
 static void act_touch_locked(long long oid, long long now) {
@@ -110,21 +111,18 @@ void well_model_touch_oid(long long oid) {
     long long now;
     if (!activity_enabled()) return;
     now = well_mono_ms();
-    if (act_context_held()) { act_touch_locked(oid, now); return; }
     well_lock_acquire(&g_act_lock);
     act_touch_locked(oid, now);
     well_lock_release(&g_act_lock);
 }
 
 void well_oid_pin(long long oid) {
-    if (act_context_held()) { act_pin_locked(oid); return; }
     well_lock_acquire(&g_act_lock);
     act_pin_locked(oid);
     well_lock_release(&g_act_lock);
 }
 
 void well_oid_unpin(long long oid) {
-    if (act_context_held()) { act_unpin_locked(oid); return; }
     well_lock_acquire(&g_act_lock);
     act_unpin_locked(oid);
     well_lock_release(&g_act_lock);
@@ -201,48 +199,66 @@ void well_model_remove(unsigned int type_id, long long oid, WellCtx *ctx) {
     well_cache_remove(type_id, oid);
 }
 
+#define MODEL_CLEANUP_BATCH_DEFAULT 64
+#define MODEL_CLEANUP_BATCH_MAX 256
+static int cleanup_batch_size(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("WELL_MODEL_TTL_BATCH");
+        int v = (env && env[0]) ? atoi(env) : MODEL_CLEANUP_BATCH_DEFAULT;
+        if (v < 1) v = 1;
+        if (v > MODEL_CLEANUP_BATCH_MAX) v = MODEL_CLEANUP_BATCH_MAX;
+        cached = v;
+    }
+    return cached;
+}
+
 void well_model_cleanup(long long now_ms, long long ttl_ms) {
-    int b;
+    long long cand[MODEL_CLEANUP_BATCH_MAX];
+    int n = 0, i, b, max;
     if (ttl_ms <= 0) return;
+    if (!well_scheduler_cleanup_enter()) return;
+    max = cleanup_batch_size();
+
+    /* Phase 1: collect candidate oids (short act lock, read-only scan). */
     well_lock_acquire(&g_act_lock);
-    act_context_set(1);
-    for (b = 0; b < ACT_BUCKETS; b++) {
-        ActEntry **pp = &g_act[b];
-        while (*pp) {
-            ActEntry *a = *pp;
-            if (a->oid == well_static_owner_oid()) {
-                /* assembly/static data (startup ctx oid); never reclaimed */
-                pp = &a->next;
-                continue;
-            }
-            if (now_ms - a->last_active_ms < ttl_ms) {
-                pp = &a->next;
-                continue;
-            }
-            if (a->exec_ref > 0) {
-                pp = &a->next;
-                continue;
-            }
-            if (!well_scheduler_try_begin_cleanup(a->oid)) {
-                pp = &a->next;
-                continue;
-            }
-            well_force_cleanup_oid(a->oid);
-            well_cache_discard_oid(a->oid);
-            {
-                int rows = well_cache_oid_rows(a->oid);
-                well_scheduler_end_cleanup();
-                if (rows == 0) {
-                    *pp = a->next;
-                    free(a);
-                    continue;
-                }
-            }
-            pp = &a->next;
+    for (b = 0; b < ACT_BUCKETS && n < max; b++) {
+        ActEntry *a;
+        for (a = g_act[b]; a && n < max; a = a->next) {
+            if (a->oid == well_static_owner_oid()) continue;
+            if (now_ms - a->last_active_ms < ttl_ms) continue;
+            if (a->exec_ref > 0) continue;
+            cand[n++] = a->oid;
         }
     }
-    act_context_set(0);
     well_lock_release(&g_act_lock);
+
+    /* Phase 2: per oid - quarantine, detach objects/cache rows under act lock
+     * (blocks new pins/reloads), then free everything without global locks. */
+    for (i = 0; i < n; i++) {
+        long long oid = cand[i];
+        ActEntry *a;
+        WellObj *objs;
+
+        well_lock_acquire(&g_act_lock);
+        a = act_find_locked(oid);
+        if (!a || a->exec_ref > 0 || now_ms - a->last_active_ms < ttl_ms) {
+            well_lock_release(&g_act_lock);
+            continue;
+        }
+        if (!well_scheduler_begin_cleanup(oid)) { /* act -> sched order */
+            well_lock_release(&g_act_lock);
+            continue;
+        }
+        act_remove_locked(a);
+        objs = well_oid_take_objects(oid);   /* registry shard lock */
+        well_cache_discard_oid(oid);         /* cache shard locks */
+        well_lock_release(&g_act_lock);
+
+        well_force_free_objects(objs);       /* no global locks held */
+        well_scheduler_end_cleanup(oid);
+    }
+    well_scheduler_cleanup_leave();
 }
 
 void well_model_cleanup_if_due(void) {

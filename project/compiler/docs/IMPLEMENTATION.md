@@ -215,7 +215,7 @@ typedef struct WellObj {
 
 ### 3.2.1 DAG / 环检测
 
-> **状态（2026-10-22）**：对象图实现已移除（`well_graph_add_edge/remove_edge` 为 no-op 桩，`WellObj.graph_edges` 保留为 reserved 字段）。成环被允许，由 oid 空闲清理整组回收（见 §3.3「不活跃清理」）。
+> **状态（2026-10-22）**：对象图实现已移除（`well_graph_add_edge/remove_edge` 为 no-op 桩，`WellObj` 不再保留图字段）。成环被允许，由 oid 空闲清理整组回收（见 §3.3「不活跃清理」）。
 
 - 历史设计（未启用）：`graph_edges` 出边表 + 加边前 DFS 判环，命中 panic `"DAG violation"`；因每次引用写入 O(V+E)、且环已由 oid 整组清理兜底，未启用。
 - 现在的回收路径：自动路径 `WELL_MODEL_TTL_MS` **默认开启**（默认 60 秒，设为 `0`/负数关闭）→ 对空闲 oid 组强制释放；装配期 oid（`well_static_owner_oid()`，当前 0，由启动 ctx 决定）**永不回收**：TTL 扫描与 `well_force_cleanup_oid` 均跳过该 oid。
@@ -251,7 +251,13 @@ typedef struct WellStore {
 - 同一 oid 的旧对象可能仍被 handler/event 持有；Cache 替换不会立即释放旧对象。
 - 同一对象在 Model 中只允许一个 key；同 key 不同类型可共存。
 - **不活跃清理（默认开启）**：默认 TTL 60 秒（`WELL_MODEL_TTL_MS` 可覆盖，`0`/负数关闭）；记录 oid 活动时间；清理条件为调度器空闲 + `exec_ref==0` + 超过 TTL；只驱逐 Cache/内存对象，Store 保留；下次 `Model.get` 回源；装配期 oid（当前 0）豁免。
-- 清理期间持有 act 锁并 force-free，嵌套的 release 可能触发事件 unpin；实现用线程上下文标记让 `well_oid_pin/unpin/touch` 在该上下文内跳过重复加锁，避免自旋死锁。装配期 oid 在强制清理入口处直接返回，任何路径都不会回收启动期/static 数据。
+- **清理实现（P0-2，2026-10-22 重写）**：单飞（同一时刻只有一个线程清理）；每轮最多 `WELL_MODEL_TTL_BATCH` 个 oid（默认 64，最大 256），剩余下一轮继续。每个 oid 分 4 步：
+  1. `g_sched_mutex`：把队列标记 `cleaning`（隔离），该 oid 不再被调度；
+  2. `g_act_lock`：再次校验 `exec_ref==0`/过期，摘除 ActEntry，`well_oid_take_objects` 摘出 registry 对象、`well_cache_discard_oid` 丢弃 Cache 行——这期间 pin/Model.get 被短暂挡住，避免旧对象被拿走；
+  3. 释放所有全局锁，`well_force_free_objects` 逐个释放（事件 unpin 正常加锁，不再需要 TLS 重入特判）；
+  4. `g_sched_mutex`：清除 `cleaning`，若期间有入队则重新 ready_push + signal。
+  - 关键收益：**bulk free 不再持有 `g_act_lock`/`g_sched_mutex`**，其他 oid 的 Model 操作与任务派发不受大组释放影响；全局锁只覆盖"元数据摘除"（registry 分片 / Cache 分片）而非对象数。
+- 装配期 oid 在强制清理入口处直接返回，任何路径都不会回收启动期/static 数据。
 - **环与跨 oid 约束**（重要）：
   - 同一 oid 组内的环允许存在，由清理整组回收；
   - 清理**不检查组外引用**：其他 oid 的对象、`static` 字段、模块 C 结构若持有该组对象，清理后会悬空。oid 写检查阻止普通字段跨 oid 引用，但 `static`/全局容器不检查；
@@ -477,7 +483,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（97 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（97 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

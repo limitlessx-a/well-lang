@@ -104,6 +104,7 @@ typedef struct WellOidQueue {
     WellEventNode *tail;
     int scheduled;
     int running;
+    int cleaning; /* oid group is being reclaimed; do not schedule until cleared */
     struct WellOidQueue *ready_next;
     struct WellOidQueue *ready_prev;
 } WellOidQueue;
@@ -551,7 +552,7 @@ void well_emit_event(void *event, long long channel) {
         else q->head = n;
         q->tail = n;
         if (idle) g_pending++;
-        if (!q->scheduled && !q->running) {
+        if (!q->cleaning && !q->scheduled && !q->running) {
             ready_push(q);
             well_cond_signal(&g_sched_cond);
         }
@@ -588,7 +589,7 @@ void well_schedule_task(long long oid, WellTaskFn fn, void *arg, WellTaskDone do
         else q->head = n;
         q->tail = n;
         if (idle) g_pending++;
-        if (!q->scheduled && !q->running) {
+        if (!q->cleaning && !q->scheduled && !q->running) {
             ready_push(q);
             well_cond_signal(&g_sched_cond);
         }
@@ -715,7 +716,7 @@ static void sched_worker_loop(int wid, int is_main) {
         node_pool_put(node);
         q->running = 0;
         if (q->head) {
-            if (!q->scheduled) ready_push(q);
+            if (!q->scheduled && !q->cleaning) ready_push(q);
             sched_notify();
         } else {
             if (g_pending > 0) g_pending--;
@@ -732,18 +733,51 @@ static void *well_worker_thread(void *arg) {
     return NULL;
 }
 
-int well_scheduler_try_begin_cleanup(long long oid) {
+static int g_cleanup_running = 0;
+
+/* Single-flight: only one thread may run oid-group reclamation at a time. */
+int well_scheduler_cleanup_enter(void) {
+    int ok;
+    well_mutex_lock(&g_sched_mutex);
+    ok = !g_cleanup_running;
+    if (ok) g_cleanup_running = 1;
+    well_mutex_unlock(&g_sched_mutex);
+    return ok;
+}
+
+void well_scheduler_cleanup_leave(void) {
+    well_mutex_lock(&g_sched_mutex);
+    g_cleanup_running = 0;
+    well_mutex_unlock(&g_sched_mutex);
+}
+
+/* Quarantine an idle oid: no running/queued task, and workers will not pick it
+ * up until well_scheduler_end_cleanup(). Enqueues during this window only append
+ * nodes; they are made runnable again by end_cleanup(). */
+int well_scheduler_begin_cleanup(long long oid) {
     WellOidQueue *q;
     well_mutex_lock(&g_sched_mutex);
     q = qmap_get(oid);
-    if (q && (q->head || q->scheduled || q->running)) {
+    if (q && (q->cleaning || q->head || q->scheduled || q->running)) {
         well_mutex_unlock(&g_sched_mutex);
         return 0;
     }
+    if (q) q->cleaning = 1;
+    well_mutex_unlock(&g_sched_mutex);
     return 1;
 }
 
-void well_scheduler_end_cleanup(void) {
+void well_scheduler_end_cleanup(long long oid) {
+    WellOidQueue *q;
+    well_mutex_lock(&g_sched_mutex);
+    q = qmap_get(oid);
+    if (q) {
+        q->cleaning = 0;
+        if (q->head && !q->scheduled && !q->running) {
+            ready_push(q);
+            well_cond_signal(&g_sched_cond);
+        }
+    }
     well_mutex_unlock(&g_sched_mutex);
 }
 
