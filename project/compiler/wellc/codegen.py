@@ -120,6 +120,15 @@ class CodeGen:
     def container_ref_flag(self, et: str) -> str:
         return "1" if self.is_ref(et) else "0"
 
+    def sort_kind_code(self, et: str) -> str:
+        if et in ("int", "bool"):
+            return "WELL_FIELD_INT"
+        if et == "long":
+            return "WELL_FIELD_LONG"
+        if et in ("float", "double"):
+            return "WELL_FIELD_DOUBLE"
+        return "WELL_FIELD_STRING"
+
     def elem_kind_code(self, et: str) -> str:
         """Runtime element compare kind for Array.indexOf/includes."""
         if et in ("int", "long", "bool"):
@@ -163,7 +172,7 @@ class CodeGen:
             return True
         if isinstance(e, Call) and getattr(e, "method_op", None) in ("linked_popHead", "linked_popTail"):
             return self.is_ref(getattr(e, "ty", ""))
-        if isinstance(e, Call) and getattr(e, "method_op", None) in ("str_substring", "str_trim", "str_split", "str_to_lower", "str_to_upper"):
+        if isinstance(e, Call) and getattr(e, "method_op", None) in ("str_substring", "str_trim", "str_split", "str_to_lower", "str_to_upper", "str_replace"):
             return True
         if isinstance(e, Call) and getattr(e, "method_op", None) == "bytes_to_string":
             return True
@@ -408,6 +417,10 @@ class CodeGen:
                 return (f"well_array_includes{take}({obj}, "
                         f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}, "
                         f"{self.elem_kind_code(e.elem_ty)})")
+            if op == "array_sort":
+                return f"well_array_sort({obj}, {self.sort_kind_code(e.elem_ty)})"
+            if op == "array_reverse":
+                return f"well_array_reverse({obj})"
             if op == "array_clear":
                 return f"well_array_clear({obj}, ctx)"
             if op == "array_shift":
@@ -445,6 +458,9 @@ class CodeGen:
                 return f"well_str_starts_with{take}({obj}, {self.gen_expr(e.args[0])})"
             if op == "str_ends_with":
                 return f"well_str_ends_with{take}({obj}, {self.gen_expr(e.args[0])})"
+            if op == "str_replace":
+                return (f"well_str_replace{take}({obj}, {self.gen_arg_temp(e.args[0])}, "
+                        f"{self.gen_arg_temp(e.args[1])})")
             if op == "str_trim":
                 return f"well_str_trim{take}({obj})"
             if op == "str_to_lower":

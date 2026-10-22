@@ -1,0 +1,6 @@
+a+b+c
+a-b-c
+ba
+a::b::c
+a-b-c
+heLLo

@@ -201,6 +201,60 @@ int well_array_includes(WellArray *a, WellValue v, int kind) {
     return well_array_index_of(a, v, kind) >= 0;
 }
 
+/* Comparison kind: WELL_FIELD_INT / LONG / DOUBLE / STRING (set by codegen). */
+static int array_cmp_kind(WellValue x, WellValue y, int kind) {
+    switch (kind) {
+    case WELL_FIELD_INT: {
+        int a = (int)x.i, b = (int)y.i;
+        return (a > b) - (a < b);
+    }
+    case WELL_FIELD_LONG: {
+        long long a = x.i, b = y.i;
+        return (a > b) - (a < b);
+    }
+    case WELL_FIELD_DOUBLE: {
+        double a = x.d, b = y.d;
+        return (a > b) - (a < b);
+    }
+    case WELL_FIELD_STRING: {
+        WellString *a = (WellString *)x.p, *b = (WellString *)y.p;
+        long long la = a ? a->len : 0, lb = b ? b->len : 0;
+        long long n = la < lb ? la : lb;
+        int c = n ? memcmp(a->data, b->data, (size_t)n) : 0;
+        if (c) return c < 0 ? -1 : 1;
+        return (la > lb) - (la < lb);
+    }
+    default:
+        return 0;
+    }
+}
+
+/* In-place ascending sort (insertion sort; keeps element refcounts untouched). */
+void well_array_sort(WellArray *a, int kind) {
+    long long n, i, j;
+    if (!a || a->len < 2) return;
+    n = a->len;
+    for (i = 1; i < n; i++) {
+        WellValue v = a->items[i];
+        j = i - 1;
+        while (j >= 0 && array_cmp_kind(a->items[j], v, kind) > 0) {
+            a->items[j + 1] = a->items[j];
+            j--;
+        }
+        a->items[j + 1] = v;
+    }
+}
+
+void well_array_reverse(WellArray *a) {
+    long long i, j;
+    if (!a || a->len < 2) return;
+    for (i = 0, j = a->len - 1; i < j; i++, j--) {
+        WellValue t = a->items[i];
+        a->items[i] = a->items[j];
+        a->items[j] = t;
+    }
+}
+
 void well_array_clear(WellArray *a, WellCtx *ctx) {
     long long i;
     if (!a) return;

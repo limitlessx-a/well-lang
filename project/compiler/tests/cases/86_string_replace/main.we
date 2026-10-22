@@ -1,0 +1,17 @@
+module demo.replace;
+
+controller MainController extends Controller {
+    run() {
+        var s: String = "a-b-c";
+        print(s.replace("-", "+"));
+        print(s.replace("x", "y"));
+        print("aaa".replace("aa", "b"));
+        print("a.b.c".replace(".", "::"));
+        print(s);
+        var b: Bytes = new Bytes();
+        b.appendStr("hello".replace("l", "L"));
+        print(b.toString());
+    }
+}
+
+entry MainController;

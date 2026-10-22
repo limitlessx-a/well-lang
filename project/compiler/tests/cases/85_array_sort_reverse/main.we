@@ -1,0 +1,25 @@
+module demo.sortrev;
+
+controller MainController extends Controller {
+    run() {
+        var xs: Array<int> = [3, 1, 2, 5, 4];
+        xs.sort();
+        for (var i: int = 0; i < xs.length; i = i + 1) {
+            print(xs[i]);
+        }
+        xs.reverse();
+        for (var i: int = 0; i < xs.length; i = i + 1) {
+            print(xs[i]);
+        }
+        var ss: Array<String> = ["pear", "apple", "fig"];
+        ss.sort();
+        print(ss.join("|"));
+        var ds: Array<double> = [2.5, 0.5, 1.5];
+        ds.sort();
+        print(ds[0]);
+        print(ds[1]);
+        print(ds[2]);
+    }
+}
+
+entry MainController;

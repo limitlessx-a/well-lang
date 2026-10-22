@@ -1008,6 +1008,49 @@ WellString *well_str_substring_take(WellString *s, long long start, long long en
     return r;
 }
 
+WellString *well_str_replace(WellString *s, WellString *old_s, WellString *new_s) {
+    const char *d;
+    size_t n, on, nn, count = 0, i, k = 0, outlen;
+    char *buf;
+    if (!s) return well_string_lit("");
+    if (!old_s || !new_s) well_panic("String.replace: arguments must be String");
+    if (old_s->len <= 0) well_panic("String.replace: old must not be empty");
+    d = s->data;
+    n = (size_t)s->len;
+    on = (size_t)old_s->len;
+    nn = (size_t)new_s->len;
+    for (i = 0; i + on <= n;) {
+        if (memcmp(d + i, old_s->data, on) == 0) { count++; i += on; }
+        else i++;
+    }
+    if (count == 0) { well_retain(s); return s; }
+    outlen = n + count * nn - count * on;
+    buf = (char *)malloc(outlen + 1);
+    if (!buf) well_panic("out of memory (String.replace)");
+    for (i = 0; i + on <= n;) {
+        if (memcmp(d + i, old_s->data, on) == 0) {
+            memcpy(buf + k, new_s->data, nn);
+            k += nn;
+            i += on;
+        } else {
+            buf[k++] = d[i++];
+        }
+    }
+    if (i < n) { memcpy(buf + k, d + i, n - i); k += n - i; }
+    buf[k] = '\0';
+    {
+        WellString *r = string_alloc_n(buf, (long long)k);
+        free(buf);
+        return r;
+    }
+}
+
+WellString *well_str_replace_take(WellString *s, WellString *old_s, WellString *new_s) {
+    WellString *r = well_str_replace(s, old_s, new_s);
+    well_release(s);
+    return r;
+}
+
 WellString *well_str_trim_take(WellString *s) {
     WellString *r = well_str_trim(s);
     well_release(s);

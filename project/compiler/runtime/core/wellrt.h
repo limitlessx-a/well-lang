@@ -256,6 +256,8 @@ int well_str_starts_with_take(WellString *s, WellString *prefix);
 int well_str_ends_with_take(WellString *s, WellString *suffix);
 WellString *well_str_to_lower_take(WellString *s);
 WellString *well_str_to_upper_take(WellString *s);
+WellString *well_str_replace(WellString *s, WellString *old_s, WellString *new_s);
+WellString *well_str_replace_take(WellString *s, WellString *old_s, WellString *new_s);
 
 /* containers: Array<T> / Map<T> (homogeneous, String keys) */
 WellArray *well_array_new(WellCtx *ctx, int is_ref);
@@ -271,6 +273,9 @@ WellString *well_array_join(WellArray *a, WellString *sep);
 long long well_array_index_of(WellArray *a, WellValue v, int kind);
 int well_array_includes(WellArray *a, WellValue v, int kind);
 void well_array_clear(WellArray *a, WellCtx *ctx);
+/* sort kind: WELL_FIELD_INT / LONG / DOUBLE / STRING */
+void well_array_sort(WellArray *a, int kind);
+void well_array_reverse(WellArray *a);
 WellValue well_array_shift(WellArray *a, WellCtx *ctx);
 void well_array_unshift(WellArray *a, WellValue v, WellCtx *ctx);
 /* take variants (owned receiver) */

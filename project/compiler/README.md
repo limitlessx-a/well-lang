@@ -15,7 +15,7 @@
   - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
 - 基础类型：`int / long / bool / double / String / Bytes / void / null`
 - 容器：`Array<T>`（`[]`）、`Map<T>`（`{}`，String 键、值同质）、`Linked<T>`（双向链表）
-  - `a.push/pop/shift/unshift`、`a.get/set`、`a[i]`、`a.length`、`for (x of a)`
+  - `a.push/pop/shift/unshift`、`a.get/set`、`a[i]`、`a.length`、`a.sort()`（int/long/double/String）、`a.reverse()`、`for (x of a)`
   - `a.slice(起,止)`、`a.concat(other)`、`a.join(sep)`（仅 `Array<String>`）、`a.indexOf(v)`、`a.includes(v)`、`a.clear()`
   - `m.get/set`、`m.has/delete`、`m["k"]`、`m.size`、`m.keys()`、`m.values()`、`m.clear()`、`for (k in m)`
   - `l.pushHead/pushTail/popHead/popTail`、`l.head/tail/get`、`l.length`、`for (x of l)`
@@ -24,7 +24,7 @@
   - `Map` 使用 FNV-1a 64 位字符串 hash + 开放寻址（保留插入序）；`Linked` 首尾 O(1)、get O(n)
 - 语句：`var`、赋值、`if/else`、`while`、`for`、`return`、`break/continue`
 - 表达式：算术/比较/逻辑、字符串拼接、`String.length`、成员访问、`new`、对象初始化
-- **String 字节方法**：`s[i]` / `byteAt(i)` / `charCodeAt(i)`、`substring/slice(a,b)`、`indexOf(x[,from])`、`contains/startsWith/endsWith`、`trim`、`toLower/toUpper`、`split(sep)`、`String.fromByte(n)`、`String.fromInt(n)`（长度与下标均按字节，与 `String.length` 一致）
+- **String 字节方法**：`s[i]` / `byteAt(i)` / `charCodeAt(i)`、`substring/slice(a,b)`、`indexOf(x[,from])`、`contains/startsWith/endsWith`、`trim`、`toLower/toUpper`、`split(sep)`、`replace(old, new)`、`String.fromByte(n)`、`String.fromInt(n)`（长度与下标均按字节，与 `String.length` 一致）
 - **Bytes 可变字节缓冲**：`new Bytes()`、`b.length`、`push/get/set/append/appendStr/clear/toString`；用于增量拼装负载，避免 String `+` 的 O(n²)
 - **Well 版 HTTP 解析器（验证项目）**：`examples/lib/http_parser.we`（纯 Well 解析 request line/headers/body），由 `tests/cases/65_well_http_parser`、`66_http_parser_route` 覆盖，证明协议层可在 Well 内实现
 - **性能基线**：`examples/http_parser_bench` 可复现；当前 Well 解析器 ≈13.3 µs/次 vs C ≈0.75 µs/次（≈18×），瓶颈是每字段多次分配，分析见 `document/HTTP-解析器性能基线.md`
@@ -56,7 +56,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（84 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（86 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```

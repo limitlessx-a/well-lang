@@ -113,6 +113,7 @@ String 方法（全部字节语义）：
 | `s.contains(x)` / `s.startsWith(x)` / `s.endsWith(x)` | `bool` |
 | `s.trim()` | 去首尾 ASCII 空白，返回新 String；无空白时直接返回原引用（retain，不复制） |
 | `s.toLower()` / `s.toUpper()` | ASCII 大小写转换，返回新 String |
+| `s.replace(old, new)` | 全部替换（非重叠、从左到右）；`old` 不能为空；未命中时共享原串（retain） |
 | `s.split(sep)` | `Array<String>`；`sep` 为空串时不切分 |
 | `String.fromByte(n)` | 取低 8 位构造单字节 String |
 | `String.fromInt(n)` | 整数转十进制字符串（`long`/`int`/`bool`） |
@@ -272,7 +273,8 @@ typedef struct WellStore {
 - `Array<T>`/`Map<T>` 的 `T` 是引用类型时，容器 `is_ref=1`；值类型时 `is_ref=0`（不误 release 整数）。
 - 越界/缺失：返回零值 `WellValue`；值类型得到 0/false/0.0，引用类型得到 `null`。
 - `pop()` 把元素的引用所有权转移给调用方（codegen 标记为 owned）；`shift()` 同理（O(n)）。
-- Array 方法：`push/pop/get/set/slice/concat/join/indexOf/includes/clear/shift/unshift`。
+- Array 方法：`push/pop/get/set/slice/concat/join/indexOf/includes/clear/shift/unshift/sort/reverse`。
+  - `sort()` 原地升序插入排序，支持 `int/long/bool/double/String` 元素（其他元素类型报编译错误）；`reverse()` 原地反转。
   - `slice(a,b)` / `concat(other)` 返回新数组（引用元素 retain，`is_ref` 沿用源数组）；`join(sep)` 仅支持 `Array<String>`；
   - `indexOf/includes` 按元素类型比较（标量按值、String 按内容、其他引用按指针），比较方式由 codegen 传 kind。
 - Map 方法：`get/set/has/delete/keys/values/clear`；`keys()` → `Array<String>`，`values()` → `Array<T>`（均为新数组、插入序）。
@@ -465,7 +467,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（84 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（86 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

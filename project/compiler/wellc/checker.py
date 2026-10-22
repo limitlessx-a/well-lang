@@ -1081,6 +1081,24 @@ class Checker:
                         e.method_op = "array_clear"
                         e.method_obj = e.func.obj
                         return
+                    if name == "sort":
+                        if e.args:
+                            self.err("Array.sort() takes no arguments")
+                        if et not in ("int", "long", "bool", "double", "float", "String"):
+                            self.err(f"Array.sort supports int/long/double/String elements, got {et}")
+                        e.ty = "void"
+                        e.elem_ty = et
+                        e.method_op = "array_sort"
+                        e.method_obj = e.func.obj
+                        return
+                    if name == "reverse":
+                        if e.args:
+                            self.err("Array.reverse() takes no arguments")
+                        e.ty = "void"
+                        e.elem_ty = et
+                        e.method_op = "array_reverse"
+                        e.method_obj = e.func.obj
+                        return
                     if name == "shift":
                         if e.args:
                             self.err("Array.shift() takes no arguments")
@@ -1382,6 +1400,14 @@ class Checker:
                 self.err("String.trim() takes no arguments")
             e.ty = "String"
             e.method_op = "str_trim"
+        elif name == "replace":
+            if len(e.args) != 2:
+                self.err("String.replace(old, new) expects 2 arguments")
+            for a in e.args:
+                if self.check_expr(a, env) != "String":
+                    self.err("String.replace: arguments must be String")
+            e.ty = "String"
+            e.method_op = "str_replace"
         elif name == "split":
             if len(e.args) != 1:
                 self.err("String.split(sep) expects 1 argument")
