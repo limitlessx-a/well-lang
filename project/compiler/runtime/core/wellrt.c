@@ -328,19 +328,23 @@ void well_init(void) {
 
 /* ---------- object / rc ---------- */
 void *well_new(size_t size, unsigned int type_id, long long oid) {
-    WellObj *o = (WellObj *)pool_take(size);
+    size_t alloc_size = size;
+    WellObj *o;
+    /* Allocate whole pool classes: a class can host several object sizes, so a
+     * smaller allocation must never be reused for a larger object. */
+    if (size <= POOL_MAX_SIZE) alloc_size = pool_class(size) * POOL_ALIGN;
+    o = (WellObj *)pool_take(size);
     if (o) memset(o, 0, size);
-    else o = (WellObj *)calloc(1, size);
+    else o = (WellObj *)calloc(1, alloc_size);
     if (!o) well_panic("out of memory (well_new)");
     o->rc = 1;
     o->type_id = type_id;
     o->oid = oid;
     o->flags = 0;
-    o->graph_edges = NULL;
     o->exec_pins = NULL;
     o->reg_next = NULL;
     o->reg_prev = NULL;
-    o->alloc_size = size;
+    o->alloc_size = alloc_size;
     g_live++;
     well_registry_add(o);
     return o;
@@ -758,7 +762,6 @@ static WellString *string_alloc_n(const char *src, size_t n) {
     s->hdr.type_id = WELL_T_STRING;
     s->hdr.flags = 0;
     s->hdr.oid = 0;
-    s->hdr.graph_edges = NULL;
     s->hdr.exec_pins = NULL;
     s->hdr.reg_next = NULL;
     s->hdr.reg_prev = NULL;
@@ -814,7 +817,6 @@ WellString *well_string_concat(WellString *a, WellString *b) {
     s->hdr.type_id = WELL_T_STRING;
     s->hdr.flags = 0;
     s->hdr.oid = 0;
-    s->hdr.graph_edges = NULL;
     s->hdr.exec_pins = NULL;
     s->hdr.reg_next = NULL;
     s->hdr.reg_prev = NULL;

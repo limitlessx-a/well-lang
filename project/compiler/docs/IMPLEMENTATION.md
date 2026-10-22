@@ -430,7 +430,7 @@ typedef struct WellStore {
 - oid registry：`well_new` 登记、正常 rc0 注销；oid 过期时按 oid 取出全部对象；
 - 强制清理：对象引用置空；String 正常 release；容器 force-clear；对象内存直接释放；
 - 运行时不再做环检查；环形数据由 oid 过期 + registry 强制清理兜底。
-- 固定大小对象池：`well_obj_free` 按 size class 入池；`well_new` 优先复用；`well_pool_sweep` 按 `WELL_POOL_TTL_MS` 真正释放；`WELL_POOL_MAX_MB` 限制池大小。
+- 固定大小对象池：`well_obj_free` 按 size class 入池；`well_new` 优先复用；**新分配按 size class 整块大小（class*16）申请**，避免同一 class 内"小尺寸分配被大对象复用"导致越界写；`well_pool_sweep` 按 `WELL_POOL_TTL_MS` 真正释放；`WELL_POOL_MAX_MB` 限制池大小。
 - 局部作用域释放：`well_ctx_mark/release_from` 在 while/for/foreach/block 结束释放本轮局部引用；`well_ctx_replace` 覆盖赋值时原地替换 frame 引用并 release 旧值。
 
 ### 3.16 模块注册表
