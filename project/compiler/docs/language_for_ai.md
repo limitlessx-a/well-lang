@@ -15,7 +15,7 @@
 3. **`Model.get` 返回 owned 引用**（可空）；交给变量/帧日志管理，不要手工 `free`，也不要长期缓存裸指针。
 4. **TTL 回收以 `exec_ref` 租约为准（不是 rc）**：清理只在 `exec_ref==0` 且调度器无该 oid 任务时发生；handler/`Model.get/peek` 会 pin，在飞 event 会 pin 其引用的 Model oid，普通字段/容器禁止跨 oid，static 只允许装配期 oid 对象——因此**正常 Well 代码不会因 TTL 悬空**。C/FFI 裸指针未 `well_oid_pin` 属例外。
 5. **handler 是 run-to-completion**：没有 `await/yield`；在 handler 里做阻塞 I/O（File/MySQL/大循环）会卡住该 oid 的 runner，也会占住一个 worker。
-6. **controller 的 `ctx.oid == 0`（装配期 oid）**：不要在那里创建 Model 业务数据；业务对象应在事件 handler 中以事件 oid 创建。
+6. **controller 的 `ctx.oid == 0`（装配期 oid）**：允许在 `run()` 里 `new` + `Model.set` 创建**系统级只读数据**（oid=0）；handler 可用 `Model.get(T, 0)` 读取，但字段/容器/Bytes 写会 panic（oid 0 ≠ handler oid），TTL/强制清理都跳过 oid 0；**可写**业务数据应在事件 handler 中以事件 oid 创建。
 7. **event 构造完成后被冻结**：字段只读；不要保存 event 到 static/跨 oid 结构；`emit` 会改写 event 的 oid。
 8. **static 字段只在 `well_run_loop` 之前可写**（装配期，ctx.oid == 装配期 oid）；运行期写/原地改容器/Bytes 会 panic；static 引用类型不能是 event。
 9. **没有异常/Result/try-catch**：handler panic 被隔离（继续调度）；controller/装配期 panic **exit 70**；可恢复的 JSON 解析用 `Json.tryParse`。
@@ -182,7 +182,8 @@ controller Main {
 
 - 单例；`start(Main)` 幂等（只执行一次 `run`）；`stop(Main)` 注销该 controller 的订阅并允许重新 start；
 - `run()` 在 `well_run_loop` 之前执行，`ctx.oid = 0`（装配期 oid）；适合注册路由/订阅、初始化 static；
-- **不要**在 controller 里创建 Model 业务对象（oid 0 的数据），业务对象在事件 handler 中创建。
+- **允许**在 `run()` 里 `new` 对象并 `Model.set` 创建**系统级只读数据**（oid=0）：它可被任意 handler 通过 `Model.get(T, 0)` 读取，运行期不可写（字段/容器/Bytes 写会 panic），永远不会被 TTL/强制清理回收，进程退出时统一释放；
+- 需要运行期修改的业务数据应在事件 handler 中以事件 oid 创建。
 
 #### handler
 
@@ -418,7 +419,7 @@ typedef struct WellObj {
 ### 5.2 oid 与写入检查（安全模型的核心）
 
 - `oid` 是数据所有者：事件目标、Model 行、容器、对象都由某个 oid 拥有；
-- `new Struct()` → `oid = ctx.oid`；`new Event(target)` → `oid = target`；
+- `new Struct()` → `oid = ctx.oid`；controller `run` 的 ctx.oid=0，因此其中 `new` + `Model.set` 得到 oid=0 的系统级只读数据；`new Event(target)` → `oid = target`；
 - 字段写：`target.oid == ctx.oid`；引用值写：`value.oid == target.oid`（String 无 oid，跳过；null 允许）；
 - 容器写：`container.oid == ctx.oid`；插入引用元素：`element.oid == container.oid`（String 例外）；
 - event 构造字段**豁免** oid 检查（事件可以携带异 oid 的只读引用），构造后 `well_freeze` 冻结；
@@ -821,7 +822,7 @@ controller Main {
 
 | 错误 | 后果 |
 |---|---|
-| 在 controller `run` 里 `new` 业务对象并 `Model.set` | 对象 oid=0，属于装配期，后续 TTL 豁免但业务语义错误；跨 oid 写检查会拒绝 |
+| 把需要在运行期修改的数据放进 controller `run` 的 oid=0 `Model.set` | oid=0 系统级只读：TTL 不回收，但 handler 写会 panic；可写数据放在事件 handler |
 | 在 C/FFI 中保存 `WellObj*` 但不 `well_oid_pin` | TTL 强杀后悬空；语言层 static/跨 oid 有检查，C 侧需自己 pin |
 | 在 handler 里长期保存裸对象指针（超出本次事件/帧） | 对象可能被释放；用 oid + `Model.get` 重新取 |
 | 跨 oid 字段/容器引用 | panic `well oid violation`（String 除外） |
@@ -854,8 +855,8 @@ controller Main {
 2. 事件类型（HTTP/WS/Timer 用的）字段名/类型与内建约定匹配；
 3. handler 方法名 `onEvent`（或 handle/on/handler），参数是事件类型；
 4. `on/emit/route/listen` 在 controller `run` 中；
-5. 业务数据在 handler 中创建/读写，oid 正确；
-6. 不跨 oid 引用、不把业务对象放 static；
+5. 可写业务数据在 handler 中创建/读写，oid 正确；系统级只读配置可在 controller `run` 创建并 `Model.set`（oid=0）；
+6. 不跨 oid 引用；运行期可写对象不要放 static（系统级只读配置可放 static 或 oid0 Model）；
 7. 容器字面量先赋变量；
 8. String 大拼接用 Bytes；
 9. 除法前检查 0，或接受 panic；

@@ -110,7 +110,7 @@ $env:WELL_RC_DEBUG = "1"
 - 没有实现泛型（除内置 Array/Map）、接口、异常、通用 `for-in`（只支持 Map 键迭代）、持久化、热更新；`switch/case` 与 enum `fromInt/toString` 已支持；`invoke` 已从语言中删除（D-21），不是遗漏。
 - 允许成环：不立即释放，随 oid 过期整组回收；长寿命/热点 oid 的环需要显式回收或子 oid 拆分。
 - 字段引用写入同时校验 `target.oid == ctx.oid` 与 `value.oid == target.oid`；event 构造豁免。
-- controller 的 `ctx.oid = 0`：不要在 controller 里创建业务数据；业务数据应在 handler（目标 oid）中创建。
+- controller 的 `ctx.oid = 0`：在 `run()` 中 `new` + `Model.set` 创建的是**系统级只读数据**（oid=0，可读不可写、不参与 TTL 回收）；需要运行期修改的业务数据在 handler（目标 oid）中创建。
 - `String.length` 按 UTF-8 字节数（设计稿要求码点）。
 - 生成 C 使用 C99（兼容 TinyCC）；线程/调度已实现（Windows CreateThread / POSIX pthread）。
 - HTTP/1.1 仍是受限实现：支持 keep-alive（每连接一个 reader 线程、15s 空闲超时），但不支持 pipelining 并发、chunked、TLS/HTTP2；`Http.respond` 可在任意 handler 中首个生效，5s 未响应返回 504 并关闭连接。

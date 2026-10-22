@@ -312,7 +312,7 @@ typedef struct WellStore {
 
 ### 3.5 oid 与写入检查
 
-- `new Struct()`：`oid = ctx.oid`（MVP 中 controller 的 ctx.oid = 0，所以不要在 controller 里创建 Model 数据）。
+- `new Struct()`：`oid = ctx.oid`。controller 的 `ctx.oid = 0`：允许在 `run()` 中 `new` 对象并 `Model.set` 创建**系统级只读数据**（oid=0），handler 可 `Model.get(T, 0)` 读取；运行期字段/容器/Bytes 写会 panic，TTL/强制清理跳过 oid 0。可写业务数据在事件 handler 中创建。
 - `new Event(target)`：`oid = target`；省略 target 时用 `ctx.oid`。
 - 字段写入：`well_check_oid(target, ctx)`，要求 `target.oid == ctx.oid`。
 - 字段引用写入 value：`well_check_value_oid(target, value, ctx)`，要求 `value.oid == target.oid`（String 无 oid，跳过；null 允许）。
@@ -526,7 +526,7 @@ C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe
 | 无 `switch` | 可后续补 parser/codegen；`for-of`/`for-in` 已有（Array 值 / Map 键） |
 | 无 `invoke` | D-21 已从语言删除；计算用 `func`，跨 handler 用 `emit` |
 | DAG 检查开销 | 每次引用写入做 DFS，O(V+E)；图锁串行化，后续可优化/分级 |
-| controller oid=0 | 在 controller 中 `new` 的数据 oid=0；应改为"controller 不创建业务数据"或提供显式 oid |
+| controller oid=0 | 设计语义：controller `run` 中 `new` + `Model.set` 是系统级只读数据（oid=0，可读不可写、不参与 TTL 回收）；需要运行期修改的数据在事件 handler 中创建 |
 | String.length 按字节 | 设计稿要求 UTF-8 码点 |
 | 热重载 | `stop(C)` 可注销订阅并重新 start；模块卸载/热更新尚未实现 |
 | 无持久化/热更新/安全边界 | 设计稿已列为后续 |
