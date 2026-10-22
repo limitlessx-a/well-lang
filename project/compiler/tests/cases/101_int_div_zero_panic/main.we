@@ -1,0 +1,29 @@
+module demo.intdiv0;
+
+event GoEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(GoEvent, GoHandler);
+        emit(new GoEvent(1) { n: 1 });
+        emit(new GoEvent(1) { n: 2 });
+    }
+}
+
+handler GoHandler extends Handler {
+    onEvent(e: GoEvent) {
+        var zero: int = 0;
+        var a: int = 10;
+        if (e.n == 1) {
+            var c: int = a / zero;
+            print("no ", c);
+        } else {
+            var d: int = a % zero;
+            print("no ", d);
+        }
+    }
+}
+
+entry MainController;

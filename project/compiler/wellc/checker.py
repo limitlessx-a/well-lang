@@ -450,7 +450,9 @@ class Checker:
     # ---------- expressions ----------
     def check_expr(self, e, env):
         if isinstance(e, IntLit):
-            e.ty = "int"
+            if e.value > 9223372036854775807 or e.value < -9223372036854775808:
+                self.err("integer literal out of 64-bit range")
+            e.ty = "long" if (e.value > 2147483647 or e.value < -2147483648) else "int"
         elif isinstance(e, FloatLit):
             e.ty = "double"
         elif isinstance(e, StrLit):
@@ -660,10 +662,44 @@ class Checker:
                 e.ty = "long"
             else:
                 e.ty = "int"
+            if e.op in ("/", "%") and isinstance(e.right, IntLit) and e.right.value == 0:
+                self.err("division by zero" if e.op == "/" else "modulo by zero")
+            if e.ty in ("int", "long"):
+                v = self.fold_int(e)
+                if v is not None:
+                    lo, hi = (-2147483648, 2147483647) if e.ty == "int" else (-9223372036854775808, 9223372036854775807)
+                    if v < lo or v > hi:
+                        self.err(f"integer constant overflow ({e.ty})")
         elif e.op in ("&", "|", "^", "<<", ">>"):
             e.ty = "int"
         else:
             e.ty = lt
+
+    def fold_int(self, e):
+        """Fold integer-literal-only expressions (used for compile-time range checks)."""
+        if isinstance(e, IntLit):
+            return e.value
+        if isinstance(e, Unary) and e.op == "-":
+            v = self.fold_int(e.expr)
+            return -v if v is not None else None
+        if isinstance(e, Binary) and e.op in ("+", "-", "*", "/", "%"):
+            a = self.fold_int(e.left)
+            b = self.fold_int(e.right)
+            if a is None or b is None:
+                return None
+            if e.op in ("/", "%") and b == 0:
+                return None
+            if e.op == "+":
+                return a + b
+            if e.op == "-":
+                return a - b
+            if e.op == "*":
+                return a * b
+            q = abs(a) // abs(b)
+            if (a < 0) != (b < 0):
+                q = -q
+            return q if e.op == "/" else a - q * b
+        return None
 
     def check_call(self, e: Call, env):
         for a in e.args:

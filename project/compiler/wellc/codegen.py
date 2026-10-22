@@ -313,6 +313,11 @@ class CodeGen:
             else:
                 eq = f"well_string_eq({self.gen_expr(e.left)}, {self.gen_expr(e.right)})"
             return eq if e.op == "==" else f"(!{eq})"
+        if e.op in ("/", "%") and getattr(e, "ty", None) in ("int", "long"):
+            fn = "well_int_div" if e.op == "/" else "well_int_mod"
+            cty = self.ctype(e.ty)
+            return (f"(({cty}){fn}((long long)({self.gen_expr(e.left)}), "
+                    f"(long long)({self.gen_expr(e.right)})))")
         return f"({self.gen_expr(e.left)} {e.op} {self.gen_expr(e.right)})"
 
     def gen_call_expr(self, e: Call) -> str:

@@ -274,6 +274,18 @@ void well_lock_release(WellLock *l) {
 }
 
 /* ---------- helpers ---------- */
+long long well_int_div(long long a, long long b) {
+    if (b == 0) well_panic("integer division by zero");
+    if (a == (-9223372036854775807LL - 1) && b == -1) return a; /* avoid C UB */
+    return a / b;
+}
+
+long long well_int_mod(long long a, long long b) {
+    if (b == 0) well_panic("integer modulo by zero");
+    if (a == (-9223372036854775807LL - 1) && b == -1) return 0; /* avoid C UB */
+    return a % b;
+}
+
 #ifdef _WIN32
 static DWORD g_src_file_tls = TLS_OUT_OF_INDEXES;
 static DWORD g_src_line_tls = TLS_OUT_OF_INDEXES;

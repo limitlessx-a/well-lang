@@ -14,6 +14,7 @@
 - **事件路由**：`on(EventType, H)` / `on(EventType, H, channel)`；也可省略事件类型：`on(H)` / `on(H, channel)` / `once(H)` / `off(H)`（从 handler 的 `onEvent(e: T)` 参数推断）；`emit(event)` / `emit(event, channel)`
   - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
 - 基础类型：`int / long / bool / double / String / Bytes / void / null`
+  - 整数 `/`、`%` 除数为 0 会 panic（带源码行号）；编译期字面量除零/常量溢出直接报错；运行期溢出保持 C wrap
 - 容器：`Array<T>`（`[]`）、`Map<T>`（`{}`，String 键、值同质）、`Linked<T>`（双向链表）
   - `a.push/pop/shift/unshift`、`a.get/set`、`a[i]`、`a.length`、`a.sort()`（int/long/double/String）、`a.reverse()`、`for (x of a)`
   - `a.slice(起,止)`、`a.concat(other)`、`a.join(sep)`（仅 `Array<String>`）、`a.indexOf(v)`、`a.includes(v)`、`a.clear()`
@@ -56,7 +57,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（100 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（103 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```

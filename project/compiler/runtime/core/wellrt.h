@@ -86,6 +86,9 @@ void well_panic(const char *msg);
 #define WELL_PANIC_EXIT_CODE 70
 /* current source location (set by generated code) shown in panic messages */
 void well_source_set(const char *file, int line);
+/* checked integer division/modulo (panic on zero divisor) */
+long long well_int_div(long long a, long long b);
+long long well_int_mod(long long a, long long b);
 
 /* module registry: core does not include module headers */
 typedef struct WellModule {

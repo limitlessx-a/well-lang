@@ -1,0 +1,10 @@
+module demo.intdivconst;
+
+controller MainController extends Controller {
+    run() {
+        var x: int = 1 / 0;
+        print(x);
+    }
+}
+
+entry MainController;

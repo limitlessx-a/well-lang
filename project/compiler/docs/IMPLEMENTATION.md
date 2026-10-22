@@ -109,6 +109,10 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 
 字面量、标识符、成员访问、下标 `a[i]` / `m["k"]` / `s[i]`（String 下标返回字节值 `int`，越界 `-1`）、调用、`new T(...)`、对象初始化 `{ f: v }`、数组字面量 `[...]`、Map 字面量 `{ "k": v }`、算术/比较/逻辑、三元、字符串拼接、`String.length`。
 
+- **整数除法/取模**：`int`/`long` 上的 `/`、`%` 生成 `well_int_div` / `well_int_mod`；除数为 0 时 panic `integer division/modulo by zero`（带 `file:line`），不再触发 `0xC0000094` 崩溃；
+- **编译期常量检查**：字面量除数/模数为 0 直接编译错误；只含整数字面量的常量算术表达式在编译期检查 int32/`long` 64 位溢出（`integer constant overflow`）；
+- 超出 int32 的整数字面量自动按 `long` 处理；普通运行期整数溢出仍保持 C 的 wrap 语义（不做运行期溢出检查）。
+
 String 方法（全部字节语义）：
 
 | 调用 | 语义 |
@@ -486,7 +490,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（100 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（103 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 
