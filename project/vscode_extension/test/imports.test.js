@@ -352,7 +352,11 @@ test("resolveImportSpec：相对路径 / 带 .we / 省略 .we", () => {
   assertEqual(resolveImportSpec("lib/item.we", MAIN_FILE), path.resolve(ITEM_FILE));
   assertEqual(resolveImportSpec("lib/item", MAIN_FILE), path.resolve(ITEM_FILE));
   assertEqual(resolveImportSpec("./lib/item.we", MAIN_FILE), path.resolve(ITEM_FILE));
-  assertEqual(resolveImportSpec("lib\\item.we", MAIN_FILE), path.resolve(ITEM_FILE));
+  // 反斜杠在 POSIX 上不是路径分隔符；compiler/wellc/driver.py 同样不
+  // 会把 `\` 当分隔符，所以只在 Windows 断言该行为（保持与编译器一致）。
+  if (process.platform === "win32") {
+    assertEqual(resolveImportSpec("lib\\item.we", MAIN_FILE), path.resolve(ITEM_FILE));
+  }
 });
 
 test("resolveImportSpec：点路径 → a/b.we 与目录 index.we", () => {
