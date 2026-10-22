@@ -81,7 +81,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 `static` 语义（2026-10-22 加入，用于 config/工具类）：
 - 成员：`name: Type [= 默认值];` 字段 + 函数；字段可写（`S.f = expr`），函数可读写 `S.f`；
 - **不可实例化**：`new S()`、`var x: S` 都是编译错误（`static S cannot be used as a value type`）；
-- 字段默认值仅支持字面量/const（标量直接作为 C 全局初始化；String 字面量在 `well_statics_init()` 中用驻留字面量初始化）；其余值只能在**启动期**（controller `run`，ctx.oid==0）赋值（例如从配置文件读出后赋值）；
+- 字段默认值支持：字面量/const、容器字面量（`arr: Array<int> = [1,2,3];`、`m: Map<int> = {"k":1};`）、`new Bytes()/new Array<T>()/new Map<T>()`；标量直接作为 C 全局初始化，其余在 `well_statics_init()` 中用 oid 0 的信任上下文构造一次（对象 oid=0，后续只读）；其余值在**启动期**（controller `run`，ctx.oid==0）赋值；
 - 启动期支持**容器字面量赋值**：`Cfg.arr = [1,2,3];` / `Cfg.m = {"k":1};`（codegen 先构造临时容器再转移所有权给 static；运行期写会先被只读检查拦截，不会构造临时对象）；
 - 引用字段赋值走 `well_static_set_ref`：释放旧值、retain 新值（owned 值转移所有权）；进程退出前 `well_statics_shutdown()` 统一 release，保证 `WELL_RC_DEBUG` 干净；
 - 字段没有 oid，**不参与 oid 写检查**；C 名字修饰 `S__field` / `S__f`；
@@ -475,7 +475,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（92 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（94 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

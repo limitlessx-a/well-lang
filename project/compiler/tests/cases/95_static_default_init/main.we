@@ -1,0 +1,35 @@
+module demo.staticdefaults;
+
+static Cfg {
+    arr: Array<int> = [1, 2, 3];
+    names: Map<int> = {"a": 1, "b": 2};
+    title: String = "default";
+    n: int = 7;
+    buf: Bytes = new Bytes();
+}
+
+event TickEvent extends Event {
+    id: long;
+    interval: long;
+    fires: long;
+}
+
+controller MainController extends Controller {
+    run() {
+        Cfg.buf.appendStr("!");
+        print(Cfg.arr.length, " ", Cfg.arr[2]);
+        print(Cfg.names.get("b"));
+        print(Cfg.title, " ", Cfg.n);
+        print(Cfg.buf.toString());
+        Timer.once(100, TickHandler);
+    }
+}
+
+handler TickHandler extends Handler {
+    onEvent(e: TickEvent) {
+        print(Cfg.arr[0]);
+        print(Cfg.buf.length);
+    }
+}
+
+entry MainController;

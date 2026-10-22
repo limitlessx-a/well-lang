@@ -1388,10 +1388,46 @@ class CodeGen:
         self.w("")
         self.w("static void well_statics_init(void) {")
         self.ind += 1
+        need_ctx = False
         for sname, st in statics.items():
             for fname, f in st["fields"].items():
-                if self.is_ref(f.type.name) and f.default is not None and f.default.__class__.__name__ == "StrLit":
-                    self.w(f"{sname}__{fname} = well_string_lit(\"{c_escape(f.default.value)}\");")
+                d = f.default
+                if self.is_ref(f.type.name) and d is not None and not isinstance(d, (StrLit, NullLit)):
+                    need_ctx = True
+        if need_ctx:
+            self.w("WellCtx _static_ctx;")
+            self.w("well_ctx_init(&_static_ctx, 0);")
+            self.w("WellCtx* ctx = &_static_ctx;")
+        for sname, st in statics.items():
+            for fname, f in st["fields"].items():
+                d = f.default
+                if not self.is_ref(f.type.name) or d is None:
+                    continue
+                if isinstance(d, StrLit):
+                    self.w(f"{sname}__{fname} = well_string_lit(\"{c_escape(d.value)}\");")
+                elif isinstance(d, NullLit):
+                    continue
+                elif isinstance(d, ArrayLit):
+                    kind, et = self.container_info(f.type.name)
+                    tmp = f"_sf{self.next_id()}"
+                    self.w(f"WellArray* {tmp} = well_array_new(ctx, {self.container_ref_flag(et)});")
+                    for it in d.items:
+                        self.emit_container_push(tmp, it, et)
+                    self.w(f"{sname}__{fname} = {tmp};")
+                elif isinstance(d, ObjectLit):
+                    kind, et = self.container_info(f.type.name)
+                    tmp = f"_sf{self.next_id()}"
+                    self.w(f"WellMap* {tmp} = well_map_new(ctx, {self.container_ref_flag(et)});")
+                    for k, v in d.pairs:
+                        self.emit_map_set(tmp, f'well_string_lit("{c_escape(k)}")', v, et)
+                    self.w(f"{sname}__{fname} = {tmp};")
+                else:
+                    code = self.gen_expr(d)
+                    self.w(f"{sname}__{fname} = {code};")
+                    if isinstance(d, Ident):
+                        self.w(f"if ({sname}__{fname}) well_retain((void*){sname}__{fname});")
+        if need_ctx:
+            self.w("well_ctx_clear(ctx);")
         self.ind -= 1
         self.w("}")
         self.w("")

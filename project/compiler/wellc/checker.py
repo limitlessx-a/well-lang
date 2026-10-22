@@ -54,10 +54,28 @@ class Checker:
         for sname, st in self.statics.items():
             for fname, f in st["fields"].items():
                 self.check_type_name(f.type.name)
-                if f.default is not None:
-                    if not isinstance(f.default, (IntLit, FloatLit, StrLit, BoolLit, NullLit, Ident)):
-                        self.err(f"static {sname}.{fname}: default value must be a literal or const")
-                    dt = self.check_expr(f.default, {})
+                if f.default is None:
+                    continue
+                d = f.default
+                if isinstance(d, ArrayLit):
+                    kind, _ = self.container_info(f.type.name)
+                    if kind != "array":
+                        self.err(f"static {sname}.{fname}: array literal default requires Array<T>")
+                    self.check_container_literal(d, f.type.name, {})
+                elif isinstance(d, ObjectLit):
+                    kind, _ = self.container_info(f.type.name)
+                    if kind != "map":
+                        self.err(f"static {sname}.{fname}: map literal default requires Map<T>")
+                    self.check_container_literal(d, f.type.name, {})
+                elif isinstance(d, New):
+                    dt = self.check_expr(d, {})
+                    if not (getattr(d, "bytes_new", False) or getattr(d, "container_new", None)):
+                        self.err(f"static {sname}.{fname}: default new is limited to Bytes/Array/Map")
+                    self.check_assignable(f.type.name, dt)
+                else:
+                    if not isinstance(d, (IntLit, FloatLit, StrLit, BoolLit, NullLit, Ident)):
+                        self.err(f"static {sname}.{fname}: default value must be a literal/const/container literal")
+                    dt = self.check_expr(d, {})
                     self.check_assignable(f.type.name, dt)
             old = self.current_namespace
             self.current_namespace = sname
