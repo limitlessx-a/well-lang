@@ -187,3 +187,10 @@ Model.set(Vo,vo) 设置vo , key = vo.oid
 Model.remove(Vo) 移除当前 key = handler.oid 的Vo
 
 
+推荐命名规范(非强制)
+
+命名采用驼峰命名法,首字母大写
+struct‌ 使用 Vo 结尾,例: UserVo
+event 使用 Event 结尾,例: UserEvent 
+controller 使用 Controller 结尾,例:  UserController
+handler 使用 Handler 结尾,例:UserHandler

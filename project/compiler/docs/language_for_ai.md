@@ -7,6 +7,54 @@
 
 ## 1. 语法规则
 
+### 1.0 命名规范（推荐，非强制）
+
+编译器不强制命名，但推荐以下约定，便于跨项目阅读：
+
+| 声明 | 规则 | 示例 |
+|---|---|---|
+| `struct` | 大驼峰（PascalCase）+ `Vo` 结尾 | `UserVo`、`OrderItemVo` |
+| `event` | PascalCase + `Event` 结尾 | `UserEvent`、`PingEvent` |
+| `controller` | PascalCase + `Controller` 结尾 | `UserController`、`AppController` |
+| `handler` | PascalCase + `Handler` 结尾 | `UserHandler`、`PingHandler` |
+| `enum` | PascalCase | `OrderStatus`、`Color` |
+| `namespace` / `static` | PascalCase | `StringUtil`、`AppConfig` |
+| 字段 / 方法 / 函数 / 局部变量 | lowerCamelCase（语言内置 API 也是此风格） | `userId`、`onEvent`、`handleOrder`、`itemCount` |
+| 常量 | UPPER_SNAKE_CASE（推荐） | `MAX_RETRY` |
+
+- 类型名首字母大写；`struct/event/controller/handler` 的固定后缀有助于区分角色；
+- 字段/方法/变量使用小驼峰，是因为 `run`、`onEvent`、`Http.route`、`Model.get` 等语法/内置名固定，避免风格冲突；
+- 内置 API、HTTP/WS 事件字段名（如 `reqId`、`clientId`、`method`、`path`、`query`、`body`）**不能改名**，它们是与运行时/协议约定的字段；
+- 以上只是推荐，不通过编译检查。
+
+示例：
+
+```we
+struct UserVo {
+    id: long;
+    name: String;
+}
+
+event UserEvent {
+    userId: long;
+}
+
+handler UserHandler {
+    onEvent(e: UserEvent) {
+        print("user ", e.userId);
+    }
+}
+
+controller UserController {
+    run() {
+        on(UserEvent, UserHandler);
+        emit(new UserEvent(1) { userId: 7 });
+    }
+}
+
+entry UserController;
+```
+
 ### 1.1 文件与入口
 
 ```we
@@ -43,20 +91,20 @@ entry MainController;     // 生成 main()，启动入口 controller
 #### struct / event
 
 ```we
-struct Base {
+struct BaseVo {
     id: long;
 }
 
-struct User extends Base {          // 仅字段展平
+struct UserVo extends BaseVo {      // 仅字段展平
     name: String;
     tags: Array<String>;
 }
 
-event BasePing {
+event BasePingEvent {
     n: int;
 }
 
-event Ping extends BasePing {
+event PingEvent extends BasePingEvent {
     msg: String;
 }
 ```
@@ -64,13 +112,13 @@ event Ping extends BasePing {
 - `struct`/`event` 支持单继承**字段展平**：子类拥有基类全部字段；
 - 根 `extends Vo` / `extends Event` 可省略、无实际作用；
 - **没有方法继承、多态/子类型、虚调用**；`Derived` 不能赋给 `Base`；
-- event 身份是子类自己的 `type_id`，`on(BaseEv)` 不会收到 `DerivedEv`；
+- event 身份是子类自己的 `type_id`，`on(BaseEvent)` 不会收到 `DerivedEvent`；
 - 未知基类、循环继承、重复字段是编译错误；
 - struct 没有用户方法，只有字段；
 - 构造：
-  - `new User()`：`oid = ctx.oid`；
-  - `new Ping(targetOid)`：事件 oid = targetOid；传 0 表示 emit 时生成新 oid；省略参数用 ctx.oid；
-  - `new Ping(oid) { n: 1, msg: "x" }`：字段用 `:` 分隔；event 构造完成后冻结。
+  - `new UserVo()`：`oid = ctx.oid`；
+  - `new PingEvent(targetOid)`：事件 oid = targetOid；传 0 表示 emit 时生成新 oid；省略参数用 ctx.oid；
+  - `new PingEvent(oid) { n: 1, msg: "x" }`：字段用 `:` 分隔；event 构造完成后冻结。
 
 #### const / enum
 
@@ -91,9 +139,9 @@ print(Color.toString("red"));  // RED
 #### controller
 
 ```we
-controller Main {
+controller MainController {
     run() {
-        on(Ping, PingHandler);
+        on(PingEvent, PingHandler);
         Http.route("/hello", "GET", HelloHandler);
         Http.listen(8080);
     }
@@ -109,7 +157,7 @@ controller Main {
 
 ```we
 handler PingHandler {
-    onEvent(e: Ping) {
+    onEvent(e: PingEvent) {
         print(e.n);
     }
 }
@@ -128,7 +176,7 @@ namespace Math {
     max(a: int, b: int): int { if (a > b) { return a; } return b; }
 }
 
-static Cfg {
+static AppConfig {
     limit: int = 10;
     title: String = "svc";
     arr: Array<int> = [1, 2, 3];
@@ -183,7 +231,7 @@ a && b, a || b, !a
 cond ? x : y
 "a" + "b"              // String 拼接（O(n²)，大量拼接用 Bytes）
 arr[i], map["k"], obj.field
-new User(), new Ping(oid) { n: 1 }, new Bytes()
+new UserVo(), new PingEvent(oid) { n: 1 }, new Bytes()
 [1, 2, 3], {"k": 1}    // 容器字面量（受限，见下）
 ```
 
@@ -196,14 +244,14 @@ new User(), new Ping(oid) { n: 1 }, new Bytes()
 ### 1.6 事件与订阅
 
 ```we
-on(Ping, PingHandler);          // channel 0
-on(Ping, PingHandler, 7);       // 指定 channel
+on(PingEvent, PingHandler);     // channel 0
+on(PingEvent, PingHandler, 7);  // 指定 channel
 once(Ping, OnceHandler);        // 至多一次
 off(Ping, PingHandler);         // 注销（按 owner）
-emit(new Ping(123) { n: 1 });   // 目标 oid=123
+emit(new PingEvent(123) { n: 1 }); // 目标 oid=123
 emit(ev, 7);                    // 指定 channel
-start(Child);
-stop(Child);
+start(ChildController);
+stop(ChildController);
 ```
 
 - `on(EventType, H[, channel])`；`on(H[, channel])` 从 handler 推断事件类型；
@@ -293,8 +341,8 @@ enum:     E.fromInt(v)（int 枚举）、E.toString(v)
 ### 2.3 oid 与所有权
 
 - oid 是数据所有者：
-  - `new Struct()` → `oid = ctx.oid`；
-  - `new Event(target)` → `oid = target`；target 0 在 emit 时生成新 oid；
+  - `new UserVo()` → `oid = ctx.oid`；
+  - `new UserEvent(target)` → `oid = target`；target 0 在 emit 时生成新 oid；
 - 字段写：`target.oid == ctx.oid`；引用值写：`value.oid == target.oid`（String 例外、null 允许）；
 - 容器写：`container.oid == ctx.oid`；插入引用元素：`element.oid == container.oid`（String 例外）；
 - event 构造字段豁免 oid 检查（可携带异 oid 只读引用），构造完成后冻结；
