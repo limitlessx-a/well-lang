@@ -1182,20 +1182,36 @@ class Checker:
                     e.ty = "void"
                     e.builtin = name
                     return
-                # on / once / off: on(EventType, Handler[, channel])
-                if len(e.args) not in (2, 3):
-                    self.err(f"{name}(EventType, Handler[, channel]) expects 2 or 3 arguments")
-                e.event_type = self.resolve_event_type(e.args[0])
-                h = e.args[1]
-                if not isinstance(h, Ident) or h.name not in self.handlers:
-                    self.err(f"{name}: second argument must be a handler")
+                # on/once/off: (Handler[, channel]) infers the event from the
+                # handler's onEvent parameter; (EventType, Handler[, channel])
+                # keeps the explicit form.
+                args = e.args
+                h = None
+                if len(args) == 1:
+                    a0 = args[0]
+                    if not isinstance(a0, Ident) or a0.name not in self.handlers:
+                        self.err(f"{name}(Handler) expects a handler; explicit form is {name}(EventType, Handler[, channel])")
+                    h = a0
+                    e.event_type = self.handler_event[h.name].name
+                elif len(args) == 2 and isinstance(args[0], Ident) and args[0].name in self.handlers:
+                    h = args[0]
+                    e.event_type = self.handler_event[h.name].name
+                    e.channel_arg = args[1]
+                    self.check_channel(args[1], env, allow_all=True)
+                elif len(args) in (2, 3):
+                    e.event_type = self.resolve_event_type(args[0])
+                    h = args[1]
+                    if not isinstance(h, Ident) or h.name not in self.handlers:
+                        self.err(f"{name}: second argument must be a handler")
+                    hev = self.handler_event[h.name].name
+                    if hev != e.event_type:
+                        self.err(f"{name}: handler {h.name} handles {hev}, not {e.event_type}")
+                    if len(args) == 3:
+                        e.channel_arg = args[2]
+                        self.check_channel(args[2], env, allow_all=True)
+                else:
+                    self.err(f"{name} expects (Handler[, channel]) or (EventType, Handler[, channel])")
                 e.handler_name = h.name
-                hev = self.handler_event[h.name].name
-                if hev != e.event_type:
-                    self.err(f"{name}: handler {h.name} handles {hev}, not {e.event_type}")
-                if len(e.args) == 3:
-                    e.channel_arg = e.args[2]
-                    self.check_channel(e.args[2], env, allow_all=True)
                 e.ty = "void"
                 e.builtin = name
                 return

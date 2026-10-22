@@ -142,7 +142,9 @@ Bytes（可变字节缓冲）：
 | `Model.set(vo)` | 写入/替换，要求 `vo.oid == ctx.oid`；重复 set 幂等 |
 | `Model.remove(T, oid)` | 要求 `oid == ctx.oid` |
 | `on(EventType, H)` / `once` / `off` | 订阅 channel 0 |
+| `on(H)` / `once(H)` / `off(H)` | **省略 EventType**：从 handler 的 `onEvent(e: T)` 参数推断事件类型，订阅 channel 0 |
 | `on(EventType, H, channel)` | 订阅指定 channel（`long`）；`ALL` 为通配 |
+| `on(H, channel)` | 省略 EventType + 指定 channel（二参时若首参是 handler 名，则视为 `(H, channel)`） |
 | `emit(event)` | 发布到 channel 0 |
 | `emit(event, channel)` | 发布到指定 channel（`long`，不能是 `ALL`） |
 | `start(C)` | 单例启动；重复调用幂等（只执行一次 `run`） |
@@ -463,7 +465,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（76 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（78 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 

@@ -1,0 +1,19 @@
+module demo.evsuberr;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingEvent);
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("ping");
+    }
+}
+
+entry MainController;

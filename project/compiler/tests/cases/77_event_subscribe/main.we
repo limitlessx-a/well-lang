@@ -1,0 +1,66 @@
+module demo.evsub;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+event ChanEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(PingHandler);
+        on(ChanHandler, 7);
+        once(OnceHandler);
+        on(PingEvent, ExplicitHandler);
+
+        on(NeverHandler);
+        off(NeverHandler);
+        on(ChanNeverHandler, 5);
+        off(ChanNeverHandler, 5);
+
+        emit(new PingEvent(1) { n: 1 });
+        emit(new ChanEvent(1) { n: 2 }, 7);
+        emit(new PingEvent(1) { n: 3 });
+        emit(new ChanEvent(1) { n: 4 }, 5);
+    }
+}
+
+handler PingHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("ping ", e.n);
+    }
+}
+
+handler OnceHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("once ", e.n);
+    }
+}
+
+handler ExplicitHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("explicit ", e.n);
+    }
+}
+
+handler ChanHandler extends Handler {
+    onEvent(e: ChanEvent) {
+        print("chan7 ", e.n);
+    }
+}
+
+handler NeverHandler extends Handler {
+    onEvent(e: PingEvent) {
+        print("never ", e.n);
+    }
+}
+
+handler ChanNeverHandler extends Handler {
+    onEvent(e: ChanEvent) {
+        print("chan-never ", e.n);
+    }
+}
+
+entry MainController;

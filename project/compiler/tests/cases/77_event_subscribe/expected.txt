@@ -1,0 +1,6 @@
+ping 1
+once 1
+explicit 1
+chan7 2
+ping 3
+explicit 3
