@@ -22,7 +22,7 @@
 10. **整数 `/`、`%` 除零会 panic**（带源码行号）；运行期整数溢出是 C wrap；字面量常量溢出/除零是编译错误。
 11. **String 的 `length`/下标/切片都按字节**；UTF-8 码点用 `codePointAt`/`fromCodePoint`；大量拼接用 `Bytes`，不要 `String +` 循环（O(n²)）。
 12. **容器字面量 `[]`/`{}` 支持：`var` 初始化、下标赋值、static 字段默认值/启动期 static 赋值**；不能直接当函数实参/普通 struct 初始化字段（会编译错误），先赋给变量。
-13. **不要使用未实现的特性**：无用户泛型/接口/元组/闭包/异常、无 `Map.entries`、无 `char/short`；`controller/handler extends 其他 controller/handler` 目前**不会执行父类逻辑**（只应写根类型 `extends Controller/Handler`）。
+13. **不要使用未实现的特性**：无用户泛型/接口/元组/闭包/异常、无 `Map.entries`、无 `char/short`、**不支持继承**（父类逻辑不会执行，不要写继承声明）。
 14. **写完必须验证**：`python wellc.py build x.we -o x.exe`，项目级回归用 `python tools/verify.py`；测试用例格式见 §11。
 
 ---
@@ -108,7 +108,7 @@ entry MainController;       // 生成 main()：初始化运行时、注册类型
 | `Array<T>` | `WellArray*` | 同质容器，引用类型 |
 | `Map<T>` | `WellMap*` | String 键、值同质，保留插入序 |
 | `Linked<T>` | `WellLinked*` | 双向链表，首尾 O(1)、get O(n) |
-| `struct S` | `S*` | 字段对象；单继承字段展平；引用类型 |
+| `struct S` | `S*` | 字段对象；引用类型 |
 | `event E` | `E*` | 事件对象；类型本身即事件身份 |
 | `void` | `void` | 仅返回类型/表达式 |
 | `null` | `void*` | 所有引用类型可为 null |
@@ -123,19 +123,19 @@ entry MainController;       // 生成 main()：初始化运行时、注册类型
 #### struct / event
 
 ```we
-struct User {                 // extends Vo 可省略
+struct User {
     id: long;
     name: String;             // 默认 ""
     tags: Array<String>;      // 默认 null
 }
 
-event Ping extends Event {    // extends Event 可省略
+event Ping {
     n: int;
 }
 ```
 
-- `struct` 的继承只做**字段展平**（`extends Base` 把 Base 字段拼进来），无多态/方法；struct 没有用户方法。
-- `event` 的继承同理；事件类型 = type_id 身份，没有 `bind`、没有名字注册表。
+- 不支持继承；struct 没有用户方法，字段就是声明里写的内容。
+- event 类型 = type_id 身份，没有 `bind`、没有名字注册表。
 - 字段默认值支持字面量/const；static 字段额外支持容器字面量/`new Bytes()/Array/Map`（见 static）。
 - 构造：
   - `new User()`：`oid = ctx.oid`；
@@ -161,7 +161,7 @@ print(Color.toString("red"));   // RED（String 枚举只有 toString）
 #### controller
 
 ```we
-controller Main extends Controller {
+controller Main {
     run() {
         on(Ping, PingHandler);
         Http.route("/hello", "GET", HelloHandler);
@@ -177,7 +177,7 @@ controller Main extends Controller {
 #### handler
 
 ```we
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: Ping) {
         print("ping", e.n);
     }
@@ -263,7 +263,7 @@ Model.get(User, oid), Json.tryParse(User, s), Http.respond(...)
 ### 3.6 事件与 controller 生命周期
 
 ```we
-controller Main extends Controller {
+controller Main {
     run() {
         on(Ping, PingHandler);          // 订阅 channel 0
         on(Ping, PingHandler, 7);       // 指定 channel
@@ -701,7 +701,7 @@ main:
 **HTTP 同步响应（最短路径）**
 
 ```we
-event HttpRequestEvent extends Event {
+event HttpRequestEvent {
     reqId: long;
     method: String;
     path: String;
@@ -709,14 +709,14 @@ event HttpRequestEvent extends Event {
     body: String;
 }
 
-controller Main extends Controller {
+controller Main {
     run() {
         Http.route("/health", "GET", HealthHandler);
         Http.listen(8080);
     }
 }
 
-handler HealthHandler extends Handler {
+handler HealthHandler {
     onEvent(e: HttpRequestEvent) {
         Http.respond(e.reqId, 200, "ok");
     }
@@ -728,9 +728,9 @@ entry Main;
 **HTTP + 业务 oid 异步响应**
 
 ```we
-event OrderEvent extends Event { reqId: long; }
+event OrderEvent { reqId: long; }
 
-controller Main extends Controller {
+controller Main {
     run() {
         on(HttpRequestEvent, IngressHandler);
         on(OrderEvent, OrderHandler);
@@ -739,13 +739,13 @@ controller Main extends Controller {
     }
 }
 
-handler IngressHandler extends Handler {
+handler IngressHandler {
     onEvent(e: HttpRequestEvent) {
         emit(new OrderEvent(0) { reqId: e.reqId });
     }
 }
 
-handler OrderHandler extends Handler {
+handler OrderHandler {
     onEvent(e: OrderEvent) {
         Http.respond(e.reqId, 200, "done");
     }
@@ -755,7 +755,7 @@ handler OrderHandler extends Handler {
 **Model 读写（handler 内）**
 
 ```we
-handler UserHandler extends Handler {
+handler UserHandler {
     onEvent(e: UserEvent) {
         var u: User = Model.get(User, e.uid);
         if (u == null) {
@@ -781,7 +781,7 @@ static Cfg {
     title: String = "svc";
 }
 
-controller Main extends Controller {
+controller Main {
     run() {
         Cfg.limit = 20;            // 启动期可写
         Cfg.title = "prod";
@@ -792,7 +792,7 @@ controller Main extends Controller {
 **Timer / WS**
 
 ```we
-controller Main extends Controller {
+controller Main {
     run() {
         Timer.loop(1000, TickHandler);
         Ws.route("/chat", WsOpen, WsMsg, WsClose);
@@ -813,7 +813,7 @@ controller Main extends Controller {
 | 在 handler 里做阻塞 I/O/大循环 | 卡住该 oid 的 runner 和一个 worker；其他 oid 仍可跑，但该 oid 的事件排队 |
 | 循环 `s = s + x` 拼大字符串 | O(n²)；用 `Bytes.appendStr` |
 | 在热路径 `print` | 全局 print 锁串行化，吞吐骤降 |
-| 依赖 `controller/handler extends 父类` | 继承逻辑未实现（只支持根类型），父类 run/onEvent 不会跑 |
+| 依赖继承 | 继承未实现，父类 run/onEvent 不会跑 |
 | 使用 `Map.entries`/用户泛型/接口/元组/闭包/异常 | 未实现，编译错误 |
 | 把容器字面量直接传函数/构造字段 | 编译错误；先 `var` 保存 |
 | 在 switch 里期待 fallthrough | 无 fallthrough，每个 case 自动 break |
@@ -926,11 +926,11 @@ env.txt                  额外环境变量
 program      := (module | import | decl)*
 decl         := const | enum | struct | event | controller | handler | func
               | namespace | static
-struct       := "struct" ID [":" ID] "{" field* "}"
+struct       := "struct" ID "{" field* "}"
 field        := ID ":" type ["=" expr] ";"
-event        := "event" ID [":" ID] "{" field* "}"
-controller   := "controller" ID ["extends" ID] "{" method* "}"
-handler      := "handler" ID ["extends" ID] "{" method* "}"
+event        := "event" ID "{" field* "}"
+controller   := "controller" ID "{" method* "}"
+handler      := "handler" ID "{" method* "}"
 method       := ID "(" params ")" [":" type] block
 namespace    := "namespace" ID "{" func* "}"
 static       := "static" ID "{" (field | func)* "}"
