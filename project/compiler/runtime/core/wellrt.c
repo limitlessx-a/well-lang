@@ -274,12 +274,47 @@ void well_lock_release(WellLock *l) {
 }
 
 /* ---------- helpers ---------- */
+#ifdef _WIN32
+static DWORD g_src_file_tls = TLS_OUT_OF_INDEXES;
+static DWORD g_src_line_tls = TLS_OUT_OF_INDEXES;
+static void src_tls_ensure(void) {
+    if (g_src_file_tls == TLS_OUT_OF_INDEXES) {
+        g_src_file_tls = TlsAlloc();
+        g_src_line_tls = TlsAlloc();
+    }
+}
+void well_source_set(const char *file, int line) {
+    src_tls_ensure();
+    if (g_src_file_tls != TLS_OUT_OF_INDEXES)
+        TlsSetValue(g_src_file_tls, (void *)file);
+    if (g_src_line_tls != TLS_OUT_OF_INDEXES)
+        TlsSetValue(g_src_line_tls, (void *)(intptr_t)line);
+}
+static const char *src_file_get(void) {
+    return (g_src_file_tls == TLS_OUT_OF_INDEXES) ? NULL : (const char *)TlsGetValue(g_src_file_tls);
+}
+static int src_line_get(void) {
+    return (g_src_line_tls == TLS_OUT_OF_INDEXES) ? 0 : (int)(intptr_t)TlsGetValue(g_src_line_tls);
+}
+#else
+static __thread const char *g_src_file = NULL;
+static __thread int g_src_line = 0;
+void well_source_set(const char *file, int line) { g_src_file = file; g_src_line = line; }
+static const char *src_file_get(void) { return g_src_file; }
+static int src_line_get(void) { return g_src_line; }
+#endif
+
 void well_panic(const char *msg) {
     jmp_buf *env = panic_env_get();
-    fprintf(stderr, "well panic: %s\n", msg);
+    const char *file = src_file_get();
+    int line = src_line_get();
+    if (file && line > 0)
+        fprintf(stderr, "well panic: %s:%d: %s\n", file, line, msg);
+    else
+        fprintf(stderr, "well panic: %s\n", msg);
     fflush(stderr);
     if (env) longjmp(*env, 1);
-    exit(1);
+    exit(WELL_PANIC_EXIT_CODE);
 }
 
 jmp_buf *well_panic_push(jmp_buf *env) {

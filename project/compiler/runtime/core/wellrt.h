@@ -82,6 +82,10 @@ typedef struct WellCtx {
 void well_init(void);
 void well_shutdown(void);
 void well_panic(const char *msg);
+/* exit code for an uncaught panic (controller/assembly phase) */
+#define WELL_PANIC_EXIT_CODE 70
+/* current source location (set by generated code) shown in panic messages */
+void well_source_set(const char *file, int line);
 
 /* module registry: core does not include module headers */
 typedef struct WellModule {
@@ -162,6 +166,7 @@ void *well_decode(unsigned int type_id, long long oid,
 
 /* JSON parsing (metadata-driven into a struct/event) */
 void *well_json_parse(unsigned int type_id, const char *text, long long oid);
+void *well_json_try_parse(unsigned int type_id, const char *text, long long oid);
 
 /* frame journal */
 void well_ctx_init(WellCtx *ctx, long long oid);

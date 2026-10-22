@@ -320,6 +320,14 @@ class Parser:
 
     def parse_stmt(self) -> Stmt:
         t = self.peek()
+        node = self._parse_stmt()
+        if not hasattr(node, "line"):
+            node.line = t.line
+            node.file = self.fn
+        return node
+
+    def _parse_stmt(self) -> Stmt:
+        t = self.peek()
         if t.kind == "kw":
             if t.value == "var":
                 return self.parse_var_decl()

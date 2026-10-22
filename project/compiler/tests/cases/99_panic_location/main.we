@@ -1,0 +1,25 @@
+module demo.panicloc;
+
+struct X {
+    a: int;
+}
+
+event GoEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        on(GoEvent, GoHandler);
+        emit(new GoEvent(1) { n: 1 });
+    }
+}
+
+handler GoHandler extends Handler {
+    onEvent(e: GoEvent) {
+        var x: X = Json.parse(X, "bad");
+        print("should not print");
+    }
+}
+
+entry MainController;

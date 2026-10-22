@@ -156,7 +156,7 @@ class CodeGen:
             return True
         if isinstance(e, Call) and getattr(e, "model_op", None) in ("get", "peek", "findByOid"):
             return True
-        if isinstance(e, Call) and getattr(e, "builtin", None) in ("json_parse", "file_read", "host_env", "mysql_query_json", "mysql_query_json_pool", "str_from_int"):
+        if isinstance(e, Call) and getattr(e, "builtin", None) in ("json_parse", "json_try_parse", "file_read", "host_env", "mysql_query_json", "mysql_query_json_pool", "str_from_int"):
             return True
         if isinstance(e, Binary) and e.op == "+" and getattr(e, "ty", None) == "String":
             return True
@@ -379,6 +379,10 @@ class CodeGen:
             ty = e.json_type
             arg = self.gen_expr(e.args[1])
             return f"(({ty}*)well_json_parse(T_{ty}, well_string_cstr({arg}), ctx->oid))"
+        if getattr(e, "builtin", None) == "json_try_parse":
+            ty = e.json_type
+            arg = self.gen_arg_temp(e.args[1])
+            return f"(({ty}*)well_json_try_parse(T_{ty}, well_string_cstr({arg}), ctx->oid))"
         if getattr(e, "builtin", None) == "idutil_get":
             return "well_id_util_get_id()"
         if getattr(e, "builtin", None) in ("timer_once", "timer_loop"):
@@ -565,6 +569,13 @@ class CodeGen:
                 break
 
     def gen_stmt(self, s: Stmt):
+        line = getattr(s, "line", None)
+        src = getattr(s, "file", None)
+        if line and src:
+            self.w(f'well_source_set(\"{c_escape(str(src))}\", {line});')
+        self._gen_stmt(s)
+
+    def _gen_stmt(self, s: Stmt):
         if isinstance(s, VarDecl):
             self.gen_var_decl(s)
         elif isinstance(s, Assign):

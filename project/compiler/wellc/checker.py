@@ -938,19 +938,20 @@ class Checker:
                 e.builtin = "http_respond"
                 return
             self.err(f"unknown Http method {name}")
-        # Json.parse(Type, String)
+        # Json.parse(Type, String) / Json.tryParse(Type, String)
         if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name == "Json":
-            if e.func.name != "parse":
-                self.err(f"unknown Json method {e.func.name}")
+            jname = e.func.name
+            if jname not in ("parse", "tryParse"):
+                self.err(f"unknown Json method {jname}")
             if len(e.args) != 2:
-                self.err("Json.parse(Type, String) expects 2 arguments")
+                self.err(f"Json.{jname}(Type, String) expects 2 arguments")
             if not isinstance(e.args[0], Ident) or e.args[0].name not in self.structs:
-                self.err("Json.parse: first argument must be a struct/event type")
+                self.err(f"Json.{jname}: first argument must be a struct/event type")
             st = self.check_expr(e.args[1], env)
             if st != "String":
-                self.err("Json.parse: second argument must be String")
+                self.err(f"Json.{jname}: second argument must be String")
             e.ty = e.args[0].name
-            e.builtin = "json_parse"
+            e.builtin = "json_parse" if jname == "parse" else "json_try_parse"
             e.json_type = e.args[0].name
             return
         # IdUtil.getId()

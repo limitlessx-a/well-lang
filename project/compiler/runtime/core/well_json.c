@@ -3,12 +3,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 
 typedef struct {
     const char *s;
     size_t len;
     size_t pos;
     int depth;
+    jmp_buf *err_env;   /* non-NULL: jump here instead of panicking (tryParse) */
+    void *root;         /* top-level object, released if parsing fails */
 } JsonParser;
 
 typedef struct {
@@ -21,6 +24,7 @@ static void jerr(JsonParser *p, const char *msg) {
     char buf[256];
     snprintf(buf, sizeof(buf), "JSON parse error at %lu: %s",
              (unsigned long)p->pos, msg);
+    if (p->err_env) longjmp(*p->err_env, 1);
     well_panic(buf);
 }
 
@@ -428,6 +432,7 @@ static void *jparse_object(JsonParser *p, const WellTypeDesc *d, long long oid) 
     WellObj *o;
     if (++p->depth > 128) jerr(p, "nesting too deep");
     o = (WellObj *)well_new(d->size, d->type_id, oid);
+    if (!p->root) p->root = o;
     jexpect(p, '{');
     if (jpeek(p) == '}') {
         p->pos++;
@@ -461,6 +466,8 @@ void *well_json_parse(unsigned int type_id, const char *text, long long oid) {
     p.len = strlen(text);
     p.pos = 0;
     p.depth = 0;
+    p.err_env = NULL;
+    p.root = NULL;
     if (jpeek(&p) == 'n') {
         if (!jmatch_lit(&p, "null")) jerr(&p, "bad null");
         jskip_ws(&p);
@@ -471,5 +478,40 @@ void *well_json_parse(unsigned int type_id, const char *text, long long oid) {
     obj = jparse_object(&p, d, oid);
     jskip_ws(&p);
     if (p.pos != p.len) jerr(&p, "trailing characters");
+    return obj;
+}
+
+/* Non-panicking variant: returns NULL on syntax/type errors (and for JSON
+ * "null"). Any partially built top-level object is released. */
+void *well_json_try_parse(unsigned int type_id, const char *text, long long oid) {
+    JsonParser *p;
+    const WellTypeDesc *d;
+    jmp_buf jb;
+    void *obj;
+    if (!text) return NULL;
+    d = well_type_desc(type_id);
+    if (!d) return NULL;
+    p = (JsonParser *)calloc(1, sizeof(JsonParser));
+    if (!p) return NULL;
+    p->s = text;
+    p->len = strlen(text);
+    p->err_env = &jb;
+    if (setjmp(jb) != 0) {
+        if (p->root) well_release(p->root);
+        free(p);
+        return NULL;
+    }
+    if (jpeek(p) == 'n') {
+        if (!jmatch_lit(p, "null")) jerr(p, "bad null");
+        jskip_ws(p);
+        if (p->pos != p->len) jerr(p, "trailing characters");
+        free(p);
+        return NULL;
+    }
+    if (jpeek(p) != '{') jerr(p, "top-level value must be an object");
+    obj = jparse_object(p, d, oid);
+    jskip_ws(p);
+    if (p->pos != p->len) jerr(p, "trailing characters");
+    free(p);
     return obj;
 }

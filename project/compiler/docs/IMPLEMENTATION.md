@@ -157,7 +157,8 @@ Bytes（可变字节缓冲）：
 | `start(C)` | 单例启动；重复调用幂等（只执行一次 `run`） |
 | `stop(C)` | 注销该 controller 类型注册的订阅，重置 started，允许再次 `start` |
 | `IdUtil.getId()` | 返回 `long`：`serverId + timestamp + sequence`，线程安全；`WELL_SERVER_ID` 0..1023 |
-| `Json.parse(Type, String)` | 按元数据解析 JSON 为 struct/event；嵌套对象、容器、ref、字符串转义/Unicode |
+| `Json.parse(Type, String)` | 按元数据解析 JSON 为 struct/event；嵌套对象、容器、ref、字符串转义/Unicode；失败 panic |
+| `Json.tryParse(Type, String)` | 同上但**失败返回 `null`**（不 panic），部分构造的根对象会被释放 |
 | `File.read/write/exists/remove` | 文件读写/存在/删除；失败 panic |
 | `Host.nowMs/env/log` | 当前毫秒时间、环境变量、stderr 日志 |
 | `Http.route/listen/respond/stop` | HTTP/1.1 服务器：多连接、keep-alive、handler 在 worker 上异步响应 |
@@ -321,7 +322,9 @@ typedef struct WellStore {
 - 平台线程/锁封装在 `well_thread.c`；Windows 用 `CRITICAL_SECTION` + 事件，POSIX 用 pthread；
 - `print` 语句通过 runtime 锁串行化。
 
-**panic 隔离**：每个 handler 调用有 `setjmp/longjmp` 边界；`g_panic_env` 是线程局部（Windows `__declspec(thread)` / GCC `__thread`），handler 内 panic 只终止当前线程的当前任务，释放帧引用，调度器继续处理下一个事件。controller/装配期 panic 仍是 fatal。
+**panic 隔离与定位**：每个 handler 调用有 `setjmp/longjmp` 边界；`g_panic_env` 是线程局部（Windows TLS / GCC `__thread`），handler 内 panic 只终止当前线程的当前任务，释放帧引用，调度器继续处理下一个事件。
+- 生成代码在每个语句前调用 `well_source_set(file, line)`；panic 输出格式为 `well panic: <file>:<line>: <msg>`，可定位到 .we 源码行；
+- **未捕获 panic（controller/装配期）以 `WELL_PANIC_EXIT_CODE = 70` 退出**（此前为 1）。
 
 ---
 
@@ -355,7 +358,7 @@ typedef struct WellStore {
 
 ### 3.10 JSON 解析
 
-- 语言 API：`Json.parse(Type, String)`，返回 `Type*`；
+- 语言 API：`Json.parse(Type, String)` 返回 `Type*`（失败 panic）；`Json.tryParse(Type, String)` 失败返回 `null`；
 - 顶层必须是 object（或 `null`）；未知字段跳过；
 - 元数据字段名匹配；缺失字段保留默认值；
 - 标量：int/long/bool/double；
@@ -364,7 +367,7 @@ typedef struct WellStore {
 - ref：JSON 对象递归解析，oid 与根对象一致；
 - Array/Map/Linked：JSON array/object；
 - Map key 为 String；
-- 解析错误 panic，可被 handler panic 隔离捕获；
+- 解析错误：`parse` panic（handler 内可被隔离），`tryParse` 返回 `null`；
 - 解析对象走 `well_set_ref`，保留 RC/DAG 检查。
 
 ### 3.11 File / Host API
@@ -483,7 +486,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（97 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（100 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 
@@ -508,7 +511,7 @@ C 编译器查找顺序：`WELL_CC` → PATH 中 `tcc`/`gcc`/`clang` → 仓库�
 | 热重载 | `stop(C)` 可注销订阅并重新 start；模块卸载/热更新尚未实现 |
 | 无持久化/热更新/安全边界 | 设计稿已列为后续 |
 | Model 线性表 | 已改为哈希表（`(type_id, oid)`，平均 O(1)）；海量数据仍建议分片 |
-| 错误信息 | handler panic 已隔离并继续调度；controller/装配期 panic 仍 exit(1)；无错误码 |
+| 错误信息 | handler panic 已隔离并继续调度；panic 带 `file:line`；未捕获 panic（controller/装配期）exit(70)；无通用错误码/异常语法 |
 
 ---
 

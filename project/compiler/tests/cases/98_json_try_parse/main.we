@@ -1,0 +1,35 @@
+module demo.jsontry;
+
+struct Item {
+    a: int;
+    b: String;
+}
+
+controller MainController extends Controller {
+    run() {
+        var ok: Item = Json.tryParse(Item, "{\"a\":1,\"b\":\"x\"}");
+        if (ok != null) {
+            print(ok.a, " ", ok.b);
+        } else {
+            print("bad ok");
+        }
+        var bad: Item = Json.tryParse(Item, "{oops");
+        if (bad == null) {
+            print("null ok");
+        } else {
+            print("bad should null");
+        }
+        var bad2: Item = Json.tryParse(Item, "{\"a\":\"str\"}");
+        if (bad2 == null) {
+            print("null type");
+        } else {
+            print("bad2");
+        }
+        var nul: Item = Json.tryParse(Item, "null");
+        if (nul == null) {
+            print("null value");
+        }
+    }
+}
+
+entry MainController;

@@ -38,12 +38,11 @@ static void *keep_worker(void *arg) {
         if (!o) {
             o = (Item *)well_new(sizeof(Item), 701, KEEP_OID);
             o->v = 42;
-            well_model_set(o, &ctx);
-            well_release(o);
         } else {
             assert(o->v == 42);
-            well_release(o);
         }
+        well_model_set(o, &ctx); /* refresh last_active so cleanup must skip it */
+        well_release(o);
         well_ctx_clear(&ctx);
         well_sleep_ms(1);
     }
@@ -70,12 +69,15 @@ int main(void) {
         well_ctx_clear(&ctx);
     }
 
+    /* Let the 300 objects become idle for longer than the TTL; the keep-oid
+     * worker refreshes its oid every millisecond. */
+    well_sleep_ms(150);
     assert(well_thread_start(&t, keep_worker, NULL) == 0);
 
     /* Default batch is 64 oids per call, so several calls are needed. */
-    for (i = 0; i < 16; i++) {
-        well_model_cleanup(well_mono_ms() + 10000, 5000);
-        well_sleep_ms(2);
+    for (i = 0; i < 10; i++) {
+        well_model_cleanup(well_mono_ms(), 100);
+        well_sleep_ms(5);
     }
     g_stop = 1;
     well_thread_join(t);

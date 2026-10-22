@@ -469,15 +469,20 @@ def run_case(name: str) -> bool:
         if want not in err:
             print(f"FAIL {name}: rc debug mismatch\n  want: {want}\n  got: {err.strip()[:500]}")
             return False
+    ef = os.path.join(d, "expect_exit.txt")
+    want_exit = int(open(ef, encoding="utf-8").read().strip()) if os.path.isfile(ef) else None
     sf = os.path.join(d, "expect_stderr.txt")
     if os.path.isfile(sf):
         want = open(sf, encoding="utf-8").read().strip()
         if norm(want) not in norm(err):
             print(f"FAIL {name}: stderr mismatch\n  want: {want}\n  got: {err.strip()[:800]}")
             return False
-        if rr.returncode != 0:
+        if want_exit is None and rr.returncode != 0:
             print(f"FAIL {name}: expected exit 0, got {rr.returncode}")
             return False
+    if want_exit is not None and rr.returncode != want_exit:
+        print(f"FAIL {name}: expected exit {want_exit}, got {rr.returncode}")
+        return False
     pf = os.path.join(d, "expect_panic.txt")
     if os.path.isfile(pf):
         want = open(pf, encoding="utf-8").read().strip()
