@@ -88,6 +88,7 @@ python tools/bench.py --scenario all --json build/bench/result.json
 ## 文档
 
 - 语言与运行时参考（给 AI）：[`project/compiler/docs/language_for_ai.md`](project/compiler/docs/language_for_ai.md)
+- 语言规范：[`project/document/语言规范.md`](project/document/语言规范.md)
 - 实现说明：[`project/compiler/docs/IMPLEMENTATION.md`](project/compiler/docs/IMPLEMENTATION.md)
 - 编译器/构建说明：[`project/compiler/README.md`](project/compiler/README.md)
 - VSCode 插件：[`project/vscode_extension/README.md`](project/vscode_extension/README.md)
