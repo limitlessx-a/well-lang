@@ -103,6 +103,9 @@ static int ws_recv(WsSocket s, char *b, int n) { return precv(s, b, n, 0); }
 static int ws_send_socket(WsSocket s, const char *b, int n) { return psend(s, b, n, 0); }
 static void ws_close_socket(WsSocket s) { if (s != WS_INVALID_SOCKET) pclosesocket(s); }
 static void ws_shutdown_socket(WsSocket s) { if (s != WS_INVALID_SOCKET) pshutdown(s, 2); }
+/* Windows allows rebinding a TIME_WAIT port by default; SO_REUSEADDR there
+ * also permits hijacking an active listener, so leave it alone. */
+static void ws_set_reuseaddr(WsSocket s) { (void)s; }
 /* Windows closesocket() unblocks a blocked accept(), so blocking accept is
  * fine there; POSIX needs the poll-based helper below. */
 static int ws_wait_readable(WsSocket s, int ms) { (void)s; (void)ms; return 1; }
@@ -117,6 +120,12 @@ static int ws_recv(WsSocket s, char *b, int n) { return (int)recv(s, b, (size_t)
 static int ws_send_socket(WsSocket s, const char *b, int n) { return (int)send(s, b, (size_t)n, 0); }
 static void ws_close_socket(WsSocket s) { if (s >= 0) close(s); }
 static void ws_shutdown_socket(WsSocket s) { if (s >= 0) shutdown(s, SHUT_RDWR); }
+/* Let a server restart immediately even when the old listener's connections
+ * are still in TIME_WAIT (the tests reuse ports across runs). */
+static void ws_set_reuseaddr(WsSocket s) {
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
+}
 /* Linux does not wake a blocked accept() when the listening fd is closed from
  * another thread, so poll with a short timeout and re-check the running flag. */
 static int ws_wait_readable(WsSocket s, int ms) {
@@ -668,6 +677,7 @@ void well_ws_listen(int port) {
     addr.port = ws_htons((unsigned short)port);
     g_ws_listen_fd = ws_socket();
     if (g_ws_listen_fd == WS_INVALID_SOCKET) well_panic("Ws.listen: socket failed");
+    ws_set_reuseaddr(g_ws_listen_fd);
     if (ws_bind(g_ws_listen_fd, &addr) != 0) well_panic("Ws.listen: bind failed");
     if (ws_listen_socket(g_ws_listen_fd) != 0) well_panic("Ws.listen: listen failed");
     g_ws_running = 1;

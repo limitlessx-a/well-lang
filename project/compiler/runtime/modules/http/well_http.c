@@ -133,6 +133,9 @@ static int http_recv(WellSocket s, char *b, int n) { return precv(s, b, n, 0); }
 static int http_send(WellSocket s, const char *b, int n) { return psend(s, b, n, 0); }
 static void http_close(WellSocket s) { if (s != WELL_INVALID_SOCKET) pclosesocket(s); }
 static void http_shutdown_socket(WellSocket s) { if (s != WELL_INVALID_SOCKET) pshutdown_fn(s, 2); }
+/* Windows allows rebinding a TIME_WAIT port by default; SO_REUSEADDR there
+ * also permits hijacking an active listener, so leave it alone. */
+static void http_set_reuseaddr(WellSocket s) { (void)s; }
 static int http_set_recv_timeout(WellSocket s, int ms) {
     DWORD tv = (DWORD)ms;
     return psetsockopt(s, WELL_SOL_SOCKET, WELL_SO_RCVTIMEO, (const char *)&tv, (int)sizeof(tv));
@@ -157,6 +160,12 @@ static int http_recv(WellSocket s, char *b, int n) { return (int)recv(s, b, (siz
 static int http_send(WellSocket s, const char *b, int n) { return (int)send(s, b, (size_t)n, 0); }
 static void http_close(WellSocket s) { if (s >= 0) close(s); }
 static void http_shutdown_socket(WellSocket s) { if (s >= 0) shutdown(s, SHUT_RDWR); }
+/* Let a server restart immediately even when the old listener's connections
+ * are still in TIME_WAIT (the tests reuse ports across runs). */
+static void http_set_reuseaddr(WellSocket s) {
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
+}
 static int http_set_recv_timeout(WellSocket s, int ms) {
     struct timeval tv;
     tv.tv_sec = ms / 1000;
@@ -881,6 +890,7 @@ void well_http_listen(int port) {
     addr.addr = 0;
     g_http_listen_fd = http_socket();
     if (g_http_listen_fd == WELL_INVALID_SOCKET) well_panic("Http.listen: socket failed");
+    http_set_reuseaddr(g_http_listen_fd);
     r = http_bind(g_http_listen_fd, &addr);
     if (r != 0) well_panic("Http.listen: bind failed");
     r = http_listen(g_http_listen_fd);

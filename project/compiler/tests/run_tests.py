@@ -119,7 +119,8 @@ def run_ws_concurrent_case(name: str, d: str, exe: str) -> bool:
         for _ in range(50):
             if p.poll() is not None:
                 out, err = p.communicate()
-                print(f"FAIL {name}: server exited early\n{out.decode(errors='replace')}\n{err.decode(errors='replace')}")
+                print(f"FAIL {name}: server exited early (exit={p.returncode}): "
+                      f"{out.decode(errors='replace').strip()} | {err.decode(errors='replace').strip()}")
                 return False
             try:
                 a = WsClient(port).handshake()
@@ -186,7 +187,8 @@ def run_ws_case(name: str, d: str, exe: str) -> bool:
         for _ in range(50):
             if p.poll() is not None:
                 out, err = p.communicate()
-                print(f"FAIL {name}: server exited early\n{out.decode(errors='replace')}\n{err.decode(errors='replace')}")
+                print(f"FAIL {name}: server exited early (exit={p.returncode}): "
+                      f"{out.decode(errors='replace').strip()} | {err.decode(errors='replace').strip()}")
                 return False
             try:
                 c = WsClient(port).handshake()
@@ -267,7 +269,8 @@ def run_http_keepalive_case(name: str, d: str, exe: str) -> bool:
     for _ in range(50):
         if p.poll() is not None:
             out, err = p.communicate()
-            print(f"FAIL {name}: server exited early\n{out.decode(errors='replace')}\n{err.decode(errors='replace')}")
+            print(f"FAIL {name}: server exited early (exit={p.returncode}): "
+                  f"{out.decode(errors='replace').strip()} | {err.decode(errors='replace').strip()}")
             return False
         try:
             s = socket.create_connection(("127.0.0.1", port), timeout=0.2)
@@ -320,7 +323,8 @@ def run_http_case(name: str, d: str, exe: str) -> bool:
     for _ in range(50):
         if p.poll() is not None:
             out, err = p.communicate()
-            print(f"FAIL {name}: server exited early\n{out.decode(errors='replace')}\n{err.decode(errors='replace')}")
+            print(f"FAIL {name}: server exited early (exit={p.returncode}): "
+                  f"{out.decode(errors='replace').strip()} | {err.decode(errors='replace').strip()}")
             return False
         try:
             s = socket.create_connection(("127.0.0.1", port), timeout=0.2)
@@ -378,7 +382,8 @@ def run_http_concurrent_case(name: str, d: str, exe: str) -> bool:
     for _ in range(50):
         if p.poll() is not None:
             out, err = p.communicate()
-            print(f"FAIL {name}: server exited early\n{out.decode(errors='replace')}\n{err.decode(errors='replace')}")
+            print(f"FAIL {name}: server exited early (exit={p.returncode}): "
+                  f"{out.decode(errors='replace').strip()} | {err.decode(errors='replace').strip()}")
             return False
         try:
             s = socket.create_connection(("127.0.0.1", port), timeout=0.2)
