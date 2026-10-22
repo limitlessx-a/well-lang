@@ -94,13 +94,13 @@ python tools\bench.py --compare build\bench\baseline.json --threshold 30
 
 编译器查找顺序：环境变量 `WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认快速 TCC）→ PATH 中的 `tcc`/`gcc`/`clang`。
 
-额外 C 编译参数用 `WELL_CFLAGS` 传入（如 `-O2 -g`）；当检测到 gcc/clang 时默认追加 `-O2`，TCC 保持无优化；显式设置 `WELL_CFLAGS=""` 可关闭默认 `-O2`。
+额外 C 编译参数用 `WELL_CFLAGS` 传入（如 `-O2 -g`）；当检测到 gcc/clang 时默认追加 `-O2`，TCC 使用默认参数（driver 不追加 `-O2`）；显式设置 `WELL_CFLAGS=""` 可关闭默认 `-O2`。
 
 ### C 工具链（本机）
 
 | 工具链 | 位置 / 版本 | 用途 |
 |---|---|---|
-| TinyCC | 仓库内 `tool_ai/tools/tcc/`，0.9.27 | **默认**，编译快、无优化，适合日常构建/测试 |
+| TinyCC | 仓库内 `tool_ai/tools/tcc/`，0.9.27 | **默认**，编译快，driver 不追加 `-O2`，适合日常构建/测试 |
 | MinGW-w64 GCC | `D:\Soft\gcc`，16.2.0（x86_64-ucrt-posix-seh） | 性能验证/优化构建；`bin` 已在用户 PATH |
 
 ```powershell

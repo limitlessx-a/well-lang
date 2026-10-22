@@ -71,7 +71,7 @@ python tools/bench.py --scenario all --json build/bench/result.json
 
 | 工具链 | 位置 / 版本 | 用途 |
 |---|---|---|
-| TinyCC 0.9.27 | 仓库 `tool_ai/tools/tcc/` | 默认，快速编译、无优化 |
+| TinyCC 0.9.27 | 仓库 `tool_ai/tools/tcc/` | 默认，快速编译，driver 不追加 `-O2` |
 | MinGW-w64 GCC 16.2.0 | `D:\Soft\gcc`（x86_64-ucrt-posix-seh），`bin` 已加入用户 PATH | 优化构建/性能验证 |
 
 ```powershell
@@ -80,7 +80,7 @@ $env:WELL_CFLAGS = "-O2 -g"  # 可选覆盖
 python wellc.py build app.we -o build\app.exe
 ```
 
-额外参数用 `WELL_CFLAGS`；gcc/clang 默认自动 `-O2`，TCC 无优化（显式 `WELL_CFLAGS=""` 可关闭自动 `-O2`）。`-O2` 可能暴露 C 侧 UB，切换后先跑 `tools/verify.py`。
+额外参数用 `WELL_CFLAGS`；gcc/clang 默认自动 `-O2`；TCC 使用默认参数（不追加 `-O2`）。显式 `WELL_CFLAGS=""` 可关闭 gcc/clang 的自动 `-O2`。`-O2` 可能暴露 C 侧 UB，切换后先跑 `tools/verify.py`。
 
 编译流水线：
 
@@ -638,7 +638,7 @@ main:
 - 无 tracing GC 的全局暂停；TTL 清理已改为锁外 bulk free。
 
 **慢/贵的部分**
-- **TCC 优化很有限**：常见表现是函数调用不内联、循环不做展开/向量化；driver 对 gcc/clang 默认追加 `-O2`（`WELL_CFLAGS` 可覆盖）。本机用 MinGW-w64 GCC 16.2.0 实测 CPU parser 微基准：TCC ≈11–14 µs/parse → GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络场景受 Python 客户端/OS 抖动影响，p99 有改善迹象但吞吐无稳定差异；Windows/MinGW gcc 已做定向验证（全量 113 用例未完整跑完），Linux/gcc 尚未正式验证；
+- **编译器差异（实测）**：driver 对 gcc/clang 默认追加 `-O2`（`WELL_CFLAGS` 可覆盖），TCC 使用其默认参数、不追加 `-O2`。本机用 MinGW-w64 GCC 16.2.0 实测 CPU parser 微基准：TCC ≈11–14 µs/parse → GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络场景受 Python 客户端/OS 抖动影响，p99 有改善迹象但吞吐无稳定差异；Windows/MinGW gcc 已做定向验证（全量 113 用例未完整跑完），Linux/gcc 尚未正式验证；
 - **RC 原子操作**：每次 retain/release 都有原子指令；对象图大/引用密集时成本线性；
 - **安全检查**：oid 检查、容器边界/类型、String 字节操作等；
 - **每请求分配**：HTTP 请求结构池化，但 event 对象、path/query/body String、容器等仍分配；
@@ -685,7 +685,7 @@ main:
 | 同一数据竞争 | 语言约束（oid 写检查） | 用户保证 | 用户保证 | 编译期保证 | 用户保证（race detector） | 用户保证 | 用户保证 | 单线程为主 | GIL 保护 | 无共享内存 |
 | 错误模型 | panic 隔离 + 可空 API；无异常 | errno/返回码 | 异常 | Result/panic | error 返回 | 异常 | 异常 | 异常/Promise | 异常 | 进程崩溃/监督树 |
 | 启动 | 毫秒级 | 毫秒级 | 毫秒级 | 毫秒级 | 毫秒级 | JVM 较慢 | CLR 较慢 | 解释器启动 | 解释器启动 | VM 启动 |
-| CPU 效率（原生代码） | 中（TCC 无优化、RC、检查） | 高 | 高 | 高 | 高 | 高（JIT 后） | 高 | 中高（JIT） | 低 | 中高 |
+| CPU 效率（原生代码） | 中（TCC 默认参数、RC、检查） | 高 | 高 | 高 | 高 | 高（JIT 后） | 高 | 中高（JIT） | 低 | 中高 |
 | 内存占用 | 低-中（RC/对象头/池/线程栈） | 低 | 低-中 | 低 | 中（GC 头/运行时） | 高（JVM 堆） | 高（CLR） | 中 | 高 | 中（VM + 进程） |
 | 生态/工具 | 极小（无包管理/调试器/IDE） | 成熟 | 成熟 | 成熟 | 成熟 | 成熟 | 成熟 | 成熟 | 成熟 | 成熟 |
 | 部署 | 单 exe + C 运行时（按需） | 原生 | 原生 | 原生 | 静态二进制 | JVM | CLR | Node 运行时 | Python 运行时 | BEAM |
@@ -694,7 +694,7 @@ main:
 ### 与各语言的差异要点
 
 **vs C**
-- Well 生成 C，直接使用 C 运行时；性能同源但多了 RC/oid 检查/池/调度，TCC 无优化时明显慢于 `-O2` C；
+- Well 生成 C，直接使用 C 运行时；性能同源但多了 RC/oid 检查/池/调度，TCC 默认参数下 CPU 密集路径较 `-O2` C 慢；
 - C 需要手动管理生命周期；Well 用 RC + 帧日志 + TTL 保底降低负担，过期回收以 `exec_ref` 租约为准（C 侧裸指针需自行 pin）；
 - C 的线程/锁由用户负责；Well 提供 oid actor 和内置 HTTP/WS/Timer，业务代码通常无锁。
 
@@ -931,7 +931,7 @@ compiler/
 - 加语法：`ast_nodes.py → parser.py → checker.py → codegen.py`，加测试用例；
 - 加运行时能力：`runtime/core/wellrt.h` 声明 + 对应 C 文件 + `codegen.py` 的 builtin 分发；
 - 加类型：`checker.check_type_name`、`codegen.ctype/is_ref`、`new_*/destroy_*` 生成；
-- 改性能：优先看 bench（`tools/bench.py`）与生成 C；TCC 无优化，可用 `WELL_CC=gcc` 对比但需重新验证；
+- 改性能：优先看 bench（`tools/bench.py`）与生成 C；可用 `WELL_CC=gcc` 做优化构建对比（自动 `-O2`），但需重新验证；
 - 改 oid/TTL/内存语义属于**结构性变更**，先与项目 owner 确认并更新文档。
 
 ---

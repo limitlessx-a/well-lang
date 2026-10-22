@@ -41,7 +41,7 @@ Notes:
 - Build artifacts stay in `build/bench/` (gitignored).
 - Compiler comparison: set `WELL_CC=gcc` (driver adds `-O2` by default) or
   `WELL_CFLAGS="-O2 -g"` before running `bench.py`; TCC remains the default and
-  is unoptimized. Keep the same machine/load when comparing baselines.
+  uses its default flags (the driver does not add -O2). Keep the same machine/load when comparing baselines.
 - First local comparison (Windows x64): `examples/http_parser_bench` CPU parse
   ≈11–14 us (TCC) vs ≈6–8 us (GCC 16.2 -O2), ~1.8x; HTTP network benchmarks are
   noisy with the Python client and showed no stable throughput difference.

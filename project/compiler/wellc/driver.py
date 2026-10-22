@@ -48,7 +48,7 @@ def find_cc() -> str:
     env = os.environ.get("WELL_CC")
     if env:
         return env
-    # Prefer the repo-local TinyCC (fast compile, no optimization) so that a
+    # Prefer the repo-local TinyCC (fast compile, default flags) so that a
     # gcc/clang installed on PATH does not silently become the default and slow
     # down every build/test. Use WELL_CC=gcc/clang explicitly for optimized builds.
     p = os.path.join(REPO_ROOT, "tool_ai", "tools", "tcc", "tcc", "tcc.exe")
@@ -66,7 +66,7 @@ def cc_flags() -> list[str]:
 
     WELL_CFLAGS always wins (an explicitly empty value disables the default).
     When WELL_CC/autodetection resolves to gcc or clang we default to -O2;
-    TinyCC keeps its fast-compile/no-optimization behaviour.
+    TinyCC keeps its fast-compile/default-flags behaviour.
     """
     if "WELL_CFLAGS" in os.environ:
         raw = os.environ["WELL_CFLAGS"]
