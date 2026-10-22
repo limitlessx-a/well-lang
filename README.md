@@ -12,13 +12,13 @@ Well 是一个 **oid actor 风格**的小型语言与运行时：`.we` 源码由
 - 静态类型检查、panic 隔离与源码位置、整数除零检查
 - 自带端到端测试、回归脚本和可复现 benchmark
 
-> 项目仍在早期阶段：语法/运行时以 `project/compiler/docs/language_for_ai.md` 为准，Linux/POSIX 仅做了 provisional CI，尚未完整验证。
+> 项目仍在早期阶段：语法/运行时以 `project/compiler/docs/language_for_ai.md` 为准。Linux/POSIX 已用 gcc -O2 在 GitHub Actions 跑通 115 个 `.we` 用例（无 MySQL 服务时 2 个 DB 用例自动跳过），但 C 测试/bench 尚未纳入 CI，Linux 生产化仍需继续。
 
 ## 目录结构
 
 ```text
 .
-├── .github/workflows/verify.yml       # GitHub Actions（provisional Linux CI）
+├── .github/workflows/verify.yml       # GitHub Actions（Linux + gcc -O2 quick 回归）
 ├── project/
 │   ├── compiler/                      # 编译器、运行时、测试、工具、文档
 │   │   ├── wellc/                     # lexer/parser/checker/codegen/driver
@@ -81,7 +81,7 @@ python tools/bench.py --scenario all --json build/bench/result.json
 
 ## 当前状态
 
-- 115 个 `.we` 端到端用例 + 12 个 C 测试通过；
+- 115 个 `.we` 端到端用例 + 12 个 C 测试在 Windows/TCC 下通过；Linux CI（Ubuntu + gcc -O2）的 `.we` 用例已通过（DB 用例缺服务时跳过）；
 - 主要验证环境：Windows x64 + TinyCC 0.9.27；另有 MinGW-w64 GCC 16.2.0 的定向/优化构建验证；
-- Linux/POSIX 仅有 provisional GitHub Actions 配置，尚未完成完整回归；
+- Linux/POSIX：GitHub Actions 已跑通 quick 回归（C 测试/bench 待纳入），本机用 NDK clang 对 POSIX 分支做语法检查；
 - 不支持异常/泛型/接口/元组/闭包等高级特性，详见 `language_for_ai.md` 的 §3.4。

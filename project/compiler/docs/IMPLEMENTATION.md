@@ -516,12 +516,12 @@ python tools\verify.py [--quick|--full]
 python tools\bench.py --scenario all --json build\bench\result.json
 python tools\bench.py --compare build\bench\baseline.json --threshold 30
 # 基线文件与场景说明见 tools/README.md
-# POSIX CI（provisional）：.github/workflows/verify.yml，Linux + gcc -O2 跑 verify.py --quick
+# POSIX CI：.github/workflows/verify.yml，Linux + gcc -O2 跑 verify.py --quick（2026-10-22 已通过；C 测试/bench 未纳入）
 ```
 
 C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang，见 §3.2 的 TinyCC 原子内建函数限制）。使用 gcc：`WELL_CC=gcc`（自动 `-O2`）。
 额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`（`WELL_CFLAGS` 覆盖，空串禁用），TCC 使用默认参数（不追加 `-O2`）。`-O2` 可能暴露 C 侧 UB，切换后先跑 `tools/verify.py`。
-本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 115 用例串行编译过慢（~25s/case），未完整跑完。
+本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 115 用例串行编译过慢（~25s/case），未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 115 个 `.we` 用例已通过（2 个 MySQL 用例跳过）。
 需要本机 MySQL 的 `52_mysql`/`53_mysql_pool` 用 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时测试打印 `SKIP`（CI runner 无 MySQL 时不会误报）。
 
 ---

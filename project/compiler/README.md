@@ -117,11 +117,11 @@ $env:WELL_CFLAGS = "-O2 -g"
 $env:WELL_CFLAGS = ""
 ```
 
-验证状态（2026-10-22）：GCC 16.2 -O2 下定向 HTTP/WS/JSON/TTL 用例与全部 12 个 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 115 用例串行编译约 25s/case，未完整跑完。
+验证状态（2026-10-22）：GCC 16.2 -O2 下定向 HTTP/WS/JSON/TTL 用例与全部 12 个 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 115 用例串行编译约 25s/case，未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 115 个 `.we` 用例已跑通（2 个 MySQL 用例跳过）。
 
 ### CI（Linux）
 
-`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑 `tools/verify.py --quick`（POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2`）。需要本机 MySQL 的 `52_mysql`/`53_mysql_pool` 通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
+`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑 `tools/verify.py --quick`（POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2`）。2026-10-22 已跑通：113/113 通过，`52_mysql`/`53_mysql_pool` 因 runner 无 MySQL 自动跳过。C 测试/bench 尚未纳入 CI。需要本机 MySQL 的用例通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
 
 
 调试引用计数：
