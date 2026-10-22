@@ -1,0 +1,34 @@
+module demo.staticwrite;
+
+static Cfg {
+    title: String = "init";
+    n: int = 1;
+}
+
+event GoEvent extends Event {
+    n: int;
+}
+
+controller MainController extends Controller {
+    run() {
+        Cfg.title = "startup";
+        Cfg.n = 2;
+        print(Cfg.title, " ", Cfg.n);
+        on(GoEvent, GoHandler);
+        emit(new GoEvent(1) { n: 1 });
+        emit(new GoEvent(1) { n: 2 });
+    }
+}
+
+handler GoHandler extends Handler {
+    onEvent(e: GoEvent) {
+        if (e.n == 1) {
+            Cfg.title = "runtime";
+        } else {
+            Cfg.n = 99;
+        }
+        print("should not print");
+    }
+}
+
+entry MainController;

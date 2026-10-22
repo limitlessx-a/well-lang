@@ -10,7 +10,7 @@
 - `handler`（`onEvent` 事件处理、无字段）
 - `func` 函数
 - `namespace N { f(a:int):int {...} }` 静态函数集合：`N.f(...)` 编译期解析、生成 `static` C 函数（零运行时开销，不占 oid/RC；成员暂只允许函数）
-- `static S { maxLevel: int = 1; title: String = "x"; m(): int {...} }` 静态类（config/工具类）：**可写**静态字段 + 函数，`S.f` / `S.m()` 编译期解析为 C 全局变量/静态函数；不可实例化；引用字段赋值自动 release 旧值、退出时统一释放；并发写由使用者负责（推荐启动期写入、运行期只读）
+- `static S { maxLevel: int = 1; title: String = "x"; m(): int {...} }` 静态类（config/工具类）：**启动期（ctx.oid==0）可写、运行期只读**的静态字段 + 函数，`S.f` / `S.m()` 编译期解析为 C 全局变量/静态函数；不可实例化；引用字段赋值自动 release 旧值、退出时统一释放；运行期写会 panic（含容器/Bytes 原地变异，靠 oid 检查拦截）；static 数据默认不参与 TTL 清理
 - **事件路由**：`on(EventType, H)` / `on(EventType, H, channel)`；也可省略事件类型：`on(H)` / `on(H, channel)` / `once(H)` / `off(H)`（从 handler 的 `onEvent(e: T)` 参数推断）；`emit(event)` / `emit(event, channel)`
   - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
 - 基础类型：`int / long / bool / double / String / Bytes / void / null`
@@ -56,7 +56,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（89 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（90 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```

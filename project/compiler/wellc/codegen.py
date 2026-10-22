@@ -802,10 +802,12 @@ class CodeGen:
             st = self.p.statics[sname]
             ftype = st["fields"][tgt.name].type.name
             code = self.gen_expr(s.value)
+            fname = f'"{sname}.{tgt.name}"'
             if self.is_ref(ftype):
                 owned = 1 if self.is_owned(s.value) else 0
-                self.w(f"well_static_set_ref((void**)&{sname}__{tgt.name}, (void*)({code}), {owned});")
+                self.w(f"well_static_set_ref(ctx, (void**)&{sname}__{tgt.name}, (void*)({code}), {owned}, {fname});")
             else:
+                self.w(f"well_static_check_write(ctx, {fname});")
                 self.w(f"{sname}__{tgt.name} = {code};")
             return
         if isinstance(tgt, Ident):

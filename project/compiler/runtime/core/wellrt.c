@@ -656,11 +656,24 @@ void well_set_ref(void *owner, void **slot, void *val) {
     }
 }
 
-/* Static-class field write: no owner oid, first writer wins nothing special;
- * caller may transfer ownership of a freshly created value (owned=1). */
-void well_static_set_ref(void **slot, void *val, int owned) {
+/* Static fields belong to oid 0 (startup/assembly data): they are writable only
+ * while ctx->oid == 0 (controller run), and read-only afterwards. ctx == NULL is
+ * the trusted compiler-generated init path. */
+void well_static_check_write(WellCtx *ctx, const char *name) {
+    if (!ctx) return;
+    if (ctx->oid != 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "static field %s is read-only after startup (ctx oid=%lld)",
+                 name ? name : "?", ctx->oid);
+        well_panic(msg);
+    }
+}
+
+void well_static_set_ref(WellCtx *ctx, void **slot, void *val, int owned, const char *name) {
     void *old;
     if (!slot) return;
+    well_static_check_write(ctx, name);
     old = *slot;
     if (old == val) {
         if (owned && val) well_release(val);

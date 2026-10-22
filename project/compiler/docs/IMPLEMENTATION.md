@@ -69,7 +69,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 | `handler H extends Handler { onEvent(e:E){...} }` | ✅ | 也接受 `handle`/`on`/`handler` 方法名；`extends Handler` 可省略，默认 `Handler` |
 | `func f(a:int):int { ... }` | ✅ | 生成带隐藏 `WellCtx*` 的 C 函数 |
 | `namespace N { f(a:int):int {...} }` | ✅ | 静态函数集合；`N.f(...)` 编译期解析，生成 `static N__f(WellCtx*, ...)`，零运行时开销、不占 oid/RC |
-| `static S { f: int = 1; m(): int {...} }` | ✅ | 静态类：**可写**静态字段 + 静态函数，不可实例化；`S.f` / `S.m()` 编译期解析 |
+| `static S { f: int = 1; m(): int {...} }` | ✅ | 静态类：**启动期可写、运行期只读**的静态字段 + 静态函数，不可实例化；`S.f` / `S.m()` 编译期解析 |
 
 `namespace` 语义（2026-10-22 加入）：
 - 成员只能是函数（暂不放 const/enum/struct）；函数可省略返回类型（视为 void）；
@@ -81,10 +81,13 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 `static` 语义（2026-10-22 加入，用于 config/工具类）：
 - 成员：`name: Type [= 默认值];` 字段 + 函数；字段可写（`S.f = expr`），函数可读写 `S.f`；
 - **不可实例化**：`new S()`、`var x: S` 都是编译错误（`static S cannot be used as a value type`）；
-- 字段默认值仅支持字面量/const（标量直接作为 C 全局初始化；String 字面量在 `well_statics_init()` 中用驻留字面量初始化）；其他值在运行期赋值（例如从配置文件读出后赋值）；
+- 字段默认值仅支持字面量/const（标量直接作为 C 全局初始化；String 字面量在 `well_statics_init()` 中用驻留字面量初始化）；其余值只能在**启动期**（controller `run`，ctx.oid==0）赋值（例如从配置文件读出后赋值）；
 - 引用字段赋值走 `well_static_set_ref`：释放旧值、retain 新值（owned 值转移所有权）；进程退出前 `well_statics_shutdown()` 统一 release，保证 `WELL_RC_DEBUG` 干净；
 - 字段没有 oid，**不参与 oid 写检查**；C 名字修饰 `S__field` / `S__f`；
-- **线程安全由使用者负责**：多 worker 并发下写同一 static 字段是数据竞争；推荐启动阶段（run loop 前）初始化完成，运行期只读；需要并发可写状态时用 Model/oid 或自行加锁。namespace 内的函数也可读写 `S.f`。
+- **运行期只读（已强制）**：所有 static 字段（引用与标量）仅在 `ctx.oid == 0` 的启动期可写；handler/timer/HTTP 等运行期（ctx.oid≠0）写会 panic `static field S.f is read-only after startup`。
+- static 容器/Bytes 的**原地变异**也被 oid 检查拦截（对象 oid=0 vs handler oid≠0：`Array.push/sort/reverse`、`Bytes.*`、`Map/Linked` 写操作）。
+- static 数据（oid 0）**不参与自动 TTL 清理**（oid 0 豁免），进程退出时统一 release；需要运行期可变状态请用 Model/oid。
+- namespace 内的函数在启动期可读写 `S.f`，运行期同样只读。
 
 ### 2.2 类型
 
@@ -471,7 +474,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（89 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（90 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 ```
 
