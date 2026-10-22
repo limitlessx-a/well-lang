@@ -47,7 +47,7 @@ handler UserHandler {
 
 controller UserController {
     run() {
-        on(UserEvent, UserHandler);
+        on(UserHandler);              // 推荐：从 onEvent 参数推断事件类型
         emit(new UserEvent(1) { userId: 7 });
     }
 }
@@ -141,7 +141,7 @@ print(Color.toString("red"));  // RED
 ```we
 controller MainController {
     run() {
-        on(PingEvent, PingHandler);
+        on(PingHandler);              // 推荐：省略 EventType
         Http.route("/hello", "GET", HelloHandler);
         Http.listen(8080);
     }
@@ -244,17 +244,23 @@ new UserVo(), new PingEvent(oid) { n: 1 }, new Bytes()
 ### 1.6 事件与订阅
 
 ```we
-on(PingEvent, PingHandler);     // channel 0
-on(PingEvent, PingHandler, 7);  // 指定 channel
-once(Ping, OnceHandler);        // 至多一次
-off(Ping, PingHandler);         // 注销（按 owner）
+on(PingHandler);                // 推荐：从 onEvent 推断事件类型，channel 0
+on(PingHandler, 7);             // 推荐 + 指定 channel
+once(PingHandler);              // 至多一次
+off(PingHandler);               // 注销（按 owner）
+
+// 也可显式写事件类型（等价，事件类型必须匹配）
+on(PingEvent, PingHandler);
+on(PingEvent, PingHandler, 7);
+
 emit(new PingEvent(123) { n: 1 }); // 目标 oid=123
 emit(ev, 7);                    // 指定 channel
 start(ChildController);
 stop(ChildController);
 ```
 
-- `on(EventType, H[, channel])`；`on(H[, channel])` 从 handler 推断事件类型；
+- **推荐 `on(H)` / `once(H)` / `off(H)`**：从 handler 的 `onEvent(e: T)` 参数自动推断事件类型，少写重复的 EventType；
+- 也支持显式 `on(EventType, H[, channel])`；EventType 必须与 handler 的事件参数类型一致；
 - channel 是 long：0 默认、>0 普通、`ALL` 只用于订阅；
 - emit 是异步派发；event 的 oid 决定进入哪个 oid 队列；
 - 同一 oid 事件 FIFO 串行；不同 oid 可并行；
