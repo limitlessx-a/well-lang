@@ -4,6 +4,7 @@
  * the completion is accepted.
  */
 import * as vscode from "vscode";
+import { tokenizeWell } from "./formatter";
 import { importSpecFor, parseDeclarations } from "./wellParse";
 import { WorkspaceIndex } from "./workspaceIndex";
 import {
@@ -63,6 +64,9 @@ export class WellCompletionProvider implements vscode.CompletionItemProvider {
     _context: vscode.CompletionContext
   ): vscode.CompletionItem[] {
     if (!wellEnabled() || !isWellDocument(document)) {
+      return [];
+    }
+    if (isInsideStringOrComment(document, position)) {
       return [];
     }
     const range = document.getWordRangeAtPosition(
@@ -126,4 +130,25 @@ export class WellCompletionProvider implements vscode.CompletionItemProvider {
     }
     return items;
   }
+}
+
+/** 光标位于字符串或注释内时不做补全（避免把字符串内容当成符号建议）。 */
+function isInsideStringOrComment(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): boolean {
+  const offset = document.offsetAt(position);
+  for (const token of tokenizeWell(document.getText())) {
+    if (token.kind !== "string" && token.kind !== "comment") {
+      continue;
+    }
+    const start = document.offsetAt(
+      new vscode.Position(token.line - 1, token.col - 1)
+    );
+    const end = start + token.raw.length;
+    if (offset >= start && offset <= end) {
+      return true;
+    }
+  }
+  return false;
 }

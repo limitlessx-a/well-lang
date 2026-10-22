@@ -808,6 +808,32 @@ async function main() {
     assert(inserted.includes("http_parser.we"), `import 指向 http_parser.we: ${inserted}`);
   });
 
+  await test("completion guard: no auto-import inside strings/comments", () => {
+    const source =
+      'module demo.guard;\n\nstruct GuardVo {\n    a: String = "Mod";\n    // Mod comment\n}\n';
+    const file = path.join(TMP, "guard", "main.we");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, source, "utf8");
+    const document = makeDocument(source, file);
+    const provider = state.completionProviders[0];
+    const token = new CancellationTokenSource().token;
+    const context = { triggerKind: 1, triggerCharacter: undefined };
+    const inString = provider.provideCompletionItems(
+      document,
+      new Position(3, "    a: String = \"Mod\";".indexOf("Mod") + 2),
+      token,
+      context
+    );
+    assertEqual(inString.length, 0, "string should not offer completions");
+    const inComment = provider.provideCompletionItems(
+      document,
+      new Position(4, "    // Mod comment".indexOf("Mod") + 2),
+      token,
+      context
+    );
+    assertEqual(inComment.length, 0, "comment should not offer completions");
+  });
+
   await test("deactivate：释放订阅与输出通道", () => {
     const before = context.subscriptions.length;
     assert(before > 0, "应有订阅项");

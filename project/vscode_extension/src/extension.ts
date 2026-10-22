@@ -98,8 +98,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerCompletionItemProvider(
       "well",
       new WellCompletionProvider(index),
-      ".",
-      '"'
+      "."
     )
   );
 
