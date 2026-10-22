@@ -29,6 +29,7 @@
 - **Bytes 可变字节缓冲**：`new Bytes()`、`b.length`、`push/get/set/append/appendStr/clear/toString`；用于增量拼装负载，避免 String `+` 的 O(n²)；写操作参与 oid 检查（运行期不能改启动期/其它 oid 的 Bytes）
 - **Well 版 HTTP 解析器（验证项目）**：`examples/lib/http_parser.we`（纯 Well 解析 request line/headers/body），由 `tests/cases/65_well_http_parser`、`66_http_parser_route` 覆盖，证明协议层可在 Well 内实现
 - **性能基线**：`examples/http_parser_bench` 可复现；当前 Well 解析器 ≈13.3 µs/次 vs C ≈0.75 µs/次（≈18×），瓶颈是每字段多次分配，分析见 `document/HTTP-解析器性能基线.md`
+- **TCC vs GCC -O2（本机初步）**：CPU parser 微基准 ≈11–14 µs/parse → ≈6–8 µs/parse（约 1.8×）；HTTP 压测受 Python 客户端/OS 抖动影响，未观察到稳定吞吐差异；gcc -O2 编译明显更慢
 - oid 写入检查、Model `get/set/remove`（64 分片哈希表 + spinlock）、引用计数（A 方案，原子 RC）、事件队列、订阅表 spinlock + 快照派发、按 oid 队列 + N worker 线程池、线程局部 handler panic 隔离、print 串行化
 - **成环策略**：允许成环，运行时不做 DFS 检查；环随 oid 过期由 registry 强制整组回收（见 `IMPLEMENTATION §3.15`）
 - **Struct 元数据**：每个 struct/event 生成 `WellTypeDesc`/`WellFieldDesc`（字段名、偏移、类型、容器元素类型），运行时可查询/遍历
@@ -64,7 +65,7 @@ compiler/
 
 ## 使用
 
-需要 Python 3 和一个 C 编译器。本机已验证 TinyCC 0.9.27（仓库内 `tool_ai/tools/tcc/`）。
+需要 Python 3 和一个 C 编译器。本机已验证 TinyCC 0.9.27（仓库内 `tool_ai/tools/tcc/`）与 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，已加入用户 PATH；`WELL_CC=gcc` 自动 `-O2`）。
 
 ```powershell
 cd compiler

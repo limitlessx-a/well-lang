@@ -375,7 +375,7 @@ python wellc.py build src.we -o out.exe
 # Windows 用 TCC；Linux/macOS 可用 WELL_CC=gcc/clang（POSIX 路径尚未正式验证）
 ```
 
-TCC 0.9.27 是当前验证环境；生成代码**没有优化级别**，gcc/clang 可显著提升数值/循环性能（未做正式基准）。
+TCC 0.9.27 是默认验证环境；本机另装了 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`）。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；优化参数由 `WELL_CFLAGS`/自动 `-O2` 控制。
 
 ---
 
@@ -598,6 +598,7 @@ main:
 | HTTP 吞吐（4 Python 客户端） | ≈ 31k req/s | Python 客户端可能成为瓶颈；更早的 C 客户端测试为 41–60k req/s |
 | 编译器前端 lex+parse | ≈ 302 µs/次 | 对 bench server 源文件，Python 侧 |
 | Well 实现的 HTTP parser | ≈ 13.3 µs/次 | 对比 C 实现 ≈ 0.75 µs/次，约 18×；主因每字段多次分配（README/性能文档） |
+| CPU 微基准 `examples/http_parser_bench` | TCC ≈11–14 µs/parse；GCC 16.2 `-O2` ≈6–8 µs/parse（≈1.8×） | Windows x64，20k 次/轮；GCC 为 MinGW-w64 UCRT posix-seh |
 
 构建产物是 C → 原生 exe，无 VM/JIT 预热；启动即执行。
 
@@ -611,7 +612,7 @@ main:
 - 无 tracing GC 的全局暂停；TTL 清理已改为锁外 bulk free。
 
 **慢/贵的部分**
-- **TCC 优化很有限**：常见表现是函数调用不内联、循环不做展开/向量化；driver 现在对 gcc/clang 默认追加 `-O2`（`WELL_CFLAGS` 可覆盖），但本机只有 TCC、**尚未在 gcc/Linux 上正式测量**，CPU 密集部分预期更快，网络/锁/分配瓶颈未必明显；
+- **TCC 优化很有限**：常见表现是函数调用不内联、循环不做展开/向量化；driver 对 gcc/clang 默认追加 `-O2`（`WELL_CFLAGS` 可覆盖）。本机用 MinGW-w64 GCC 16.2.0 实测 CPU parser 微基准：TCC ≈11–14 µs/parse → GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络场景受 Python 客户端/OS 抖动影响，p99 有改善迹象但吞吐无稳定差异；Linux/gcc 尚未正式验证；
 - **RC 原子操作**：每次 retain/release 都有原子指令；对象图大/引用密集时成本线性；
 - **安全检查**：oid 检查、容器边界/类型、String 字节操作等；
 - **每请求分配**：HTTP 请求结构池化，但 event 对象、path/query/body String、容器等仍分配；
