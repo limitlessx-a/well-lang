@@ -1,0 +1,1 @@
+live objects at shutdown = 0

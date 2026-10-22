@@ -801,13 +801,34 @@ class CodeGen:
             sname = tgt.obj.name
             st = self.p.statics[sname]
             ftype = st["fields"][tgt.name].type.name
-            code = self.gen_expr(s.value)
             fname = f'"{sname}.{tgt.name}"'
+            # read-only check first: RHS must not run (and allocate) when the
+            # write is rejected
+            self.w(f"well_static_check_write(ctx, {fname});")
+            if isinstance(s.value, (ArrayLit, ObjectLit)):
+                kind, et = self.container_info(ftype)
+                if not kind:
+                    raise Exception(f"container literal with non-container type {ftype}")
+                tmp = f"_lit{self.next_id()}"
+                self.w("{")
+                self.ind += 1
+                if kind == "array":
+                    self.w(f"WellArray* {tmp} = well_array_new(ctx, {self.container_ref_flag(et)});")
+                    for it in s.value.items:
+                        self.emit_container_push(tmp, it, et)
+                else:
+                    self.w(f"WellMap* {tmp} = well_map_new(ctx, {self.container_ref_flag(et)});")
+                    for k, v in s.value.pairs:
+                        self.emit_map_set(tmp, f'well_string_lit("{c_escape(k)}")', v, et)
+                self.w(f"well_static_set_ref(ctx, (void**)&{sname}__{tgt.name}, (void*){tmp}, 1, {fname});")
+                self.ind -= 1
+                self.w("}")
+                return
+            code = self.gen_expr(s.value)
             if self.is_ref(ftype):
                 owned = 1 if self.is_owned(s.value) else 0
                 self.w(f"well_static_set_ref(ctx, (void**)&{sname}__{tgt.name}, (void*)({code}), {owned}, {fname});")
             else:
-                self.w(f"well_static_check_write(ctx, {fname});")
                 self.w(f"{sname}__{tgt.name} = {code};")
             return
         if isinstance(tgt, Ident):

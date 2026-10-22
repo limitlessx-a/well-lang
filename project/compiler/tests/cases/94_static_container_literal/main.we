@@ -1,0 +1,31 @@
+module demo.staticlit;
+
+static Cfg {
+    arr: Array<int>;
+    names: Map<int>;
+}
+
+event TickEvent extends Event {
+    id: long;
+    interval: long;
+    fires: long;
+}
+
+controller MainController extends Controller {
+    run() {
+        Cfg.arr = [10, 20, 30];
+        Cfg.names = {"a": 1, "b": 2};
+        print(Cfg.arr.length, " ", Cfg.arr[1]);
+        print(Cfg.names.get("a"), " ", Cfg.names.get("b"));
+        Timer.once(100, TickHandler);
+    }
+}
+
+handler TickHandler extends Handler {
+    onEvent(e: TickEvent) {
+        print(Cfg.arr.length, " ", Cfg.arr[2]);
+        print(Cfg.names.get("a"));
+    }
+}
+
+entry MainController;
