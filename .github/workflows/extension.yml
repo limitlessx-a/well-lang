@@ -30,4 +30,15 @@ jobs:
       - name: Install dev dependencies
         run: npm install --no-package-lock --no-audit --no-fund
       - name: Compile + tests
-        run: npm test
+        shell: bash
+        run: |
+          set +e
+          npm test > test.log 2>&1
+          status=$?
+          tail -n 120 test.log
+          if [ "$status" -ne 0 ]; then
+            # Surface failures as check-run annotations (public, no log download).
+            grep -E '^(FAIL|not ok|error TS|[0-9]+\)|✖|AssertionError|Error:)' test.log \
+              | head -n 40 | sed 's/^/::error::/'
+          fi
+          exit "$status"

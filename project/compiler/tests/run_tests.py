@@ -584,7 +584,13 @@ def run_c_tests() -> bool:
     ]
     ok = True
     os.makedirs(BUILD, exist_ok=True)
+    # mysql_conn_test 会真实连接 127.0.0.1:3306；CI runner 无 MySQL 时跳过，
+    # 与 .we 用例通过 requires.txt 声明依赖的做法保持一致。
+    mysql_missing = missing_requirement("mysql")
     for name, expect in tests:
+        if name == "mysql_conn_test" and mysql_missing:
+            print(f"SKIP C {name} (needs {mysql_missing})")
+            continue
         src = os.path.join(HERE, "c", name + ".c")
         exe = os.path.join(BUILD, name + ".exe")
         cmd = [find_cc(), "-I", os.path.join(RUNTIME_DIR, "core"),
