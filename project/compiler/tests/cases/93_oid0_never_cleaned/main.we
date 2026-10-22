@@ -1,0 +1,40 @@
+module demo.oid0retain;
+
+struct ItemVo extends Vo {
+    n: int;
+}
+
+static Cfg {
+    arr: Array<int>;
+}
+
+event TickEvent extends Event {
+    id: long;
+    interval: long;
+    fires: long;
+}
+
+controller MainController extends Controller {
+    run() {
+        var a: Array<int> = [7, 8, 9];
+        Cfg.arr = a;
+        var vo = new ItemVo();
+        vo.n = 5;
+        Model.set(vo);
+        Timer.once(1600, TickHandler);
+    }
+}
+
+handler TickHandler extends Handler {
+    onEvent(e: TickEvent) {
+        print(Cfg.arr.length, " ", Cfg.arr[0]);
+        var vo = Model.get(ItemVo, 0);
+        if (vo != null) {
+            print("vo ", vo.n);
+        } else {
+            print("vo null");
+        }
+    }
+}
+
+entry MainController;

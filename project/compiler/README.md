@@ -32,7 +32,7 @@
 - **成环策略**：允许成环，运行时不做 DFS 检查；环随 oid 过期由 registry 强制整组回收（见 `IMPLEMENTATION §3.15`）
 - **Struct 元数据**：每个 struct/event 生成 `WellTypeDesc`/`WellFieldDesc`（字段名、偏移、类型、容器元素类型），运行时可查询/遍历
 - **Model facade**：Cache（64 分片）+ `Store` 接口 + 默认 `MemoryStore`；`Model.get` 为 Cache→Store→Cache，`Model.peek` 只查 Cache，`set/remove` 写穿
-- **不活跃 oid 清理**：**默认开启（60 秒）**，`WELL_MODEL_TTL_MS` 可覆盖、设为 `0` 关闭；oid 空闲且 `exec_ref==0` 时整组强制回收（含环）+ 丢弃 Cache 行，Store 保留，下次访问自动回源；oid 0（启动期/static 数据）豁免
+- **不活跃 oid 清理**：**默认开启（60 秒）**，`WELL_MODEL_TTL_MS` 可覆盖、设为 `0` 关闭；oid 空闲且 `exec_ref==0` 时整组强制回收（含环）+ 丢弃 Cache 行，Store 保留，下次访问自动回源；oid 0（启动期/static 数据）**永不回收**（TTL/强制清理均跳过）
 - **行级二进制序列化**：`well_encode` / `well_decode`，支持标量、String、Array/Map/Linked、ref（type_id+oid）；ref 可用 resolver 恢复
 - **JSON 解析**：`Json.parse(Type, String)` 按 Struct 元数据解析为 struct/event，支持嵌套对象、Array/Map/Linked、String 转义/Unicode、ref
 - **File/Host API**：`File.read/write/exists/remove`、`Host.nowMs/env/log`
@@ -56,7 +56,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（90 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（91 个 case + C serialize/store/cleanup/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```

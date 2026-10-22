@@ -1360,7 +1360,9 @@ static void force_free_obj(WellObj *o) {
 }
 
 void well_force_cleanup_oid(long long oid) {
-    WellObj *p = well_registry_take(oid);
+    WellObj *p;
+    if (oid == 0) return; /* oid 0 = startup/static data: never reclaimed */
+    p = well_registry_take(oid);
     while (p) {
         WellObj *next = p->reg_next;
         force_free_obj(p);
