@@ -11,7 +11,7 @@
 - `func` 函数
 - `namespace N { f(a:int):int {...} }` 静态函数集合：`N.f(...)` 编译期解析、生成 `static` C 函数（零运行时开销，不占 oid/RC；成员暂只允许函数）
 - `static S { maxLevel: int = 1; title: String = "x"; m(): int {...} }` 静态类（config/工具类）：**启动期（ctx.oid == 装配期 oid，当前 0）可写、运行期只读**的静态字段 + 函数，`S.f` / `S.m()` 编译期解析为 C 全局变量/静态函数；不可实例化；引用字段赋值自动 release 旧值、退出时统一释放；支持字段默认值 `arr: Array<int> = [1,2,3]`、`m: Map<int> = {"k":1}`、`buf: Bytes = new Bytes()`，以及在启动期赋值（`S.arr = [1,2,3]`）；运行期写会 panic（含容器/Bytes 原地变异，靠 oid 检查拦截）；static 数据（装配期 oid，当前 0）永不回收；引用字段类型不能是 event（直接/容器/struct 间接均拒绝，因 emit 会改写 event 的 oid）
-- **事件路由**：`on(EventType, H)` / `on(EventType, H, channel)`；也可省略事件类型：`on(H)` / `on(H, channel)` / `once(H)` / `off(H)`（从 handler 的 `onEvent(e: T)` 参数推断）；`emit(event)` / `emit(event, channel)`
+- **事件路由**：`on(H)` / `on(H, channel)` / `once(H)` / `off(H)`（从 handler 的 `onEvent(e: T)` 参数推断，推荐）；也支持显式 `on(EventType, H[, channel])`，其中 EventType 可以是 handler 参数事件类型本身或其子类（字段展平）；`emit(event)` / `emit(event, channel)`
   - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
 - 基础类型：`int / long / bool / double / String / Bytes / void / null`
   - 整数 `/`、`%` 除数为 0 会 panic（带源码行号）；编译期字面量除零/常量溢出直接报错；运行期溢出保持 C wrap
@@ -59,7 +59,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（113 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（115 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```
@@ -79,7 +79,7 @@ python wellc.py emit-c examples\hello.we -o build\hello.c
 运行测试 / 一键回归：
 
 ```powershell
-python tools\verify.py            # 全量：113 个 .we 用例 + C 测试
+python tools\verify.py            # 全量：115 个 .we 用例 + C 测试
 python tools\verify.py --quick    # 只跑 .we 用例
 python tools\verify.py --full     # 全量 + HTTP bench smoke
 ```
@@ -116,7 +116,7 @@ $env:WELL_CFLAGS = "-O2 -g"
 $env:WELL_CFLAGS = ""
 ```
 
-验证状态（2026-10-22）：GCC 16.2 -O2 下定向 HTTP/WS/JSON/TTL 用例与全部 12 个 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 113 用例串行编译约 25s/case，未完整跑完。
+验证状态（2026-10-22）：GCC 16.2 -O2 下定向 HTTP/WS/JSON/TTL 用例与全部 12 个 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 115 用例串行编译约 25s/case，未完整跑完。
 
 调试引用计数：
 

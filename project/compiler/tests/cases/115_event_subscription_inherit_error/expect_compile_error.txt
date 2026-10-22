@@ -1,0 +1,1 @@
+must be PingEvent or inherit from it

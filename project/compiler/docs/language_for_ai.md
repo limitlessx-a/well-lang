@@ -1,7 +1,7 @@
 # Well 语言与运行时（AI 参考）
 
 > 面向需要生成/修改 Well 代码的 AI。只覆盖三部分：**语法规则**、**实现方式**、**注意事项**。
-> 以当前实现为准（2026-10-22，113 个 `.we` 用例 + 12 个 C 测试通过）。冲突时以源码/测试为准。
+> 以当前实现为准（2026-10-22，115 个 `.we` 用例 + 12 个 C 测试通过）。冲突时以源码/测试为准。
 
 ---
 
@@ -112,7 +112,7 @@ event PingEvent extends BasePingEvent {
 - `struct`/`event` 支持单继承**字段展平**：子类拥有基类全部字段；
 - 根 `extends Vo` / `extends Event` 可省略、无实际作用；
 - **没有方法继承、多态/子类型、虚调用**；`Derived` 不能赋给 `Base`；
-- event 身份是子类自己的 `type_id`，`on(BaseEvent)` 不会收到 `DerivedEvent`；
+- event 身份是子类自己的 `type_id`；`on(BaseEvent)` 不会收到 `DerivedEvent`，但可以显式 `on(DerivedEvent, Handler)`，前提是 handler 参数是 DerivedEvent 或其基类（见 §1.6）；
 - 未知基类、循环继承、重复字段是编译错误；
 - struct 没有用户方法，只有字段；
 - 构造：
@@ -260,7 +260,26 @@ stop(ChildController);
 ```
 
 - **推荐 `on(H)` / `once(H)` / `off(H)`**：从 handler 的 `onEvent(e: T)` 参数自动推断事件类型，少写重复的 EventType；
-- 也支持显式 `on(EventType, H[, channel])`；EventType 必须与 handler 的事件参数类型一致；
+- 也支持显式 `on(EventType, H[, channel])`：EventType 可以是 handler 参数事件类型本身，**也可以是它的子类**（事件字段展平，handler 只能安全访问基类字段）；
+- 反过来（EventType 是基类、handler 参数是子类）不允许；`on(H)` 推断的是 handler 参数类型本身，想订阅子类事件要写显式形式；
+- 例：
+
+```we
+event BasePingEvent {
+    n: int;
+}
+event PingEvent extends BasePingEvent {
+    msg: String;
+}
+
+handler PingHandler {
+    onEvent(e: BasePingEvent) {
+        print(e.n);            // 只能访问基类字段
+    }
+}
+
+on(PingEvent, PingHandler);    // 允许：PingEvent 继承 BasePingEvent
+```
 - channel 是 long：0 默认、>0 普通、`ALL` 只用于订阅；
 - emit 是异步派发；event 的 oid 决定进入哪个 oid 队列；
 - 同一 oid 事件 FIFO 串行；不同 oid 可并行；
@@ -447,7 +466,7 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 
 ```powershell
 python wellc.py build app.we -o build\app.exe
-python tools\verify.py --quick    # 113 个 .we 用例
+python tools\verify.py --quick    # 115 个 .we 用例
 python tools\verify.py            # + 12 个 C 测试
 ```
 

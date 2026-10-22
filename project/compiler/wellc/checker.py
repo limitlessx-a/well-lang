@@ -761,6 +761,22 @@ class Checker:
             return q if e.op == "/" else a - q * b
         return None
 
+    def is_event_subtype(self, child: str, base: str) -> bool:
+        """True when `child` is `base` or inherits it (event/struct field flattening)."""
+        cur = child
+        seen = set()
+        while cur and cur not in ("Event", "Vo"):
+            if cur == base:
+                return True
+            if cur in seen:
+                return False
+            seen.add(cur)
+            d = self.structs.get(cur)
+            if not d:
+                return False
+            cur = d.get("base")
+        return cur == base
+
     def check_call(self, e: Call, env):
         for a in e.args:
             if isinstance(a, (ArrayLit, ObjectLit)):
@@ -1526,8 +1542,8 @@ class Checker:
                     if not isinstance(h, Ident) or h.name not in self.handlers:
                         self.err(f"{name}: second argument must be a handler")
                     hev = self.handler_event[h.name].name
-                    if hev != e.event_type:
-                        self.err(f"{name}: handler {h.name} handles {hev}, not {e.event_type}")
+                    if not self.is_event_subtype(e.event_type, hev):
+                        self.err(f"{name}: handler {h.name} handles {hev}, not {e.event_type} (the explicit event type must be {hev} or inherit from it)")
                     if len(args) == 3:
                         e.channel_arg = args[2]
                         self.check_channel(args[2], env, allow_all=True)
