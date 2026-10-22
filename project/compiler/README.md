@@ -121,7 +121,7 @@ $env:WELL_CFLAGS = ""
 
 ### CI（Linux）
 
-`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑 `tools/verify.py --quick`（Linux runner 上 gcc 由 `WELL_CC=gcc` 指定，自动 `-O2`）。需要本机 MySQL 的 `52_mysql`/`53_mysql_pool` 通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
+`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑 `tools/verify.py --quick`（POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2`）。需要本机 MySQL 的 `52_mysql`/`53_mysql_pool` 通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
 
 
 调试引用计数：

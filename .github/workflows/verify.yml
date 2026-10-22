@@ -17,14 +17,14 @@ on:
 jobs:
   linux:
     runs-on: ubuntu-latest
-    env:
-      WELL_CC: gcc
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Show C toolchain
-        run: gcc --version | head -n 1
+        run: |
+          gcc --version | head -n 1
+          python -c "import sys; sys.path.insert(0, 'project/compiler'); from wellc.driver import find_cc, cc_flags; print('cc:', find_cc()); print('cflags:', cc_flags())"
       - name: Regression (.we cases)
         run: python project/compiler/tools/verify.py --quick

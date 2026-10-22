@@ -8,6 +8,7 @@ Usage:
 """
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -28,6 +29,12 @@ def check_toolchain() -> bool:
     except Exception as e:  # noqa: BLE001
         print(f"toolchain: FAIL ({e})")
         return False
+    # WELL_CC may be a bare command name ("gcc"); resolve it through PATH
+    # before the file-existence check.
+    if not os.path.isabs(cc):
+        resolved = shutil.which(cc)
+        if resolved:
+            cc = resolved
     if not os.path.isfile(cc) and not os.path.exists(cc):
         print(f"toolchain: FAIL (C compiler not found: {cc})")
         return False
