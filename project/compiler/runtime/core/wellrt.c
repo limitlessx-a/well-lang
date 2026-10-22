@@ -93,6 +93,24 @@ typedef struct PoolNode {
 static PoolNode *g_pool[POOL_CLASSES];
 static size_t g_pool_bytes = 0;
 static WellLock g_pool_lock = 0;
+/* env config is read once: pool_take/obj_free/sweep are hot paths */
+static long long g_pool_ttl_ms = POOL_DEFAULT_TTL_MS;
+static size_t g_pool_max_bytes = (size_t)POOL_DEFAULT_MAX_MB * 1024u * 1024u;
+static int g_pool_cfg_inited = 0;
+static long long g_pool_last_sweep_ms = 0;
+
+static void pool_cfg_init(void) {
+    const char *e;
+    if (g_pool_cfg_inited) return;
+    e = getenv("WELL_POOL_TTL_MS");
+    g_pool_ttl_ms = (e && e[0]) ? atoll(e) : POOL_DEFAULT_TTL_MS;
+    e = getenv("WELL_POOL_MAX_MB");
+    if (e && e[0]) {
+        long long mb = atoll(e);
+        g_pool_max_bytes = mb > 0 ? (size_t)mb * 1024u * 1024u : 0;
+    }
+    g_pool_cfg_inited = 1;
+}
 
 static size_t pool_class(size_t size) {
     return (size + POOL_ALIGN - 1u) / POOL_ALIGN;
@@ -102,6 +120,7 @@ static size_t pool_limit_bytes(void);
 static void *pool_take(size_t size) {
     size_t c = pool_class(size);
     PoolNode *n;
+    pool_cfg_init();
     if (size > POOL_MAX_SIZE) return NULL;
     well_lock_acquire(&g_pool_lock);
     n = g_pool[c];
@@ -137,17 +156,20 @@ void well_obj_free(void *obj) {
 }
 
 void well_pool_sweep(void) {
-    const char *e = getenv("WELL_POOL_TTL_MS");
-    long long ttl = e && e[0] ? (long long)atoi(e) : POOL_DEFAULT_TTL_MS;
-    long long now = well_mono_ms();
+    long long now;
     int i;
-    if (ttl <= 0) return;
+    pool_cfg_init();
+    if (g_pool_ttl_ms <= 0) return;
+    now = well_mono_ms();
+    /* called from the scheduler loop: at most once per second */
+    if (now - g_pool_last_sweep_ms < 1000) return;
+    g_pool_last_sweep_ms = now;
     well_lock_acquire(&g_pool_lock);
     for (i = 1; i < (int)POOL_CLASSES; i++) {
         PoolNode **pp = &g_pool[i];
         while (*pp) {
             PoolNode *n = *pp;
-            if (now - n->inserted_ms >= ttl) {
+            if (now - n->inserted_ms >= g_pool_ttl_ms) {
                 *pp = n->next;
                 g_pool_bytes -= n->size;
                 free(n);
@@ -160,10 +182,8 @@ void well_pool_sweep(void) {
 }
 
 static size_t pool_limit_bytes(void) {
-    const char *e = getenv("WELL_POOL_MAX_MB");
-    long long mb = e && e[0] ? atoll(e) : POOL_DEFAULT_MAX_MB;
-    if (mb <= 0) return 0;
-    return (size_t)mb * 1024u * 1024u;
+    pool_cfg_init();
+    return g_pool_max_bytes;
 }
 
 static void well_pool_shutdown(void) {
@@ -356,6 +376,7 @@ void well_graph_remove_edge(WellObj *from, WellObj *to) {
 static void bytes_destroy(void *p);
 
 void well_init(void) {
+    pool_cfg_init();
     memset(g_destroy, 0, sizeof(g_destroy));
     memset(g_type_desc, 0, sizeof(g_type_desc));
     g_inited = 1;

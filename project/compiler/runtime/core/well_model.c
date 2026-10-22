@@ -32,6 +32,16 @@ static int activity_enabled(void) {
     return g_activity_enabled;
 }
 
+static long long g_model_ttl_ms = 0;
+static long long getenv_ttl_cached(void) {
+    if (g_model_ttl_ms == 0) {
+        const char *env = getenv("WELL_MODEL_TTL_MS");
+        g_model_ttl_ms = (env && env[0]) ? (long long)atoi(env) : -1;
+        if (g_model_ttl_ms < 0) g_model_ttl_ms = -1;
+    }
+    return g_model_ttl_ms;
+}
+
 static unsigned act_bucket(long long oid) {
     unsigned long long x = (unsigned long long)oid;
     x ^= x >> 33;
@@ -194,17 +204,15 @@ void well_model_cleanup(long long now_ms, long long ttl_ms) {
 }
 
 void well_model_cleanup_if_due(void) {
-    const char *env = getenv("WELL_MODEL_TTL_MS");
-    long long ttl;
     long long now;
     well_pool_sweep();
-    if (!env || !env[0]) return;
-    ttl = (long long)atoi(env);
-    if (ttl <= 0) return;
+    /* env is parsed once (this runs every scheduler iteration) */
+    if (g_activity_enabled < 0) (void)activity_enabled();
+    if (g_activity_enabled != 1) return;
     now = well_mono_ms();
     if (now - g_last_cleanup_ms < 1000) return;
     g_last_cleanup_ms = now;
-    well_model_cleanup(now, ttl);
+    well_model_cleanup(now, (long long)getenv_ttl_cached());
 }
 
 void well_model_shutdown(void) {
