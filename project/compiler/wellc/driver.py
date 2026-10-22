@@ -82,6 +82,32 @@ def _resolve_import(spec: str, base_dir: str) -> str | None:
     return None
 
 
+_NAMED_DECL_KINDS = {
+    "StructDecl": "type",
+    "ControllerDecl": "controller",
+    "HandlerDecl": "handler",
+    "FuncDecl": "function",
+    "NamespaceDecl": "namespace",
+    "StaticDecl": "static",
+    "EnumDecl": "enum",
+    "ConstDecl": "const",
+}
+
+
+def _check_duplicate_decls(prog: Program, path: str) -> None:
+    """Duplicate declarations inside one file are an error (imports are merged
+    separately and are deduplicated by name)."""
+    seen: dict[str, str] = {}
+    for d in prog.decls:
+        label = _NAMED_DECL_KINDS.get(type(d).__name__)
+        name = getattr(d, "name", None)
+        if not label or not name:
+            continue
+        if name in seen:
+            raise CheckError(f"{path}: duplicate declaration '{name}' (already defined as a {seen[name]})")
+        seen[name] = label
+
+
 def load_program(path: str) -> Program:
     """Parse a .we file and merge imported local modules (declarations only)."""
     seen: set[str] = set()
@@ -94,6 +120,7 @@ def load_program(path: str) -> Program:
         seen.add(p)
         order.append(p)
         prog = _parse_file(p)
+        _check_duplicate_decls(prog, p)
         base = os.path.dirname(p)
         for imp in prog.imports:
             ip = _resolve_import(imp.path, base)

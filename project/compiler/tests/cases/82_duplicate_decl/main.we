@@ -1,0 +1,17 @@
+module demo.dupdecl;
+
+func f(): int {
+    return 1;
+}
+
+func f(): int {
+    return 2;
+}
+
+controller MainController extends Controller {
+    run() {
+        print(f());
+    }
+}
+
+entry MainController;

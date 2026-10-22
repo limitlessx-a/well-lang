@@ -1,0 +1,13 @@
+module demo.rettype;
+
+func f(): int {
+    return "abc";
+}
+
+controller MainController extends Controller {
+    run() {
+        print(f());
+    }
+}
+
+entry MainController;

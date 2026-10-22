@@ -25,10 +25,13 @@ class Checker:
         self.namespaces = {}      # namespace -> {func name: MethodDecl}
         self.statics = {}         # static name -> {"fields": {name: FieldDecl}, "funcs": {name: MethodDecl}}
         self.current_namespace = None
+        self.cur_ret = "void"
+        self.loop_depth = 0
 
     # ---------- public ----------
     def run(self):
         self.collect()
+        self.check_decl_types()
         for name, h in self.controllers.items():
             for m in h.methods:
                 if m.name == "run":
@@ -204,9 +207,69 @@ class Checker:
     def check_method(self, m, outer, owner=None, event_type=None, is_func=False):
         env = dict(outer)
         for pname, ptype in m.params:
+            self.check_type_name(ptype.name)
             env[pname] = ptype.name
+        if m.ret:
+            self.check_type_name(m.ret.name)
+        ret = m.ret.name if m.ret else "void"
+        old_ret, old_loop = self.cur_ret, self.loop_depth
+        self.cur_ret = ret
+        self.loop_depth = 0
         self.check_block(m.body, env)
-        # loose return checking skipped
+        self.cur_ret = old_ret
+        self.loop_depth = old_loop
+        if ret != "void" and not self.block_returns(m.body):
+            self.err(f"{m.name}: not all paths return a value")
+
+    def check_decl_types(self):
+        for name, st in self.structs.items():
+            for f in st["fields"]:
+                if f.type.name == "void":
+                    self.err(f"{name}.{f.name}: a field cannot be void")
+                self.check_type_name(f.type.name)
+        for name, f in self.funcs.items():
+            for pn, pt in f.params:
+                self.check_type_name(pt.name)
+            if f.ret:
+                self.check_type_name(f.ret.name)
+        for name, c in self.controllers.items():
+            for m in c.methods:
+                for pn, pt in m.params:
+                    self.check_type_name(pt.name)
+                if m.ret:
+                    self.check_type_name(m.ret.name)
+        for name, h in self.handlers.items():
+            for m in h.methods:
+                for pn, pt in m.params:
+                    self.check_type_name(pt.name)
+                if m.ret:
+                    self.check_type_name(m.ret.name)
+        for ns, funcs in self.namespaces.items():
+            for fname, f in funcs.items():
+                for pn, pt in f.params:
+                    self.check_type_name(pt.name)
+                if f.ret:
+                    self.check_type_name(f.ret.name)
+        for sname, st in self.statics.items():
+            for fname, f in st["funcs"].items():
+                for pn, pt in f.params:
+                    self.check_type_name(pt.name)
+                if f.ret:
+                    self.check_type_name(f.ret.name)
+        for name, d in self.consts.items():
+            self.check_type_name(d.type.name)
+
+    def block_returns(self, b: Block) -> bool:
+        return bool(b.stmts) and self.stmt_returns(b.stmts[-1])
+
+    def stmt_returns(self, s) -> bool:
+        if isinstance(s, Return):
+            return True
+        if isinstance(s, Block):
+            return self.block_returns(s)
+        if isinstance(s, If):
+            return s.els is not None and self.stmt_returns(s.then) and self.stmt_returns(s.els)
+        return False
 
     def check_block(self, b: Block, env):
         for s in b.stmts:
@@ -246,14 +309,18 @@ class Checker:
                 self.check_stmt(s.els, dict(env))
         elif isinstance(s, While):
             self.check_cond(s.cond, env)
+            self.loop_depth += 1
             self.check_stmt(s.body, dict(env))
+            self.loop_depth -= 1
         elif isinstance(s, For):
             fenv = dict(env)
             if s.init:
                 self.check_stmt(s.init, fenv)
             if s.cond:
                 self.check_cond(s.cond, fenv)
+            self.loop_depth += 1
             self.check_stmt(s.body, dict(fenv))
+            self.loop_depth -= 1
             if s.step:
                 self.check_stmt(s.step, fenv)
         elif isinstance(s, ForEach):
@@ -272,12 +339,19 @@ class Checker:
                 self.err(f"unknown for-each kind {s.kind}")
             self.check_stmt(s.body, fenv)
         elif isinstance(s, Return):
-            if s.value:
-                self.check_expr(s.value, env)
+            if s.value is None:
+                if self.cur_ret != "void":
+                    self.err(f"return without a value in a {self.cur_ret} function")
+            else:
+                vt = self.check_expr(s.value, env)
+                if self.cur_ret == "void":
+                    self.err("return with a value in a void function")
+                self.check_assignable(self.cur_ret, vt)
         elif isinstance(s, Block):
             self.check_block(s, dict(env))
         elif isinstance(s, (Break, Continue)):
-            pass
+            if self.loop_depth <= 0:
+                self.err(f"{'break' if isinstance(s, Break) else 'continue'} outside of a loop")
         else:
             self.err(f"unknown statement {type(s).__name__}")
 
@@ -557,6 +631,9 @@ class Checker:
             e.ty = lt
 
     def check_call(self, e: Call, env):
+        for a in e.args:
+            if isinstance(a, (ArrayLit, ObjectLit)):
+                self.err("container literal cannot be used as a call argument; assign it to a variable first")
         # NamespaceName.func(...)
         if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and            (e.func.obj.name in self.namespaces or e.func.obj.name in self.statics):
             ns = e.func.obj.name
