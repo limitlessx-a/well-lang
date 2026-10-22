@@ -65,7 +65,7 @@ python tools/verify.py --full     # 全部 + HTTP bench smoke
 python tools/bench.py --scenario all --json build/bench/result.json
 ```
 
-工具链查找顺序：`WELL_CC` 环境变量 → PATH 中 `tcc`/`gcc`/`clang` → 仓库内 `tool_ai/tools/tcc/...`。
+工具链查找顺序：`WELL_CC` 环境变量 → PATH 中 `tcc`/`gcc`/`clang` → 仓库内 `tool_ai/tools/tcc/...`。额外参数用 `WELL_CFLAGS`；gcc/clang 默认自动 `-O2`，TCC 无优化（显式 `WELL_CFLAGS=""` 可关闭自动 `-O2`）。
 
 编译流水线：
 
@@ -611,7 +611,7 @@ main:
 - 无 tracing GC 的全局暂停；TTL 清理已改为锁外 bulk free。
 
 **慢/贵的部分**
-- **TCC 不做优化**：函数调用不内联、循环不优化；用 gcc/clang + `-O2` 可能显著更快（尚未正式测量）；
+- **TCC 优化很有限**：常见表现是函数调用不内联、循环不做展开/向量化；driver 现在对 gcc/clang 默认追加 `-O2`（`WELL_CFLAGS` 可覆盖），但本机只有 TCC、**尚未在 gcc/Linux 上正式测量**，CPU 密集部分预期更快，网络/锁/分配瓶颈未必明显；
 - **RC 原子操作**：每次 retain/release 都有原子指令；对象图大/引用密集时成本线性；
 - **安全检查**：oid 检查、容器边界/类型、String 字节操作等；
 - **每请求分配**：HTTP 请求结构池化，但 event 对象、path/query/body String、容器等仍分配；
@@ -867,7 +867,8 @@ controller Main {
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `WELL_CC` | 自动查找 | 指定 C 编译器 |
+| `WELL_CC` | 自动查找 | 指定 C 编译器（tcc/gcc/clang） |
+| `WELL_CFLAGS` | gcc/clang 自动 `-O2`，TCC 空 | 额外 C 编译参数；显式空串可关闭默认 `-O2` |
 | `WELL_WORKERS` | `1` | worker 线程数（1..64；主线程也参与） |
 | `WELL_MODEL_TTL_MS` | `60000` | 空闲 oid 回收 TTL；`0`/负数关闭 |
 | `WELL_MODEL_TTL_BATCH` | `64` | 每轮清理最多 oid 数（1..256） |

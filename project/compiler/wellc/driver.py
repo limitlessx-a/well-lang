@@ -1,6 +1,7 @@
 """wellc driver: parse -> check -> C -> native."""
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 
@@ -56,6 +57,25 @@ def find_cc() -> str:
     if os.path.isfile(p):
         return p
     raise BuildError("no C compiler found; set WELL_CC or install tcc/gcc/clang")
+
+
+def cc_flags() -> list[str]:
+    """Extra C compiler flags for the selected toolchain.
+
+    WELL_CFLAGS always wins (an explicitly empty value disables the default).
+    When WELL_CC/autodetection resolves to gcc or clang we default to -O2;
+    TinyCC keeps its fast-compile/no-optimization behaviour.
+    """
+    if "WELL_CFLAGS" in os.environ:
+        raw = os.environ["WELL_CFLAGS"]
+        parts = shlex.split(raw, posix=(os.name != "nt"))
+        # Windows shlex(posix=False) keeps surrounding quotes; strip matched ones.
+        return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in ("\"", "'") else p
+                for p in parts]
+    cc = os.path.basename(find_cc()).lower()
+    if cc.startswith(("gcc", "clang")):
+        return ["-O2"]
+    return []
 
 
 def _parse_file(path: str) -> Program:
@@ -176,8 +196,9 @@ def build(path: str, out: str | None = None, keep_c: bool = False) -> tuple[str,
     cmd = [cc, "-I", os.path.join(RUNTIME_DIR, "core"),
            "-I", os.path.join(RUNTIME_DIR, "modules", "http"),
            "-I", os.path.join(RUNTIME_DIR, "modules", "ws"),
-           "-I", os.path.join(RUNTIME_DIR, "modules", "mysql"),
-           "-o", out, c_path]
+           "-I", os.path.join(RUNTIME_DIR, "modules", "mysql")]
+    cmd += cc_flags()
+    cmd += ["-o", out, c_path]
     if os.name != "nt":
         cmd.append("-pthread")
     sources = list(CORE_SOURCES)

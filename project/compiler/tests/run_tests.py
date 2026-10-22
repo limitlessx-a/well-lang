@@ -533,7 +533,7 @@ def run_case(name: str) -> bool:
 
 def run_c_tests() -> bool:
     sys.path.insert(0, COMPILER_DIR)
-    from wellc.driver import find_cc, RUNTIME_DIR, RUNTIME_SOURCES
+    from wellc.driver import find_cc, cc_flags, RUNTIME_DIR, RUNTIME_SOURCES
     tests = [
         ("serialize_test", "serialize round-trip ok"),
         ("store_test", "model/store facade ok"),
@@ -556,8 +556,9 @@ def run_c_tests() -> bool:
         cmd = [find_cc(), "-I", os.path.join(RUNTIME_DIR, "core"),
                "-I", os.path.join(RUNTIME_DIR, "modules", "http"),
                "-I", os.path.join(RUNTIME_DIR, "modules", "ws"),
-               "-I", os.path.join(RUNTIME_DIR, "modules", "mysql"),
-               "-o", exe, src]
+               "-I", os.path.join(RUNTIME_DIR, "modules", "mysql")]
+        cmd += cc_flags()
+        cmd += ["-o", exe, src]
         if os.name != "nt":
             cmd.append("-pthread")
         cmd += [os.path.join(RUNTIME_DIR, n) for n in RUNTIME_SOURCES]

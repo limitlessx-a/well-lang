@@ -510,6 +510,7 @@ python tools\bench.py --compare build\bench\baseline.json --threshold 30
 ```
 
 C 编译器查找顺序：`WELL_CC` → PATH 中 `tcc`/`gcc`/`clang` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`。
+额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`（`WELL_CFLAGS` 覆盖，空串禁用），TCC 保持无优化。`-O2` 可能暴露 C 侧 UB，切换后先跑 `tools/verify.py`。
 本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`）。
 
 ---

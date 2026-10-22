@@ -39,6 +39,9 @@ Notes:
 - Baselines are environment specific; regenerate with `--save-baseline` after
   intentional performance changes and commit the JSON if desired.
 - Build artifacts stay in `build/bench/` (gitignored).
+- Compiler comparison: set `WELL_CC=gcc` (driver adds `-O2` by default) or
+  `WELL_CFLAGS="-O2 -g"` before running `bench.py`; TCC remains the default and
+  is unoptimized. Keep the same machine/load when comparing baselines.
 
 ## POSIX CI
 

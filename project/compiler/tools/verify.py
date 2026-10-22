@@ -18,7 +18,7 @@ sys.path.insert(0, COMPILER_DIR)
 sys.path.insert(0, os.path.join(COMPILER_DIR, "tests"))
 
 import run_tests  # noqa: E402
-from wellc.driver import find_cc  # noqa: E402
+from wellc.driver import find_cc, cc_flags  # noqa: E402
 
 
 def check_toolchain() -> bool:
@@ -32,6 +32,8 @@ def check_toolchain() -> bool:
         print(f"toolchain: FAIL (C compiler not found: {cc})")
         return False
     print(f"cc:     {cc}")
+    flags = cc_flags()
+    print(f"cflags: {' '.join(flags) if flags else '(none)'}")
     return True
 
 
