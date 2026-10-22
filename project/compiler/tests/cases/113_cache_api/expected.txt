@@ -1,0 +1,4 @@
+cache 7
+peek 7
+removed
+store null

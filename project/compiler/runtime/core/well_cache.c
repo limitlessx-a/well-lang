@@ -265,6 +265,29 @@ int well_cache_evict_oid_all(long long oid) {
     return removed;
 }
 
+/* Language-level Cache API (separate from Model/Store). */
+void *well_cache_get_ctx(unsigned int type_id, long long oid, WellCtx *ctx) {
+    void *obj;
+    if (ctx) well_ctx_pin(ctx, oid);
+    obj = well_cache_get(type_id, oid);
+    if (!obj && ctx) well_ctx_unpin(ctx, oid);
+    return obj;
+}
+
+void well_cache_set_ctx(void *obj, WellCtx *ctx) {
+    WellObj *o = (WellObj *)obj;
+    if (!o) well_panic("Cache.set(null)");
+    if (!ctx || o->oid != ctx->oid) well_panic("Cache.set: oid mismatch");
+    well_cache_set(obj);
+}
+
+/* Remove every Cache row owned by ctx.oid (all types); Store is untouched.
+ * Intended as the manual release path when an oid's work is done; TTL cleanup
+ * remains the last-resort fallback. */
+void well_cache_remove_ctx(WellCtx *ctx) {
+    if (ctx) (void)well_cache_evict_oid_all(ctx->oid);
+}
+
 int well_cache_discard_oid(long long oid) {
     int s, i, removed = 0;
     for (s = 0; s < MODEL_SHARDS; s++) {

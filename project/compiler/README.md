@@ -31,10 +31,11 @@
 - **性能基线**：`examples/http_parser_bench` 可复现；当前 Well 解析器 ≈13.3 µs/次 vs C ≈0.75 µs/次（≈18×），瓶颈是每字段多次分配，分析见 `document/HTTP-解析器性能基线.md`
 - **TCC vs GCC -O2（本机初步）**：CPU parser 微基准 ≈11–14 µs/parse → ≈6–8 µs/parse（约 1.8×）；HTTP 压测受 Python 客户端/OS 抖动影响，未观察到稳定吞吐差异；gcc -O2 编译明显更慢
 - oid 写入检查、Model `get/set/remove`（64 分片哈希表 + spinlock）、引用计数（A 方案，原子 RC）、事件队列、订阅表 spinlock + 快照派发、按 oid 队列 + N worker 线程池、线程局部 handler panic 隔离、print 串行化
-- **成环策略**：允许成环，运行时不做 DFS 检查；环随 oid 过期由 registry 强制整组回收（见 `IMPLEMENTATION §3.15`）
+- **成环策略**：允许成环，运行时不做 DFS 检查；环随 oid 过期由 registry 整组回收（TTL 保底，见 `IMPLEMENTATION §3.15`）
 - **Struct 元数据**：每个 struct/event 生成 `WellTypeDesc`/`WellFieldDesc`（字段名、偏移、类型、容器元素类型），运行时可查询/遍历
 - **Model facade**：Cache（64 分片）+ `Store` 接口 + 默认 `MemoryStore`；`Model.get` 为 Cache→Store→Cache，`Model.peek` 只查 Cache，`set/remove` 写穿
-- **不活跃 oid 清理**：**默认开启（60 秒）**，`WELL_MODEL_TTL_MS` 可覆盖、设为 `0` 关闭；oid 空闲且 `exec_ref==0` 时整组强制回收（含环）+ 丢弃 Cache 行，Store 保留，下次访问自动回源；装配期 oid（当前 0，由启动 ctx 决定）**永不回收**（TTL/强制清理均跳过该 oid）
+- **Cache 独立 API**：`Cache.get(T, oid)` / `Cache.set(vo)` 只操作 Cache（不经过 Store）；`Cache.remove()` 删除当前 `ctx.oid` 的全部 Cache 行（所有类型），Store 不变；用于 oid 完成后的手动释放
+- **过期 oid 数据回收（TTL 保底）**：**默认开启（60 秒）**，`WELL_MODEL_TTL_MS` 可覆盖、设为 `0` 关闭；oid 空闲且 `exec_ref==0` 时整组回收（含环）+ 丢弃 Cache 行，Store 保留，下次访问自动回源；装配期 oid（当前 0，由启动 ctx 决定）**永不回收**。**oid 完成工作后应主动 `Cache.remove()`；TTL 只是最后保底**
 - **行级二进制序列化**：`well_encode` / `well_decode`，支持标量、String、Array/Map/Linked、ref（type_id+oid）；ref 可用 resolver 恢复
 - **JSON 解析**：`Json.parse(Type, String)` 按 Struct 元数据解析为 struct/event，支持嵌套对象、Array/Map/Linked、String 转义/Unicode、ref；`Json.tryParse(Type, String)` 失败返回 `null`（不 panic）；`Json.stringify(value[, indent])` 按元数据序列化（struct/event、null、标量、顶层 Array/Map/Linked；嵌套容器；转义；indent 0=紧凑、1–8=pretty）
 - **File/Host API**：`File.read/write/exists/remove`、`Host.nowMs/env/log`
@@ -43,8 +44,8 @@
 - **Timer**：`Timer.once(ms, Handler): long`、`Timer.loop(ms, Handler): long`、`Timer.cancel(id)`；到期以 timer id 为 oid 投递 task，handler 在 worker 上执行；有 timer 时进程保持运行
 - **MySQL 客户端（最小）**：自实现 wire protocol；`mysql_native_password` + `COM_QUERY`；`Mysql.connect/exec/queryJson/close`
 - **MySQL 连接池**：`Mysql.pool/execPool/queryJsonPool/closePool`；`WellMysqlPool` acquire/release
-- **oid exec_ref**：handler/event 执行引用租约；Cache TTL 由 Cache.get/set 更新；oid 过期后回收 Cache 行
-- **oid registry + 强制清理**：按 oid 枚举全部对象；exec_ref==0 时整图强制回收（含环）
+- **oid exec_ref**：handler/event 执行引用租约（event 派发期间对 target oid 额外 pin）；Cache TTL 由 Cache.get/set 更新；oid 过期后回收 Cache 行
+- **oid registry + 过期回收**：按 oid 枚举全部对象；exec_ref==0 时整图回收（含环）
 - **固定大小对象池**：struct/event 回收后复用；`WELL_POOL_TTL_MS` 到期真正释放；`WELL_POOL_MAX_MB` 上限
 - **局部作用域释放**：loop body / block / function / return / break / continue 结束释放局部引用；配合 `well_ctx_replace` 覆盖赋值释放
 
@@ -58,7 +59,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（112 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（113 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```
@@ -78,7 +79,7 @@ python wellc.py emit-c examples\hello.we -o build\hello.c
 运行测试 / 一键回归：
 
 ```powershell
-python tools\verify.py            # 全量：112 个 .we 用例 + C 测试
+python tools\verify.py            # 全量：113 个 .we 用例 + C 测试
 python tools\verify.py --quick    # 只跑 .we 用例
 python tools\verify.py --full     # 全量 + HTTP bench smoke
 ```

@@ -157,6 +157,9 @@ Bytes（可变字节缓冲）：
 | `Model.findByOid(T, oid)` | `get` 的别名/兼容接口；语义同 read-through |
 | `Model.set(vo)` | 写入/替换，要求 `vo.oid == ctx.oid`；重复 set 幂等 |
 | `Model.remove(T, oid)` | 要求 `oid == ctx.oid` |
+| `Cache.get(T, oid)` | 只查 Cache，返回 `T*`（owned）；不访问 Store |
+| `Cache.set(vo)` | 只写 Cache，要求 `vo.oid == ctx.oid`；不写 Store |
+| `Cache.remove()` | 删除当前 `ctx.oid` 的全部 Cache 行（所有类型）；Store 不变 |
 | `on(EventType, H)` / `once` / `off` | 订阅 channel 0 |
 | `on(H)` / `once(H)` / `off(H)` | **省略 EventType**：从 handler 的 `onEvent(e: T)` 参数推断事件类型，订阅 channel 0 |
 | `on(EventType, H, channel)` | 订阅指定 channel（`long`）；`ALL` 为通配 |
@@ -229,8 +232,8 @@ typedef struct WellObj {
 > **状态（2026-10-22）**：对象图实现已移除（`well_graph_add_edge/remove_edge` 为 no-op 桩，`WellObj` 不再保留图字段）。成环被允许，由 oid 空闲清理整组回收（见 §3.3「不活跃清理」）。
 
 - 历史设计（未启用）：`graph_edges` 出边表 + 加边前 DFS 判环，命中 panic `"DAG violation"`；因每次引用写入 O(V+E)、且环已由 oid 整组清理兜底，未启用。
-- 现在的回收路径：自动路径 `WELL_MODEL_TTL_MS` **默认开启**（默认 60 秒，设为 `0`/负数关闭）→ 对空闲 oid 组强制释放；装配期 oid（`well_static_owner_oid()`，当前 0，由启动 ctx 决定）**永不回收**：TTL 扫描与 `well_force_cleanup_oid` 均跳过该 oid。
-- 约束：清理按 oid 整组强杀，判据是 `exec_ref==0` + 调度器空闲；语言层引用由 ctx pin、event payload pin、oid/static 写检查覆盖（见 §3.3），正常 Well 代码不会悬空；C/FFI 裸指针需自行 `well_oid_pin`。
+- 现在的回收路径：自动路径 `WELL_MODEL_TTL_MS` **默认开启**（默认 60 秒，设为 `0`/负数关闭）→ 对过期未使用 oid 组执行回收；装配期 oid（`well_static_owner_oid()`，当前 0，由启动 ctx 决定）**永不回收**：TTL 扫描与 `well_force_cleanup_oid` 均跳过该 oid。
+- 约束：过期回收按 oid 整组释放，判据是 `exec_ref==0` + 调度器空闲；语言层引用由 ctx pin、event payload pin、oid/static 写检查覆盖（见 §3.3），正常 Well 代码不会悬空；C/FFI 裸指针需自行 `well_oid_pin`。
 
 ### 3.3 Model / Cache / Store
 
@@ -259,16 +262,18 @@ typedef struct WellStore {
 - 多 Model 可加载同一 key；`Model.get` 命中全局 Cache 直接返回，miss 才回源；最后一次 `Cache.set` 覆盖缓存。
 - `Store.get` 是纯后端读取，不写 Cache；`Store.set` 纯后端写入，不自动更新 Cache；业务写走 `Model.set`。
 - 未写回 Store 的缓存修改可能被其他 Model 覆盖；跨 Model/Store 的数据一致性由用户负责。
+- **Cache 独立 API**（语言层）：`Cache.get(T, oid)` / `Cache.set(vo)` 只操作 Cache（Model = Cache + Store；`Cache.set` 不写 Store）；`Cache.remove()` 删除当前 `ctx.oid` 的全部 Cache 行（所有类型），Store 不变。
+- **手动释放优先**：oid 完成工作后应调用 `Cache.remove()` 释放该 oid 的 Cache 引用；对象仍被 handler/event 持有时会在其释放后销毁。TTL 只做最后保底，不应作为主要释放手段。
 - 同一 oid 的旧对象可能仍被 handler/event 持有；Cache 替换不会立即释放旧对象。
 - 同一对象在 Model 中只允许一个 key；同 key 不同类型可共存。
-- **不活跃清理（默认开启）**：默认 TTL 60 秒（`WELL_MODEL_TTL_MS` 可覆盖，`0`/负数关闭）；记录 oid 活动时间；清理条件为调度器空闲 + `exec_ref==0` + 超过 TTL；只驱逐 Cache/内存对象，Store 保留；下次 `Model.get` 回源；装配期 oid（当前 0）豁免。
-- **清理实现（P0-2，2026-10-22 重写）**：单飞（同一时刻只有一个线程清理）；每轮最多 `WELL_MODEL_TTL_BATCH` 个 oid（默认 64，最大 256），剩余下一轮继续。每个 oid 分 4 步：
+- **过期数据回收（TTL 保底，默认开启）**：默认 TTL 60 秒（`WELL_MODEL_TTL_MS` 可覆盖，`0`/负数关闭）；记录 oid 活动时间；清理条件为调度器空闲 + `exec_ref==0` + 超过 TTL；只驱逐 Cache/内存对象，Store 保留；下次 `Model.get` 回源；装配期 oid（当前 0）豁免。
+- **回收实现（P0-2，2026-10-22 重写）**：单飞（同一时刻只有一个线程清理）；每轮最多 `WELL_MODEL_TTL_BATCH` 个 oid（默认 64，最大 256），剩余下一轮继续。每个 oid 分 4 步：
   1. `g_sched_mutex`：把队列标记 `cleaning`（隔离），该 oid 不再被调度；
   2. `g_act_lock`：再次校验 `exec_ref==0`/过期，摘除 ActEntry，`well_oid_take_objects` 摘出 registry 对象、`well_cache_discard_oid` 丢弃 Cache 行——这期间 pin/Model.get 被短暂挡住，避免旧对象被拿走；
   3. 释放所有全局锁，`well_force_free_objects` 逐个释放（事件 unpin 正常加锁，不再需要 TLS 重入特判）；
   4. `g_sched_mutex`：清除 `cleaning`，若期间有入队则重新 ready_push + signal。
   - 关键收益：**bulk free 不再持有 `g_act_lock`/`g_sched_mutex`**，其他 oid 的 Model 操作与任务派发不受大组释放影响；全局锁只覆盖"元数据摘除"（registry 分片 / Cache 分片）而非对象数。
-- 装配期 oid 在强制清理入口处直接返回，任何路径都不会回收启动期/static 数据。
+- 装配期 oid 在回收入口处直接返回，任何路径都不会回收启动期/static 数据。
 - **环与跨 oid 约束**（重要）：
   - 同一 oid 组内的环允许存在，由清理整组回收；
   - 清理**不按 rc 判断**，但 `exec_ref==0` + 调度器空闲保证语言层没有组外引用：handler/Model pin、在飞 event payload（Model 对象）都会阻止清理；普通字段/容器跨 oid 写被拒绝；static 值必须是装配期 oid（String 例外）；
@@ -287,6 +292,7 @@ typedef struct WellStore {
 - 派发时在订阅锁内快照匹配订阅，锁外调用 handler；`once` 在锁内 claim（置 inactive），保证 at-most-once。
 - 订阅表一把 spinlock；订阅节点当前不释放，便于快照安全。
 - 每个 handler 的 `WellCtx.oid = event->hdr.oid`，因此写权限校验生效。
+- `dispatch_event` 在整个派发期间对 target oid 执行 `well_oid_pin`，所有订阅 handler 执行完并释放 event 后 `well_oid_unpin`；即使 handler 不做 `Model.get/set`，该 oid 的数据在事件执行期间也不会被过期回收。
 - `once` 在调用后置 inactive；`off` 置 inactive；节点不立即释放（避免遍历时 UAF）。
 - 订阅 owner：每条订阅记录注册时的 controller owner id；`stop(C)` 调用 `well_off_owner(C_id)` 批量置 inactive；`off` 只影响当前 owner 的订阅。
 - 订阅 owner（控制器类型/停止时注销）已实现基础版；热更新尚未实现。
@@ -312,7 +318,7 @@ typedef struct WellStore {
 
 ### 3.5 oid 与写入检查
 
-- `new Struct()`：`oid = ctx.oid`。controller 的 `ctx.oid = 0`：允许在 `run()` 中 `new` 对象并 `Model.set` 创建**系统级只读数据**（oid=0），handler 可 `Model.get(T, 0)` 读取；运行期字段/容器/Bytes 写会 panic，TTL/强制清理跳过 oid 0。可写业务数据在事件 handler 中创建。
+- `new Struct()`：`oid = ctx.oid`。controller 的 `ctx.oid = 0`：允许在 `run()` 中 `new` 对象并 `Model.set` 创建**系统级只读数据**（oid=0），handler 可 `Model.get(T, 0)` 读取；运行期字段/容器/Bytes 写会 panic，TTL/过期回收跳过 oid 0。可写业务数据在事件 handler 中创建。
 - `new Event(target)`：`oid = target`；省略 target 时用 `ctx.oid`。
 - 字段写入：`well_check_oid(target, ctx)`，要求 `target.oid == ctx.oid`。
 - 字段引用写入 value：`well_check_value_oid(target, value, ctx)`，要求 `value.oid == target.oid`（String 无 oid，跳过；null 允许）。
@@ -447,8 +453,8 @@ typedef struct WellStore {
 - Cache TTL 只由 Cache.get/set 更新；
 - oid 过期且 exec_ref==0 时，移除该 oid 的 Cache 行（不再要求 rc==1）；
 - oid registry：`well_new` 登记、正常 rc0 注销；oid 过期时按 oid 取出全部对象；
-- 强制清理：对象引用置空；String 正常 release；容器 force-clear；对象内存直接释放；
-- 运行时不再做环检查；环形数据由 oid 过期 + registry 强制清理兜底。
+- 过期回收（后台保底，不是用户主动 API）：对象引用置空；String 正常 release；容器 force-clear；对象内存直接释放；
+- 运行时不再做环检查；环形数据由 oid 过期 + registry 回收兜底。
 - 固定大小对象池：`well_obj_free` 按 size class 入池；`well_new` 优先复用；**新分配按 size class 整块大小（class*16）申请**，避免同一 class 内"小尺寸分配被大对象复用"导致越界写；`well_pool_sweep` 按 `WELL_POOL_TTL_MS` 真正释放；`WELL_POOL_MAX_MB` 限制池大小。
 - 局部作用域释放：`well_ctx_mark/release_from` 在 while/for/foreach/block 结束释放本轮局部引用；`well_ctx_replace` 覆盖赋值时原地替换 frame 引用并 release 旧值。
 
@@ -496,7 +502,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（112 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（113 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 
 # 一键回归（推荐）：全部用例 + C 测试；--quick 只跑 .we；--full 加 bench smoke
@@ -511,7 +517,7 @@ python tools\bench.py --compare build\bench\baseline.json --threshold 30
 
 C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `tcc`/`gcc`/`clang`。使用 gcc：`WELL_CC=gcc`（自动 `-O2`）。
 额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`（`WELL_CFLAGS` 覆盖，空串禁用），TCC 保持无优化。`-O2` 可能暴露 C 侧 UB，切换后先跑 `tools/verify.py`。
-本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`）；另装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，用户 PATH）。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 112 用例串行编译过慢（~25s/case），未完整跑完。
+本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`）；另装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，用户 PATH）。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 113 用例串行编译过慢（~25s/case），未完整跑完。
 
 ---
 

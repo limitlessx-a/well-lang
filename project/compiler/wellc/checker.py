@@ -1173,7 +1173,7 @@ class Checker:
                 return
             self.err(f"unknown String method {e.func.name}")
         # container / String methods
-        if isinstance(e.func, Member) and not (isinstance(e.func.obj, Ident) and e.func.obj.name == "Model"):
+        if isinstance(e.func, Member) and not (isinstance(e.func.obj, Ident) and e.func.obj.name in ("Model", "Cache")):
             ot = self.check_expr(e.func.obj, env)
             if ot == "String":
                 self.check_string_method(e, env)
@@ -1414,6 +1414,37 @@ class Checker:
                         e.method_obj = e.func.obj
                         return
                     self.err(f"unknown Map method {name}")
+        # Cache.xxx (cache-only API, separate from Model/Store)
+        if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name == "Cache":
+            cname = e.func.name
+            if cname == "get":
+                if len(e.args) != 2 or not isinstance(e.args[0], Ident):
+                    self.err("Cache.get(Type, oid) expects a type name and oid")
+                ty = e.args[0].name
+                self.check_type_name(ty)
+                if ty not in self.structs:
+                    self.err(f"Cache.get: {ty} is not a struct/event type")
+                self.check_expr(e.args[1], env)
+                e.ty = ty
+                e.cache_op = "get"
+                e.cache_type = ty
+                return
+            if cname == "set":
+                if len(e.args) != 1:
+                    self.err("Cache.set(value) expects 1 argument")
+                at = self.check_expr(e.args[0], env)
+                if at not in self.structs:
+                    self.err("Cache.set: argument must be a struct/event")
+                e.ty = "void"
+                e.cache_op = "set"
+                return
+            if cname == "remove":
+                if e.args:
+                    self.err("Cache.remove() takes no arguments")
+                e.ty = "void"
+                e.cache_op = "remove_all"
+                return
+            self.err(f"unknown Cache method {cname}")
         # Model.xxx
         if isinstance(e.func, Member) and isinstance(e.func.obj, Ident) and e.func.obj.name == "Model":
             name = e.func.name

@@ -604,6 +604,10 @@ static void dispatch_event(WellEventNode *node) {
     int nm = 0, cap = 0, i;
 
     well_model_touch_oid(ev->oid);
+    /* Keep the target oid leased for the whole dispatch: handlers may only
+     * compute/emit without Model.get/set, and we still must not let TTL reclaim
+     * this oid's objects while its event is executing. */
+    well_oid_pin(ev->oid);
     well_lock_acquire(&g_subs_lock);
     for (s = g_subs; s; s = s->next) {
         if (!s->active) continue;
@@ -642,6 +646,7 @@ static void dispatch_event(WellEventNode *node) {
         well_ctx_clear((WellCtx *)&ctx);
     }
     free(matches);
+    well_oid_unpin(ev->oid);
 }
 
 static void dispatch_task(long long oid, WellEventNode *node) {

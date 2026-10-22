@@ -172,6 +172,8 @@ class CodeGen:
             return True
         if isinstance(e, Call) and getattr(e, "model_op", None) in ("get", "peek", "findByOid"):
             return True
+        if isinstance(e, Call) and getattr(e, "cache_op", None) == "get":
+            return True
         if isinstance(e, Call) and getattr(e, "builtin", None) in ("json_parse", "json_try_parse", "json_stringify", "file_read", "host_env", "mysql_query_json", "mysql_query_json_pool", "str_from_int", "str_from_codepoint"):
             return True
         if isinstance(e, Binary) and e.op == "+" and getattr(e, "ty", None) == "String":
@@ -595,6 +597,12 @@ class CodeGen:
             if op == "linked_get":
                 return self.unbox_value(f"well_linked_get({obj}, (long long)({self.gen_expr(e.args[0])}))", e.elem_ty)
             raise Exception(f"unsupported method {op}")
+        if getattr(e, "cache_op", None) == "get":
+            return f"(({self.ctype(e.cache_type)})well_cache_get_ctx(T_{e.cache_type}, (long long)({self.gen_expr(e.args[1])}), ctx))"
+        if getattr(e, "cache_op", None) == "set":
+            return f"well_cache_set_ctx((void*)({self.gen_expr(e.args[0])}), ctx)"
+        if getattr(e, "cache_op", None) == "remove_all":
+            return "well_cache_remove_ctx(ctx)"
         if getattr(e, "model_op", None) == "get":
             return f"(({self.ctype(e.model_type)})well_model_get_ctx(T_{e.model_type}, (long long)({self.gen_expr(e.args[1])}), ctx))"
         if getattr(e, "model_op", None) == "peek":

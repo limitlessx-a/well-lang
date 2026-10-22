@@ -1,0 +1,39 @@
+module demo.cacheapi;
+
+struct Item {
+    v: int;
+}
+
+event WorkEvent {
+    n: int;
+}
+
+controller Main {
+    run() {
+        on(WorkEvent, WorkHandler);
+        emit(new WorkEvent(12345) { n: 1 });
+    }
+}
+
+handler WorkHandler {
+    onEvent(e: WorkEvent) {
+        var x: Item = new Item();
+        x.v = 7;
+        Cache.set(x);
+
+        var y: Item = Cache.get(Item, 12345);
+        if (y == null) { print("cache miss"); } else { print("cache ", y.v); }
+
+        var p: Item = Model.peek(Item, 12345);
+        if (p == null) { print("peek miss"); } else { print("peek ", p.v); }
+
+        Cache.remove();
+        var z: Item = Cache.get(Item, 12345);
+        if (z == null) { print("removed"); } else { print("still ", z.v); }
+
+        var m: Item = Model.get(Item, 12345);
+        if (m == null) { print("store null"); } else { print("store ", m.v); }
+    }
+}
+
+entry Main;

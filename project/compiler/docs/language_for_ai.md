@@ -1,6 +1,6 @@
 # Well 语言与运行时 —— 给 AI 的完整参考
 
-> 版本：2026-10-22（基线：112 个 `.we` 用例 + 12 个 C 测试全绿；最新基线以 `python tools/verify.py` 输出为准）
+> 版本：2026-10-22（基线：113 个 `.we` 用例 + 12 个 C 测试全绿；最新基线以 `python tools/verify.py` 输出为准）
 >
 > 读者：需要阅读、修改、生成或评审 Well 代码的 AI（以及人类工程师）。
 >
@@ -13,9 +13,9 @@
 1. **oid 是唯一的数据所有者**：一个对象/事件/容器只属于一个 oid；handler/controller 只能写 `ctx.oid` 拥有的数据（static/装配期数据另有规则）。
 2. **禁止跨 oid 引用业务对象**：字段赋值、容器插入都会检查 `value.oid == owner.oid`（String 例外）；违反会 panic `well oid violation`。
 3. **`Model.get` 返回 owned 引用**（可空）；交给变量/帧日志管理，不要手工 `free`，也不要长期缓存裸指针。
-4. **TTL 回收以 `exec_ref` 租约为准（不是 rc）**：清理只在 `exec_ref==0` 且调度器无该 oid 任务时发生；handler/`Model.get/peek` 会 pin，在飞 event 会 pin 其引用的 Model oid，普通字段/容器禁止跨 oid，static 只允许装配期 oid 对象——因此**正常 Well 代码不会因 TTL 悬空**。C/FFI 裸指针未 `well_oid_pin` 属例外。
+4. **TTL 是“过期未使用数据”的保底回收，不是 GC**：清理只在 `exec_ref==0` 且调度器无该 oid 任务时发生；handler/`Model.get/peek` 会 pin，event 派发期间 target oid 也被 pin，普通字段/容器禁止跨 oid，static 只允许装配期 oid 对象——正常 Well 代码不会因 TTL 悬空。**oid 完成工作后应主动 `Cache.remove()`**，不要等 TTL。C/FFI 裸指针未 `well_oid_pin` 属例外。
 5. **handler 是 run-to-completion**：没有 `await/yield`；在 handler 里做阻塞 I/O（File/MySQL/大循环）会卡住该 oid 的 runner，也会占住一个 worker。
-6. **controller 的 `ctx.oid == 0`（装配期 oid）**：允许在 `run()` 里 `new` + `Model.set` 创建**系统级只读数据**（oid=0）；handler 可用 `Model.get(T, 0)` 读取，但字段/容器/Bytes 写会 panic（oid 0 ≠ handler oid），TTL/强制清理都跳过 oid 0；**可写**业务数据应在事件 handler 中以事件 oid 创建。
+6. **controller 的 `ctx.oid == 0`（装配期 oid）**：允许在 `run()` 里 `new` + `Model.set` 创建**系统级只读数据**（oid=0）；handler 可用 `Model.get(T, 0)` 读取，但字段/容器/Bytes 写会 panic（oid 0 ≠ handler oid），TTL/过期回收都跳过 oid 0；**可写**业务数据应在事件 handler 中以事件 oid 创建。
 7. **event 构造完成后被冻结**：字段只读；不要保存 event 到 static/跨 oid 结构；`emit` 会改写 event 的 oid。
 8. **static 字段只在 `well_run_loop` 之前可写**（装配期，ctx.oid == 装配期 oid）；运行期写/原地改容器/Bytes 会 panic；static 引用类型不能是 event。
 9. **没有异常/Result/try-catch**：handler panic 被隔离（继续调度）；controller/装配期 panic **exit 70**；可恢复的 JSON 解析用 `Json.tryParse`。
@@ -35,13 +35,13 @@ Well 是一个**单进程、面向 oid 的 actor 风格语言**：源码 `.we` �
 oid actor 调度（每 oid FIFO、同 oid 单 runner、跨 oid 并行）
 + 事件总线（on/once/off/emit）
 + Model/Cache/Store（内存行存储 + 64 分片 Cache）
-+ 原子引用计数（RC）+ oid TTL 强制整组回收（允许环）
++ 原子引用计数（RC）+ oid 过期数据回收（TTL 保底，允许环）+ 手动 `Cache.remove()` 释放
 + 固定大小对象池
 + HTTP/1.1 / WebSocket / Timer / MySQL / JSON / File 内置运行时
 + panic 隔离 + 源码位置
 ```
 
-**设计目标**：小、快、可预测、部署简单；用“oid 内串行”换取无数据竞争的业务代码；用 RC + TTL 代替 tracing GC；用 C 运行时换取无 VM 依赖。
+**设计目标**：小、快、可预测、部署简单；用“oid 内串行”换取无数据竞争的业务代码；用 RC + TTL 保底代替 tracing GC；用 C 运行时换取无 VM 依赖。
 
 **不是目标（当前）**：通用生态、JIT、抢占式调度、跨节点集群、完整异常模型、包管理、热更新、生产级 HTTP/WS 特性（TLS/chunked/背压）。
 
@@ -56,7 +56,7 @@ python wellc.py run   examples/hello.we
 python wellc.py build examples/features.we -o build/features.exe
 python wellc.py emit-c examples/hello.we -o build/hello.c   # 只生成 C
 
-# 全量回归（推荐）：112 个 .we 用例 + 12 个 C 测试
+# 全量回归（推荐）：113 个 .we 用例 + 12 个 C 测试
 python tools/verify.py            # 全部
 python tools/verify.py --quick    # 只 .we 用例
 python tools/verify.py --full     # 全部 + HTTP bench smoke
@@ -182,7 +182,7 @@ controller Main {
 
 - 单例；`start(Main)` 幂等（只执行一次 `run`）；`stop(Main)` 注销该 controller 的订阅并允许重新 start；
 - `run()` 在 `well_run_loop` 之前执行，`ctx.oid = 0`（装配期 oid）；适合注册路由/订阅、初始化 static；
-- **允许**在 `run()` 里 `new` 对象并 `Model.set` 创建**系统级只读数据**（oid=0）：它可被任意 handler 通过 `Model.get(T, 0)` 读取，运行期不可写（字段/容器/Bytes 写会 panic），永远不会被 TTL/强制清理回收，进程退出时统一释放；
+- **允许**在 `run()` 里 `new` 对象并 `Model.set` 创建**系统级只读数据**（oid=0）：它可被任意 handler 通过 `Model.get(T, 0)` 读取，运行期不可写（字段/容器/Bytes 写会 panic），永远不会被 TTL/过期回收，进程退出时统一释放；
 - 需要运行期修改的业务数据应在事件 handler 中以事件 oid 创建。
 
 #### handler
@@ -300,8 +300,11 @@ controller Main {
 print(...)                         逐个打印 + 换行（不自动加空格）
 Model.get(T, oid)                  Cache -> Store -> Cache，返回 owned T*（可 null）
 Model.peek(T, oid)                 只查 Cache，返回 owned T*（可 null）
-Model.set(obj)                     要求 obj.oid == ctx.oid；write-through
+Model.set(obj)                     要求 obj.oid == ctx.oid；write-through（Cache + Store）
 Model.remove(T, oid)               要求 oid == ctx.oid
+Cache.get(T, oid)                  只查 Cache，返回 owned T*（可 null）；不访问 Store
+Cache.set(obj)                     只写 Cache，要求 obj.oid == ctx.oid；不写 Store
+Cache.remove()                     删除当前 ctx.oid 的全部 Cache 行（所有类型）；Store 不变
 IdUtil.getId()                     long，雪花式 id
 Json.parse(T, String)              T*，失败 panic
 Json.tryParse(T, String)           T* 或 null，不 panic
@@ -330,6 +333,8 @@ Bytes:    new Bytes()、length、push/get/set/byteAt/append/appendStr/clear/toSt
 enum:     E.fromInt(v)（int 枚举）、E.toString(v)
 ```
 
+- **Cache 是独立 API**：Model = Cache + Store（read-through/write-through）；`Cache.set` 只进 Cache，`Cache.get` 只读 Cache；`Model.get` 仍可能命中 `Cache.set` 写入的同一全局 Cache 行；
+- **手动释放**：oid 完成工作后应调用 `Cache.remove()` 释放该 oid 的全部 Cache 引用；`Cache.remove()` 不删除 Store 数据，也不强制释放仍被 handler/event 引用的对象（帧结束/引用归零后释放）。TTL 只是最后保底，不应作为主要释放手段；
 - 越界读：值类型返回默认值（0/false/0.0），引用返回 `null`；越界写 Array 扩展；
 - 容器写操作要求 `container.oid == ctx.oid`，插入引用元素要求 `element.oid == container.oid`（String 例外）；
 - `Map` 保留插入序；`keys()/values()` 返回新数组；**没有 `entries()`**（语言没有元组/键值对类型）。
@@ -443,7 +448,8 @@ qmap: oid -> FIFO queue
 - 事件/任务节点、oid queue 各有 256 上限的空闲池；
 - 工作窃取：worker 从本地 deque 尾部取，偷别人头部；相同 oid 串行由 running 标志保证；
 - **无抢占**：一个长 handler 会占住一个 worker；该 oid 后续事件等待；
-- **cleaning 隔离**：TTL 清理时 queue 标 `cleaning`，期间入队只挂链不调度，清理结束统一 ready + signal；
+- **event 目标 oid 租约**：`dispatch_event` 在整个派发期间对 target oid `well_oid_pin`，所有订阅 handler 执行完、event 释放后 `well_oid_unpin`；即使 handler 不做 `Model.get/set`，也不会在它执行期间被 TTL 回收；
+- **cleaning 隔离**：过期数据回收时 queue 标 `cleaning`，期间入队只挂链不调度，清理结束统一 ready + signal；
 - 丢唤醒修复：退出判定相关路径用广播 `sched_notify()`，避免主 worker 错过唤醒。
 
 ### 5.4 Model / Cache / Store
@@ -461,21 +467,24 @@ Model.remove(T,oid): Store.delete -> Cache.remove
 - `well_model_use_store` 可替换后端（C 侧），语言层没有多后端 API；
 - 全局 Cache 不区分来源；多 Model/Store 可加载同一 key；一致性由用户负责；
 - 同一 key 被替换时，旧对象可能仍被 handler/event 持有，不会立即释放；
-- **Store 保留数据**：TTL 只驱逐 Cache/内存对象，下次 `Model.get` 从 Store 回源。默认 MemoryStore 也在进程内存里，进程退出即丢；没有自动磁盘持久化。
+- **Cache 独立 API**：`Cache.get(T, oid)` / `Cache.set(obj)` 只操作 Cache（不经过 Store）；`Cache.remove()` 删除当前 `ctx.oid` 的全部 Cache 行（所有类型），Store 不变。
+- **手动释放优先**：oid 完成工作后调用 `Cache.remove()`，释放该 oid 的 Cache 引用；对象若仍被 frame/event 持有，会在其释放后销毁。TTL 只做最后保底。
+- **Store 保留数据**：过期回收只驱逐 Cache/内存对象，下次 `Model.get` 从 Store 回源。默认 MemoryStore 也在进程内存里，进程退出即丢；没有自动磁盘持久化。
 
-### 5.5 TTL 与强制整组回收（非常重要）
+### 5.5 过期数据回收（TTL 保底，非常重要）
 
 - 默认 **开启，60 秒**：`WELL_MODEL_TTL_MS` 覆盖，`0`/负数关闭；
 - 活动时间由 **`Cache.get/set`（即 `Model.get/peek/findByOid/set`）以及事件派发 `dispatch_event`** 刷新；单纯的 `well_oid_pin` 不刷新 last_active。
 - 注意：`Model.peek` 也会 touch（它走 `well_cache_get`），所以**轮询 peek 会把 oid 保活**；不要用 peek 做“只读探测”而误以为不会延长生命周期。
 - 清理条件：oid 空闲 ≥ TTL 且 `exec_ref == 0`（没有 handler/Model pin/在飞事件 payload 引用）且调度器无该 oid 排队/运行任务；
-- 清理是**整组强杀**：`well_oid_take_objects(oid)` 按 oid 取出 registry 中该组全部对象，`well_force_free_objects` 逐个释放；
+- 回收是**过期 oid 的整组释放**：`well_oid_take_objects(oid)` 按 oid 取出 registry 中该组全部对象，`well_force_free_objects` 逐个释放（不是在 handler 里主动触发的 API，而是后台保底）；
 - **“不看 rc”的含义**：清理判据是 `exec_ref==0` + 调度器空闲，而不是 rc。语言层的组外引用由 `exec_ref` 与 oid 检查覆盖：
   - handler 帧、`Model.get/peek/findByOid` 通过 ctx pin 该 oid，帧结束才 unpin；
   - queued/running event 在 emit 时 pin payload 中 Model 对象的 oid；
   - 普通字段/容器的跨 oid 写被拒绝；static 值必须是装配期 oid（String 例外），不能持有运行期 oid 业务对象。
   所以正常 Well 代码在 `exec_ref==0` 时不存在组外语言层引用，整组释放不会悬空。
   - **例外**：C/FFI 直接保存 `WellObj*` 且未 `well_oid_pin`、或直接调用内部 `well_force_cleanup_oid` 绕过条件；当前 event payload pin 只对 `WELL_FLAG_IN_MODEL` 对象加 pin（把未 `Model.set` 的局部对象跨 oid 放进 event 属于边角情况，建议业务数据走 Model）。
+- **手动释放**：oid 完成工作后调用 `Cache.remove()`；TTL 只是“忘了释放”时的最后保底，不是主要回收机制。
 - 同时丢弃该 oid 的 Cache 行；Store 字节保留；下一次访问从 Store 解码新对象；
 - 装配期 oid（当前 0）**永不回收**：TTL 扫描与 `well_force_cleanup_oid` 都跳过；
 - 清理是隔离 + 分批的：默认每轮最多 `WELL_MODEL_TTL_BATCH=64` 个 oid；每个 oid：
@@ -485,7 +494,7 @@ Model.remove(T,oid): Store.delete -> Cache.remove
   4. 清 cleaning，恢复入队调度；
 - 因此 bulk free 不持 `g_act_lock`/`g_sched_mutex`，其他 oid 不被大组释放阻塞。
 
-**AI 必须记住**：TTL 不是“GC 会等你”；一个 oid 只要 60 秒没有 Cache 活动且没有 handler，就可能整组消失。需要长期数据：保持 oid 活跃（定期 `Model.get/set`）或每次从 Store 回源，不要把裸指针跨过空闲期缓存。
+**AI 必须记住**：TTL 不是“GC 会等你”，也不是让你依赖的主动回收 API；一个 oid 只要 60 秒没有 Cache 活动且没有 handler，就可能整组消失。**oid 完成工作后请主动 `Cache.remove()`**；需要长期数据：保持 oid 活跃（定期 `Model.get/set`）或每次从 Store 回源，不要把裸指针跨过空闲期缓存。
 
 ### 5.6 内存管理与对象池
 
@@ -670,7 +679,7 @@ main:
 
 **vs C**
 - Well 生成 C，直接使用 C 运行时；性能同源但多了 RC/oid 检查/池/调度，TCC 无优化时明显慢于 `-O2` C；
-- C 需要手动管理生命周期；Well 用 RC + 帧日志 + TTL 降低负担，TTL 强杀以 `exec_ref` 租约为准（C 侧裸指针需自行 pin）；
+- C 需要手动管理生命周期；Well 用 RC + 帧日志 + TTL 保底降低负担，过期回收以 `exec_ref` 租约为准（C 侧裸指针需自行 pin）；
 - C 的线程/锁由用户负责；Well 提供 oid actor 和内置 HTTP/WS/Timer，业务代码通常无锁。
 
 **vs C++ / Rust**
@@ -685,7 +694,7 @@ main:
 
 **vs Java / C#**
 - JVM/CLR 的 JIT 在热路径上通常显著快于 TCC 生成的代码；GC 无全局长暂停（现代收集器）但堆占用高；
-- Well 无 JIT、无 VM；启动快、内存小；RC 是即时释放，但原子操作与 TTL 强杀带来不同语义；
+- Well 无 JIT、无 VM；启动快、内存小；RC 是即时释放，TTL 只做过期数据保底；
 - Java 虚拟线程可挂起阻塞调用；Well handler 不可挂起，长 I/O 会卡 oid/worker。
 
 **vs Node.js**
@@ -696,7 +705,7 @@ main:
 **vs Python**
 - CPython 有 GIL，CPU 密集多线程受限；Well 原生多线程可并行（按 oid）；
 - Python 生态/AI 库无可替代；Well 适合生成小型原生服务；
-- 两者都有“引用计数”（CPython），但 Well 是原子 RC + TTL 强杀，Python 是 GIL + 分代 GC。
+- 两者都有“引用计数”（CPython），但 Well 是原子 RC + TTL 保底 + 手动 Cache.remove，Python 是 GIL + 分代 GC。
 
 **vs Erlang/Elixir、Akka**
 - 都是 actor 风格：消息、单 actor 串行、监督；
@@ -823,7 +832,7 @@ controller Main {
 | 错误 | 后果 |
 |---|---|
 | 把需要在运行期修改的数据放进 controller `run` 的 oid=0 `Model.set` | oid=0 系统级只读：TTL 不回收，但 handler 写会 panic；可写数据放在事件 handler |
-| 在 C/FFI 中保存 `WellObj*` 但不 `well_oid_pin` | TTL 强杀后悬空；语言层 static/跨 oid 有检查，C 侧需自己 pin |
+| 在 C/FFI 中保存 `WellObj*` 但不 `well_oid_pin` | 过期回收后悬空；语言层 static/跨 oid 有检查，C 侧需自己 pin |
 | 在 handler 里长期保存裸对象指针（超出本次事件/帧） | 对象可能被释放；用 oid + `Model.get` 重新取 |
 | 跨 oid 字段/容器引用 | panic `well oid violation`（String 除外） |
 | 把 event 放进 static/跨 oid 容器 | event 构造后冻结，且 emit 会改 oid；static 直接禁止 event 类型 |
@@ -838,7 +847,8 @@ controller Main {
 | 依赖运行期整数溢出检查 | 只有常量检查；运行期 wrap |
 | 认为 `String.length` 是字符数 | 是字节数；UTF-8 用 `codePointAt` |
 | 认为 `Json.parse` 会返回 null | 失败 panic；用 `Json.tryParse` |
-| 认为 TTL 是 GC 会保留对象 | 空闲 60s 后整组消失；需要长期数据要保活或从 Store 回源 |
+| 认为 TTL 是 GC 会保留对象 | 空闲 60s 后整组消失；需要长期数据要保活、从 Store 回源，或按 oid 生命周期主动 `Cache.remove()` 释放 |
+| 只依赖 TTL 释放 oid 数据 | TTL 只是最后保底；oid 完成工作后应主动 `Cache.remove()` |
 | 用 `Model.peek` 做“只读探测” | `peek` 也走 `Cache.get`，会刷新 TTL，等于保活该 oid |
 | 认为 HTTP/WS 有 TLS/chunked/背压/连接上限 | 都没有；生产需自己在前面加代理/网关 |
 
