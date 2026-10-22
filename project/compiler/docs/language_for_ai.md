@@ -236,7 +236,7 @@ new UserVo(), new PingEvent(oid) { n: 1 }, new Bytes()
 ```
 
 - 整数 `/`、`%` 生成 checked helper：除数为 0 → panic（带 file:line）；
-- 字面量常量除零/常量溢出 → 编译错误；运行期整数溢出是 C wrap；
+- 字面量常量除零/常量溢出 → 编译错误；运行期整数溢出**没有语言级检查**（C 有符号溢出是 UB，不要依赖 wrap，见 §3.4.4）；
 - 容器字面量 `[]`/`{}` 支持：`var` 初始化、下标赋值、static 字段默认值/启动期 static 赋值；
 - **不能**把容器字面量直接当函数实参/普通 struct 初始化字段，先赋给变量；
 - 没有闭包/lambda/用户泛型/接口/元组。
@@ -452,15 +452,37 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 2. 重 CPU/阻塞操作考虑拆 oid、加 `WELL_WORKERS` 或改用批量/异步方案；
 3. handler 内 panic 被隔离；controller 内 panic 会 exit 70。
 
-### 3.4 语法限制
+### 3.4 语法限制与已知边界（按实际状态）
 
-- 无异常/try-catch/Result；无用户泛型/接口/元组/闭包/lambda；
-- 无 `Map.entries`、`char/short`；
-- 容器字面量不能直接当函数实参/普通 struct 初始化字段；
-- switch 无 fallthrough，case 值必须常量；
-- 整数 `/`、`%` 除零 panic；常量溢出编译错误；运行期溢出 wrap；
-- String 的 length/下标按字节；UTF-8 用 `codePointAt`/`fromCodePoint`；大量拼接用 `Bytes`；
-- `Json.parse` 失败 panic；需要可恢复用 `Json.tryParse`。
+#### 3.4.1 未实现（功能缺口，不是 bug）
+
+- 无异常 / `try-catch` / `Result`；错误处理是 panic + 可空 API（见 §1.8）；
+- 无用户泛型 / 接口 / 元组 / 闭包 / lambda；函数不是一等值，不能捕获局部变量；
+- 无 `Map.entries`；可用 `keys()` / `values()` / `for-in`；entries 需要键值对/tuple 类型设计；
+- 无 `char/short`；整数只有 `int/long`，`float` 是 `double` 别名；
+- 容器字面量不能直接当函数实参/普通 struct 初始化字段；当前只支持 `var` 初始化、下标赋值、static 字段默认值/启动期 static 赋值；
+- 无 async/await/协程；handler 是 run-to-completion。
+
+#### 3.4.2 有意语义（设计选择，不是待修 bug）
+
+- switch **无 fallthrough**，case 值必须常量；
+- String 的 `length`/下标/切片按**字节**；UTF-8 用 `codePointAt` / `fromCodePoint`；大量拼接用 `Bytes`（`String +` 是 O(n²)）；
+- `Json.parse` 失败 **panic**；需要可恢复解析用 `Json.tryParse` 返回 `null`；
+- 整数 `/`、`%` 除零 **panic**（带 file:line）；字面量常量除零/溢出是编译错误。
+
+#### 3.4.3 已处理/已有替代
+
+- 整数除零/取模零：checked helper，panic 带源码位置；
+- 字面量常量除零、常量算术溢出：编译错误；
+- 超过 int32 的整数字面量自动按 `long`；
+- `Json.tryParse`、`Json.stringify`、`String.codePointAt/fromCodePoint`、`Bytes` 增量拼接均已提供。
+
+#### 3.4.4 已知风险：运行期整数溢出未检查
+
+- 生成 C 的 `+ - *` 是有符号运算，运行期溢出**没有语言级检查**；
+- TCC 下通常表现为 wrap，但 C 有符号溢出是 **UB**：gcc/clang `-O2` 下不能把 wrap 当作可靠保证，优化可能改变结果；
+- 需要确定性时：避免依赖溢出、显式范围检查；或后续加 checked 模式 / `-fwrapv`（当前默认都没有）；
+- 这不是“已修复”，而是明确的已知边界。
 
 ### 3.5 配置/验证
 

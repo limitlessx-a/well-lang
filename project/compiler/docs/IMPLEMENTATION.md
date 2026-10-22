@@ -114,7 +114,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 
 - **整数除法/取模**：`int`/`long` 上的 `/`、`%` 生成 `well_int_div` / `well_int_mod`；除数为 0 时 panic `integer division/modulo by zero`（带 `file:line`），不再触发 `0xC0000094` 崩溃；
 - **编译期常量检查**：字面量除数/模数为 0 直接编译错误；只含整数字面量的常量算术表达式在编译期检查 int32/`long` 64 位溢出（`integer constant overflow`）；
-- 超出 int32 的整数字面量自动按 `long` 处理；普通运行期整数溢出仍保持 C 的 wrap 语义（不做运行期溢出检查）。
+- 超出 int32 的整数字面量自动按 `long` 处理；运行期整数溢出**没有语言级检查**，依赖 C 行为（有符号溢出是 UB，不能保证 wrap）。
 
 String 方法（全部字节语义）：
 
