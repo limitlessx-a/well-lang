@@ -22,7 +22,7 @@
 10. **整数 `/`、`%` 除零会 panic**（带源码行号）；运行期整数溢出是 C wrap；字面量常量溢出/除零是编译错误。
 11. **String 的 `length`/下标/切片都按字节**；UTF-8 码点用 `codePointAt`/`fromCodePoint`；大量拼接用 `Bytes`，不要 `String +` 循环（O(n²)）。
 12. **容器字面量 `[]`/`{}` 支持：`var` 初始化、下标赋值、static 字段默认值/启动期 static 赋值**；不能直接当函数实参/普通 struct 初始化字段（会编译错误），先赋给变量。
-13. **不要使用未实现的特性**：无用户泛型/接口/元组/闭包/异常、无 `Map.entries`、无 `char/short`、**不支持继承**（父类逻辑不会执行，不要写继承声明）。
+13. **继承现状**：`struct`/`event` 可用 `extends` 复用基类**字段**（仅字段展平，无多态/子类型）；`controller`/`handler` 继承**未实现**（父类逻辑不会执行，不要写）。
 14. **写完必须验证**：`python wellc.py build x.we -o x.exe`，项目级回归用 `python tools/verify.py`；测试用例格式见 §11。
 
 ---
@@ -108,8 +108,8 @@ entry MainController;       // 生成 main()：初始化运行时、注册类型
 | `Array<T>` | `WellArray*` | 同质容器，引用类型 |
 | `Map<T>` | `WellMap*` | String 键、值同质，保留插入序 |
 | `Linked<T>` | `WellLinked*` | 双向链表，首尾 O(1)、get O(n) |
-| `struct S` | `S*` | 字段对象；引用类型 |
-| `event E` | `E*` | 事件对象；类型本身即事件身份 |
+| `struct S` | `S*` | 字段对象；可 `extends` 用户 struct，基类字段展平；引用类型 |
+| `event E` | `E*` | 事件对象；可 `extends` 用户 event，基类字段展平；类型本身即事件身份 |
 | `void` | `void` | 仅返回类型/表达式 |
 | `null` | `void*` | 所有引用类型可为 null |
 
@@ -123,19 +123,29 @@ entry MainController;       // 生成 main()：初始化运行时、注册类型
 #### struct / event
 
 ```we
-struct User {
+struct Base {
     id: long;
+}
+
+struct User extends Base {
     name: String;             // 默认 ""
     tags: Array<String>;      // 默认 null
 }
 
-event Ping {
+event BasePing {
     n: int;
+}
+
+event Ping extends BasePing {
+    msg: String;
 }
 ```
 
-- 不支持继承；struct 没有用户方法，字段就是声明里写的内容。
-- event 类型 = type_id 身份，没有 `bind`、没有名字注册表。
+- `struct`/`event` 支持**单继承字段展平**：checker 递归把基类字段拼进子类布局（`Derived` 拥有 `Base` 的全部字段）；根类型 `extends Vo`/`extends Event` 可省略（无实际作用）；
+- 继承只复用字段：没有方法继承、没有多态/子类型（`Derived` 不能赋给 `Base`）、没有虚调用；struct/event 都没有用户方法；
+- 未知基类、循环继承、重复字段都是编译错误；
+- event 的身份仍是子类自己的 `type_id`：`on(BaseEv)` 不会收到 `DerivedEv`（按精确 type_id 派发），不要依赖事件多态；
+- `controller`/`handler` 的 `extends` 未实现：语法会被接受但父类 `run`/`onEvent` 不会执行（不要使用）。
 - 字段默认值支持字面量/const；static 字段额外支持容器字面量/`new Bytes()/Array/Map`（见 static）。
 - 构造：
   - `new User()`：`oid = ctx.oid`；
@@ -813,8 +823,9 @@ controller Main {
 | 在 handler 里做阻塞 I/O/大循环 | 卡住该 oid 的 runner 和一个 worker；其他 oid 仍可跑，但该 oid 的事件排队 |
 | 循环 `s = s + x` 拼大字符串 | O(n²)；用 `Bytes.appendStr` |
 | 在热路径 `print` | 全局 print 锁串行化，吞吐骤降 |
-| 依赖继承 | 继承未实现，父类 run/onEvent 不会跑 |
+| 依赖 `controller`/`handler` 继承 | 继承未实现，父类 run/onEvent 不会跑 |
 | 使用 `Map.entries`/用户泛型/接口/元组/闭包/异常 | 未实现，编译错误 |
+| 把 `struct`/`event` 继承当多态/子类型用 | 只有字段展平：不能赋给基类、无虚调用；event 订阅按精确 type_id |
 | 把容器字面量直接传函数/构造字段 | 编译错误；先 `var` 保存 |
 | 在 switch 里期待 fallthrough | 无 fallthrough，每个 case 自动 break |
 | 依赖运行期整数溢出检查 | 只有常量检查；运行期 wrap |
@@ -926,9 +937,9 @@ env.txt                  额外环境变量
 program      := (module | import | decl)*
 decl         := const | enum | struct | event | controller | handler | func
               | namespace | static
-struct       := "struct" ID "{" field* "}"
+struct       := "struct" ID ["extends" ID] "{" field* "}"
 field        := ID ":" type ["=" expr] ";"
-event        := "event" ID "{" field* "}"
+event        := "event" ID ["extends" ID] "{" field* "}"
 controller   := "controller" ID "{" method* "}"
 handler      := "handler" ID "{" method* "}"
 method       := ID "(" params ")" [":" type] block
