@@ -47,8 +47,8 @@ well_run_loop()
 配置：
 
 ```text
-WELL_WORKERS = 1..64
-默认 1
+WELL_WORKERS = 1..64，未设置时自动 max(1, cores*3/4)
+默认自动（8 核→6）；测试 runner 强制 1
 ```
 
 线程组成：

@@ -451,6 +451,7 @@ def run_case(name: str) -> bool:
         return run_http_case(name, d, exe)
 
     env = os.environ.copy()
+    env["WELL_WORKERS"] = "1"  # deterministic tests; env.txt may override
     if os.path.isfile(os.path.join(d, "rc_debug.txt")):
         env["WELL_RC_DEBUG"] = "1"
     envf = os.path.join(d, "env.txt")

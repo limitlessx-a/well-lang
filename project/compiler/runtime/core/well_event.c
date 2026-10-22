@@ -788,13 +788,21 @@ void well_scheduler_end_cleanup(long long oid) {
 
 void well_run_loop(void) {
     int i;
-    int workers = 1;
+    int workers = 0;
     const char *env = getenv("WELL_WORKERS");
     well_event_init();
     well_static_freeze(); /* startup over: static fields become read-only */
-    if (env && env[0]) {
+    if (env && env[0] && strcmp(env, "auto") != 0) {
         int v = atoi(env);
-        if (v >= 1 && v <= WELL_MAX_WORKERS) workers = v;
+        workers = (v >= 1 && v <= WELL_MAX_WORKERS) ? v : 1;
+    }
+    if (workers == 0) {
+        /* Auto: leave ~25% of the CPUs for HTTP/WS reader/listener threads,
+         * timer/OS and network stack; cap at the scheduler maximum. */
+        int cores = well_cpu_count();
+        workers = cores * 3 / 4;
+        if (workers < 1) workers = 1;
+        if (workers > WELL_MAX_WORKERS) workers = WELL_MAX_WORKERS;
     }
 
     well_mutex_lock(&g_sched_mutex);

@@ -34,6 +34,7 @@ void well_cond_wait(WellCond *c, WellMutex *m);
 void well_cond_signal(WellCond *c);
 void well_cond_broadcast(WellCond *c);
 
+int well_cpu_count(void);
 int well_thread_start(WellThread *t, void *(*fn)(void *), void *arg);
 void well_thread_join(WellThread t);
 /* Fire-and-forget: the thread cleans itself up when it returns. */

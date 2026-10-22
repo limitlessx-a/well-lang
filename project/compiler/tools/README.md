@@ -39,6 +39,8 @@ Notes:
 - Baselines are environment specific; regenerate with `--save-baseline` after
   intentional performance changes and commit the JSON if desired.
 - Build artifacts stay in `build/bench/` (gitignored).
+- Worker count defaults to `max(1, cores*3/4)`; set `WELL_WORKERS` explicitly
+  when comparing baselines across machines/settings.
 - Compiler comparison: set `WELL_CC=gcc` (driver adds `-O2` by default) or
   `WELL_CFLAGS="-O2 -g"` before running `bench.py`; TCC remains the default and
   uses its default flags (the driver does not add -O2). Keep the same machine/load when comparing baselines.

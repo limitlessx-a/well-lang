@@ -458,7 +458,7 @@ qmap: oid -> FIFO queue
 异 oid 可并行（worker 数）
 ```
 
-- 默认 `WELL_WORKERS=1`（确定性测试），可设 2..64；主线程 id=0 也参与；
+- `WELL_WORKERS` 未设置时自动取 `max(1, cores*3/4)`（1..64，8 核→6；留约 25% CPU 给 HTTP/WS reader、Timer、OS）；显式 `1..64` 覆盖，`auto` 表示自动；测试 runner 默认强制 1；主线程 id=0 也参与；
 - 队列空即从 qmap 移除；入队时若队列空闲则 `pending++`，并 push 到 ready；
 - `g_pending` 和 `g_service_count` 都为 0 时 `well_run_loop` 退出；
 - 事件/任务节点、oid queue 各有 256 上限的空闲池；
@@ -644,7 +644,7 @@ main:
 - **每请求分配**：HTTP 请求结构池化，但 event 对象、path/query/body String、容器等仍分配；
 - **String 拼接 O(n²)**：循环 `s = s + x` 会复制；用 `Bytes`；
 - **同 oid 串行**：单个热点 oid 无法利用多核；需要按 oid 分片/多事件目标；
-- **单 worker 默认**：`WELL_WORKERS=1` 时所有事件串行（测试确定性优先）；生产要设大；
+- **默认自动多 worker**：未设置 `WELL_WORKERS` 时按 `max(1, cores*3/4)` 自动；设为 1 时所有事件串行（测试确定性），生产可显式覆盖；
 - **线程模型**：HTTP/WS 每连接一个 reader 线程；连接多时线程栈与调度开销大（默认栈通常 MB 级），不是 epoll 事件驱动；
 - **全局 act spinlock**：高频 `Model.get/pin` 会争用（64 分片 Cache 只保护表，活动表是全局 spinlock）。
 
@@ -897,7 +897,7 @@ controller Main {
 |---|---|---|
 | `WELL_CC` | 自动查找 | 指定 C 编译器（tcc/gcc/clang） |
 | `WELL_CFLAGS` | gcc/clang 自动 `-O2`，TCC 空 | 额外 C 编译参数；显式空串可关闭默认 `-O2` |
-| `WELL_WORKERS` | `1` | worker 线程数（1..64；主线程也参与） |
+| `WELL_WORKERS` | 自动 `max(1, cores*3/4)`（1..64） | worker 线程数；显式 1..64 覆盖，`auto` 表示自动；主线程也参与 |
 | `WELL_MODEL_TTL_MS` | `60000` | 空闲 oid 回收 TTL；`0`/负数关闭 |
 | `WELL_MODEL_TTL_BATCH` | `64` | 每轮清理最多 oid 数（1..256） |
 | `WELL_POOL_TTL_MS` | `60000` | 空闲对象池块真正释放前的保留时间 |

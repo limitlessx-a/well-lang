@@ -127,7 +127,7 @@ $env:WELL_RC_DEBUG = "1"
 
 ## 说明（MVP 边界）
 
-- 线程池 + 每 oid 队列：默认 `WELL_WORKERS=1`，可用环境变量开多 worker；per-worker local deque + work stealing；同 oid 严格 FIFO，异 oid 可并行。
+- 线程池 + 每 oid 队列：`WELL_WORKERS` 未设置时按 CPU 自动取 `max(1, cores*3/4)`（8 核 → 6），可显式设 1..64 或 `auto`；per-worker local deque + work stealing；同 oid 严格 FIFO，异 oid 可并行；测试 runner 默认 `WELL_WORKERS=1` 保证确定性。
 - handler panic 会隔离并继续调度；panic 输出带 `file:line`；controller/装配期未捕获 panic 以退出码 **70** 退出。
 - `print` 语句通过 runtime 锁串行化，避免多线程输出交错。
 - 没有实现 Array/Map 的完整 JS 方法（`shift/unshift/slice/concat/join/indexOf/includes`、Map `keys/values/entries`），也没有 `map/filter/forEach`（需要 lambda）。

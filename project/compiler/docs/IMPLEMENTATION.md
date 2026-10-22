@@ -333,7 +333,7 @@ typedef struct WellStore {
 - 同 oid 同时最多一个 runner；异 oid 可并行；
 - 队列空即从 map 移除；
 - handler 内 `emit` 会入对应 oid 队列；同一 oid 若正在执行则不重复调度；
-- **work stealing**：默认 `WELL_WORKERS=1`（兼容确定性测试），可设为 2..64；主线程 id=0 也参与；
+- **work stealing**：`WELL_WORKERS` 未设置时按可用 CPU 自动取 `max(1, cores*3/4)`（1..64，留约 25% 给 HTTP/WS reader、Timer、OS）；显式 `1..64` 覆盖，`auto` 表示自动；主线程 id=0 也参与；测试 runner 默认强制 `WELL_WORKERS=1` 保持确定性；
 - **对象池**（热路径）：事件/任务节点 `WellEventNode` 与 oid 队列 `WellOidQueue` 各有一个上限 256 的空闲链表，入队/出队时复用，避免每个事件一次 malloc/free 与堆锁竞争；
 - 平台线程/锁封装在 `well_thread.c`；Windows 用 `CRITICAL_SECTION` + 事件，POSIX 用 pthread；
 - `print` 语句通过 runtime 锁串行化。

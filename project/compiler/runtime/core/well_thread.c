@@ -1,8 +1,18 @@
+#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include "wellrt.h"
 #include "well_internal.h"
 
 #include <stdlib.h>
 #include <time.h>
+#if !defined(_WIN32)
+#include <unistd.h>
+#ifdef __linux__
+#include <sched.h>
+#endif
+#endif
 
 #ifdef _WIN32
 void well_mutex_init(WellMutex *m) { InitializeCriticalSection(m); }
@@ -50,6 +60,54 @@ static DWORD WINAPI well_thread_proc(LPVOID p) {
     return 0;
 }
 
+int well_cpu_count(void) {
+#ifdef _WIN32
+    typedef DWORD (WINAPI *GetAPCFn)(WORD);
+    static int cached = 0;
+    if (cached > 0) return cached;
+    if (!g_k32) g_k32 = LoadLibraryA("kernel32.dll");
+    if (g_k32) {
+        GetAPCFn f = (GetAPCFn)GetProcAddress(g_k32, "GetActiveProcessorCount");
+        if (f) {
+            DWORD n = f(0xFFFF); /* ALL_PROCESSOR_GROUPS */
+            if (n >= 1) {
+                cached = (int)n;
+                return cached;
+            }
+        }
+    }
+    {
+        const char *e = getenv("NUMBER_OF_PROCESSORS");
+        if (e && atoi(e) > 0) cached = atoi(e);
+    }
+    if (cached <= 0) cached = 1;
+    return cached;
+#else
+    static int cached = 0;
+    if (cached > 0) return cached;
+#ifdef __linux__
+    {
+        cpu_set_t set;
+        if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+            int i, c = 0;
+            for (i = 0; i < CPU_SETSIZE; i++)
+                if (CPU_ISSET(i, &set)) c++;
+            if (c > 0) {
+                cached = c;
+                return cached;
+            }
+        }
+    }
+#endif
+    {
+        long n = sysconf(_SC_NPROCESSORS_ONLN);
+        if (n > 0 && n < 4096) cached = (int)n;
+    }
+    if (cached <= 0) cached = 1;
+    return cached;
+#endif
+}
+
 int well_thread_start(WellThread *t, void *(*fn)(void *), void *arg) {
     WellThreadStart *s = (WellThreadStart *)malloc(sizeof(WellThreadStart));
     if (!s) return -1;
@@ -82,6 +140,54 @@ void well_cond_destroy(WellCond *c) { pthread_cond_destroy(c); }
 void well_cond_wait(WellCond *c, WellMutex *m) { pthread_cond_wait(c, m); }
 void well_cond_signal(WellCond *c) { pthread_cond_signal(c); }
 void well_cond_broadcast(WellCond *c) { pthread_cond_broadcast(c); }
+
+int well_cpu_count(void) {
+#ifdef _WIN32
+    typedef DWORD (WINAPI *GetAPCFn)(WORD);
+    static int cached = 0;
+    if (cached > 0) return cached;
+    if (!g_k32) g_k32 = LoadLibraryA("kernel32.dll");
+    if (g_k32) {
+        GetAPCFn f = (GetAPCFn)GetProcAddress(g_k32, "GetActiveProcessorCount");
+        if (f) {
+            DWORD n = f(0xFFFF); /* ALL_PROCESSOR_GROUPS */
+            if (n >= 1) {
+                cached = (int)n;
+                return cached;
+            }
+        }
+    }
+    {
+        const char *e = getenv("NUMBER_OF_PROCESSORS");
+        if (e && atoi(e) > 0) cached = atoi(e);
+    }
+    if (cached <= 0) cached = 1;
+    return cached;
+#else
+    static int cached = 0;
+    if (cached > 0) return cached;
+#ifdef __linux__
+    {
+        cpu_set_t set;
+        if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+            int i, c = 0;
+            for (i = 0; i < CPU_SETSIZE; i++)
+                if (CPU_ISSET(i, &set)) c++;
+            if (c > 0) {
+                cached = c;
+                return cached;
+            }
+        }
+    }
+#endif
+    {
+        long n = sysconf(_SC_NPROCESSORS_ONLN);
+        if (n > 0 && n < 4096) cached = (int)n;
+    }
+    if (cached <= 0) cached = 1;
+    return cached;
+#endif
+}
 
 int well_thread_start(WellThread *t, void *(*fn)(void *), void *arg) {
     return pthread_create(t, NULL, fn, arg);
