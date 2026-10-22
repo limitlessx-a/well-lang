@@ -4,6 +4,7 @@
  */
 import * as path from "path";
 import * as vscode from "vscode";
+import { tokenizeWell } from "./formatter";
 import { ImportContext } from "./imports";
 import { DeclKind } from "./wellParse";
 import { WorkspaceIndex } from "./workspaceIndex";
@@ -133,4 +134,27 @@ export function displayPath(document: vscode.TextDocument, file: string): string
     }
   }
   return file;
+}
+
+/**
+ * 光标是否位于字符串或注释 token 内（补全/转到定义时避免误判）。
+ */
+export function isInsideStringOrComment(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): boolean {
+  const offset = document.offsetAt(position);
+  for (const token of tokenizeWell(document.getText())) {
+    if (token.kind !== "string" && token.kind !== "comment") {
+      continue;
+    }
+    const start = document.offsetAt(
+      new vscode.Position(token.line - 1, token.col - 1)
+    );
+    const end = start + token.raw.length;
+    if (offset >= start && offset <= end) {
+      return true;
+    }
+  }
+  return false;
 }

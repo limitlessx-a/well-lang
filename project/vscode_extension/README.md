@@ -3,6 +3,11 @@
 Well（`.we`）语言的 VS Code 插件，提供：
 
 - **语法高亮**：关键字、类型、内置对象/函数、声明名、成员访问、字符串、注释、数字、运算符。
+- **转到定义（Ctrl+点击 / F12）**：
+  - 任意声明名（struct/event/controller/handler/func/namespace/static/enum/const）及其类型引用、`new T(...)`、`extends Base`、`entry C`、`on(Handler)`；
+  - `import "..."` 路径上 Ctrl+点击直接打开被导入文件；
+  - `obj.field` / `Enum.MEMBER`：基于 `var`/参数/字段的简单类型推断跳到字段或枚举成员（含 `extends` 基类字段、跨文件 import）；
+  - 工作区其它文件里的声明也能跳（未 import 也可以）。
 - **错误检查**：保存/输入时调用 `wellc check --json`，把词法、语法、语义错误以及未解析的 `import` 显示到“问题”面板，支持跨文件（被导入文件）诊断。
 - **格式化**：文档格式化（`formatWell`），支持 `editor.formatOnSave`。
 - **自动导入 / 整理包**：
@@ -61,6 +66,13 @@ code --install-extension well-language-0.1.0.vsix
   ```
 
 - 缩进跟随编辑器设置（`editor.tabSize` / `editor.insertSpaces`），默认 4 空格；统一 LF 结尾、行尾无空白、保留注释与字符串原文。
+
+### 转到定义（Ctrl+点击 / F12）
+
+- 声明名（struct/event/controller/handler/func/namespace/static/enum/const）、类型引用、`new T(...)`、`extends Base`、`entry C`、`on(Handler)` 都可跳转；查找顺序：当前文件 → import 的文件（递归 4 层）→ 工作区符号索引（未 import 也能跳）。
+- 在 `import "..."` 的路径字符串上 Ctrl+点击 → 直接打开被导入文件。
+- `obj.field` / `Enum.MEMBER`：按 `var` 声明、参数、字段的声明类型做简单推断，支持 `extends` 基类字段与跨文件声明。
+- 类型推断不出来时（例如基对象是函数返回值/容器元素），退化为同文件内同名字段/成员的匹配。
 
 ### 自动导入 / 整理包
 
@@ -134,7 +146,7 @@ npm run package        # 生成 vsix（需要 @vscode/vsce）
   - `format.test.js`：扫描 `project/compiler` 下 123 个真实 `.we`，断言 token 守恒 + 幂等 + 无行尾空白，另有 22 个手写边界用例；
   - `imports.test.js`：`wellParse`/`imports` 单测（import 解析、整理/排序/去重/移除未使用、CRLF/BOM、与 `driver.py::_resolve_import` 对拍）；
   - `grammar.test.js`：TextMate/language-configuration/snippets 的 JSON 结构与关键 scope 校验；
-  - `activation.test.js`：不需要 Electron，用 mock 的 `vscode` 模块加载 `out/`，验证激活注册、格式化 Provider、真实 `wellc check` 诊断链路、整理导入与自动导入命令。
+  - `activation.test.js`：不需要 Electron，用 mock 的 `vscode` 模块加载 `out/`，验证激活注册、格式化 Provider、真实 `wellc check` 诊断链路、整理导入、自动导入命令与 Ctrl+Click 转到定义（8 个场景）。
 - 仅跑激活冒烟：`npm run test:activation`。
 - `npm run package` 产物为 `well-language-0.1.0.vsix`；`code --install-extension well-language-0.1.0.vsix` 安装后重载窗口即可。
 
@@ -153,6 +165,8 @@ vscode_extension/
     diagnostics.ts          # 诊断生命周期（防抖/取消/跨文件）
     formatter.ts            # Well 格式化器（纯函数，可单测）
     wellParse.ts            # 顶层声明/import/module 扫描，import 解析
+    definitions.ts          # 字段/枚举成员/extends/var 类型扫描（纯函数）
+    definition.ts           # 转到定义 Provider（Ctrl+Click / F12）
     imports.ts              # 整理导入 / addImport（纯函数）
     workspaceIndex.ts       # 工作区符号索引（自动导入）
     completion.ts           # 自动导入补全
@@ -166,7 +180,8 @@ vscode_extension/
 - `wellc` 的语义错误目前只有文件级消息，插件对这类错误做“按标识符 best-effort 定位”，行列可能落在相关声明/首次出现处，而非精确出错表达式。
 - 格式化不自动折行；对同一行极长的表达式保持单行。
 - 自动导入索引只覆盖当前工作区内的 `*.we`；`well.index.exclude` 可排除大目录。
-- 尚未提供转到定义、查找引用、重命名、悬浮提示（可作为后续迭代）。
+- 转到定义的字段/枚举成员跳转依赖简单类型推断（`var`/参数/字段的声明类型、`extends` 基类链）；当基对象是函数返回值、容器元素或复杂表达式时无法推断，会退化为同文件同名字段/成员。
+- 尚未提供查找引用、重命名、悬浮提示（可作为后续迭代）。
 - 插件要求打开的工作区包含 Well 源码（依赖 `python` 与 `wellc.py` 才能做错误检查）。
 
 ## 故障排查

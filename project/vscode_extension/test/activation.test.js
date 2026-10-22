@@ -41,6 +41,7 @@ const state = {
   formatProviders: [],
   codeActionProviders: [],
   completionProviders: [],
+  definitionProviders: [],
   appliedEdits: [],
   outputChannels: [],
   diagnostics: diagStore,
@@ -138,6 +139,16 @@ class CodeAction {
     this.kind = kind;
     this.edit = undefined;
     this.isPreferred = undefined;
+  }
+}
+
+class Location {
+  constructor(uri, rangeOrPosition) {
+    this.uri = uri;
+    this.range =
+      rangeOrPosition instanceof Range
+        ? rangeOrPosition
+        : new Range(rangeOrPosition, rangeOrPosition);
   }
 }
 
@@ -285,6 +296,7 @@ const vscodeMock = {
   MarkdownString,
   CodeAction,
   CodeActionKind: codeActionKind,
+  Location,
   CompletionItemKind: completionItemKind,
   DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
   CancellationTokenSource,
@@ -420,6 +432,10 @@ const vscodeMock = {
       state.completionProviders.push(provider);
       return disposable();
     },
+    registerDefinitionProvider(_language, provider) {
+      state.definitionProviders.push(provider);
+      return disposable();
+    },
     registerRangeFormattingEditProvider() {
       return disposable();
     },
@@ -526,6 +542,7 @@ function makeDocument(text, fsPath, languageId = "well") {
     uri: Uri.file(fsPath),
     languageId,
     isUntitled: false,
+    version: 1,
     lineCount: lineStarts.length,
     getText(range) {
       if (range) {
@@ -625,6 +642,7 @@ async function main() {
     assertEqual(state.formatProviders.length, 1, "应注册 1 个格式化 Provider");
     assertEqual(state.codeActionProviders.length, 1, "应注册 1 个代码操作 Provider");
     assertEqual(state.completionProviders.length, 1, "应注册 1 个补全 Provider");
+    assertEqual(state.definitionProviders.length, 1, "应注册 1 个转到定义 Provider");
     assertEqual(state.outputChannels.length, 1, "应创建 1 个输出通道");
   });
 
@@ -832,6 +850,135 @@ async function main() {
       context
     );
     assertEqual(inComment.length, 0, "comment should not offer completions");
+  });
+
+  await test("Ctrl+Click 转到定义（声明/类型/跨文件/import/字段/枚举）", () => {
+    const dir = path.join(TMP, "def");
+    fs.mkdirSync(dir, { recursive: true });
+    const libPath = path.join(dir, "lib.we");
+    const libText = [
+      "module demo.lib;",
+      "",
+      "struct LibVo {",
+      "    libField: int;",
+      "}",
+      "",
+    ].join("\n");
+    fs.writeFileSync(libPath, libText, "utf8");
+    const mainPath = path.join(dir, "main.we");
+    const mainText = [
+      "module demo.def;",
+      "",
+      'import "lib.we";',
+      "",
+      "struct BaseVo {",
+      "    baseField: int;",
+      "}",
+      "",
+      "struct ItemVo extends BaseVo {",
+      "    value: int;",
+      '    label: String = "x";',
+      "}",
+      "",
+      "enum Status {",
+      "    IDLE;",
+      "    RUNNING;",
+      "}",
+      "",
+      "controller DefController extends Controller {",
+      "    run() {",
+      "        var item: ItemVo = new ItemVo();",
+      "        item.value = 1;",
+      "        item.baseField = 2;",
+      "        var status: Status = Status.IDLE;",
+      "        status.RUNNING;",
+      "        var lib: LibVo = new LibVo();",
+      "        lib.libField = 3;",
+      "    }",
+      "}",
+      "",
+      "entry DefController;",
+      "",
+    ].join("\n");
+    fs.writeFileSync(mainPath, mainText, "utf8");
+    const document = makeDocument(mainText, mainPath);
+    const provider = state.definitionProviders[0];
+    assert(provider, "应存在转到定义 Provider");
+
+    const positionAt = (needle, offset = 0) => {
+      const index = mainText.indexOf(needle);
+      assert(index >= 0, `main.we 找不到 ${needle}`);
+      const absolute = index + offset;
+      const before = mainText.slice(0, absolute);
+      const line = before.split("\n").length - 1;
+      const character = absolute - (before.lastIndexOf("\n") + 1);
+      return new Position(line, character);
+    };
+    const expectDefinition = (position, expectedFile, expectedLineText) => {
+      const result = provider.provideDefinition(document, position);
+      assert(Array.isArray(result) && result.length > 0, "应返回定义位置");
+      const first = result[0];
+      assertEqual(first.uri.fsPath, expectedFile, "定义文件不匹配");
+      const text =
+        expectedFile === mainPath
+          ? mainText
+          : fs.readFileSync(expectedFile, "utf8");
+      const targetLine = text.split("\n")[first.range.start.line] || "";
+      assert(
+        targetLine.includes(expectedLineText),
+        `应跳到包含 "${expectedLineText}" 的行，实际: ${targetLine.trim()}`
+      );
+    };
+
+    // 类型引用 / new / 基类 / entry
+    expectDefinition(
+      positionAt("var item: ItemVo", "var item: ".length),
+      mainPath,
+      "struct ItemVo"
+    );
+    expectDefinition(
+      positionAt("new ItemVo", "new ".length),
+      mainPath,
+      "struct ItemVo"
+    );
+    expectDefinition(
+      positionAt("item.value", "item.".length),
+      mainPath,
+      "value: int"
+    );
+    expectDefinition(
+      positionAt("item.baseField", "item.".length),
+      mainPath,
+      "baseField: int"
+    );
+    expectDefinition(
+      positionAt("status.RUNNING", "status.".length),
+      mainPath,
+      "RUNNING;"
+    );
+    // 跨文件（import 的声明 / 字段）
+    expectDefinition(
+      positionAt("var lib: LibVo", "var lib: ".length),
+      libPath,
+      "struct LibVo"
+    );
+    expectDefinition(
+      positionAt("lib.libField", "lib.".length),
+      libPath,
+      "libField: int"
+    );
+    // import 字符串跳被导入文件
+    expectDefinition(
+      positionAt('import "lib.we"', 'import "'.length),
+      libPath,
+      "module demo.lib;"
+    );
+    // entry 引用 controller
+    expectDefinition(
+      positionAt("entry DefController", "entry ".length),
+      mainPath,
+      "controller DefController"
+    );
   });
 
   await test("deactivate：释放订阅与输出通道", () => {

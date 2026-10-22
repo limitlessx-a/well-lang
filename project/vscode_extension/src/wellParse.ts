@@ -58,13 +58,13 @@ export interface ModuleInfo {
 }
 
 // ---------------------------------------------------------------------------
-// token 扫描（内部实现）
+// token 扫描（internal + 供 definitions 复用）
 // ---------------------------------------------------------------------------
 
-type TokenKind = "word" | "string" | "punct" | "number";
+export type WellScanTokenKind = "word" | "string" | "punct" | "number";
 
-interface ScanToken {
-  kind: TokenKind;
+export interface WellScanToken {
+  kind: WellScanTokenKind;
   /** word: 标识符/关键字原文；string: 反转义后的语义值；punct: 单字符。 */
   value: string;
   /** 1-based 行号。 */
@@ -112,8 +112,8 @@ function isSpace(c: string): boolean {
  * 把源码扫描成 token 序列（跳过注释与空白，保留字符串的语义值）。
  * 永不抛异常：未闭合的字符串/块注释按“一直延续到文件末尾”处理。
  */
-function scan(source: string): ScanToken[] {
-  const tokens: ScanToken[] = [];
+export function scanWellTokens(source: string): WellScanToken[] {
+  const tokens: WellScanToken[] = [];
   const n = source.length;
   let i = 0;
   let line = 1;
@@ -264,7 +264,7 @@ export function parseDeclarations(source: string): DeclInfo[] {
   if (!source) {
     return decls;
   }
-  const tokens = scan(source);
+  const tokens = scanWellTokens(source);
   let depth = 0;
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
@@ -299,7 +299,7 @@ export function parseImports(source: string): ImportInfo[] {
   if (!source) {
     return imports;
   }
-  const tokens = scan(source);
+  const tokens = scanWellTokens(source);
   let depth = 0;
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
@@ -354,7 +354,7 @@ export function parseModuleDecl(source: string): ModuleInfo | null {
   if (!source) {
     return null;
   }
-  const tokens = scan(source);
+  const tokens = scanWellTokens(source);
   let depth = 0;
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];

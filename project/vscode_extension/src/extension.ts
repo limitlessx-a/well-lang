@@ -15,6 +15,7 @@ import { IndexedDecl, WorkspaceIndex } from "./workspaceIndex";
 import { CompilerManager } from "./compiler";
 import { DiagnosticsManager } from "./diagnostics";
 import { WellCompletionProvider } from "./completion";
+import { WellDefinitionProvider } from "./definition";
 import {
   declKindLabel,
   displayPath,
@@ -40,6 +41,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const index = new WorkspaceIndex();
   const compiler = new CompilerManager(output);
   const diagnostics = new DiagnosticsManager(compiler, output);
+  const definitions = new WellDefinitionProvider(index);
 
   compiler.resolve();
   void index.refresh().catch((err) => {
@@ -103,6 +105,10 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(
+    vscode.languages.registerDefinitionProvider("well", definitions)
+  );
+
+  context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) => {
       if (isWellDocument(event.document)) {
         diagnostics.schedule(event.document);
@@ -110,6 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (isWellDocument(document)) {
+        definitions.clearCache();
         void diagnostics.checkNow(document);
       }
     }),
