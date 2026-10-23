@@ -1,0 +1,15 @@
+module demo.handler_event_type_error;
+
+handler H {
+    onEvent(e: Event) {
+        print(1);
+    }
+}
+
+controller Main {
+    run() {
+        on(H);
+    }
+}
+
+entry Main;

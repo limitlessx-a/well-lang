@@ -196,8 +196,7 @@ class Checker:
                         self.err(f"handler {name}.{m.name} must take exactly one event param")
                     pname, ptype = m.params[0]
                     if ptype.name not in self.structs or self.structs[ptype.name]["kind"] != "event":
-                        if ptype.name not in ("Event",):
-                            self.err(f"handler {name}.{m.name} parameter must be an event type")
+                        self.err(f"handler {name}.{m.name} parameter must be a concrete event type, not {ptype.name}")
                     self.handler_event[name] = ptype
                     self.handler_method[name] = m.name
                     break
@@ -269,6 +268,12 @@ class Checker:
                 if f.type.name == "void":
                     self.err(f"{name}.{f.name}: a field cannot be void")
                 self.check_type_name(f.type.name)
+                if f.default is not None:
+                    if isinstance(f.default, (ArrayLit, ObjectLit)):
+                        self.check_container_literal(f.default, f.type.name, {})
+                    else:
+                        vt = self.check_expr(f.default, {})
+                        self.check_assignable(f.type.name, vt)
         for name, f in self.funcs.items():
             for pn, pt in f.params:
                 self.check_type_name(pt.name)
@@ -357,6 +362,13 @@ class Checker:
         if isinstance(e, Member) and getattr(e, "is_enum", False):
             return True
         return False
+
+    def event_fields(self, ev: str) -> dict:
+        """Field name -> type for a concrete event type."""
+        st = self.structs.get(ev)
+        if st is None or st.get("kind") != "event":
+            self.err(f"{ev} is not a concrete event type")
+        return {f.name: f.type.name for f in st["fields"]}
 
     def check_block(self, b: Block, env):
         for s in b.stmts:
@@ -1002,9 +1014,9 @@ class Checker:
                 oe = self.handler_event[names[0].name].name
                 me = self.handler_event[names[1].name].name
                 ce = self.handler_event[names[2].name].name
-                of = {f.name: f.type.name for f in self.structs[oe]["fields"]}
-                mf = {f.name: f.type.name for f in self.structs[me]["fields"]}
-                cf = {f.name: f.type.name for f in self.structs[ce]["fields"]}
+                of = self.event_fields(oe)
+                mf = self.event_fields(me)
+                cf = self.event_fields(ce)
                 if of.get("clientId") not in ("int", "long") or \
                    of.get("path") != "String" or of.get("query") != "String":
                     self.err(f"Ws.route: {oe} needs clientId/path/query")
@@ -1071,7 +1083,7 @@ class Checker:
                 if not isinstance(h, Ident) or h.name not in self.handlers:
                     self.err("Http.route: third argument must be a handler")
                 ev = self.handler_event[h.name].name
-                fields = {f.name: f.type.name for f in self.structs[ev]["fields"]}
+                fields = self.event_fields(ev)
                 if fields.get("reqId") not in ("int", "long"):
                     self.err(f"Http.route: {ev} needs reqId: int/long")
                 for fn in ("method", "path", "query", "body"):

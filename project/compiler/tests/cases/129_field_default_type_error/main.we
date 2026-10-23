@@ -1,0 +1,14 @@
+module demo.field_default_type_error;
+
+struct S {
+    x: int = "s";
+}
+
+controller Main {
+    run() {
+        var s: S = new S();
+        print(s.x);
+    }
+}
+
+entry Main;
