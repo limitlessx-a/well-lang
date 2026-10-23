@@ -812,6 +812,16 @@ class CodeGen:
             kind, et = self.container_info(getattr(s.iter, "ty", None) or "")
             n = self.next_id()
             saved = dict(self.env)
+            if not isinstance(s.iter, (Ident, Member)):
+                # Evaluate the iterated expression once, before the loop: it used
+                # to be re-evaluated for every length check and element access
+                # (repeated side effects and one leaked container per call).
+                cty = {"array": "WellArray*", "linked": "WellLinked*"}.get(kind, "WellMap*")
+                iname = f"_it{n}"
+                self.w(f"{cty} {iname} = {it};")
+                if self.is_owned(s.iter):
+                    self.w(f"well_temp_hold((void*){iname});")
+                it = iname
             if kind == "array":
                 self.w(f"for (long long _i{n} = 0; _i{n} < well_array_len({it}); _i{n}++) {{")
                 self.ind += 1

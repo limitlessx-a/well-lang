@@ -1,0 +1,19 @@
+module demo.forof_iter_once;
+
+func make(): Array<int> {
+    print("make");
+    var a: Array<int> = [1, 2, 3];
+    return a;
+}
+
+controller Main {
+    run() {
+        var sum: int = 0;
+        for (var x of make()) {
+            sum = sum + x;
+        }
+        print(sum);
+    }
+}
+
+entry Main;
