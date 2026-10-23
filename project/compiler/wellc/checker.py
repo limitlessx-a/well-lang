@@ -344,6 +344,10 @@ class Checker:
                 et = ty
             else:
                 et = self.check_expr(s.init, env)
+                if ty:
+                    # An annotated declaration must agree with its initializer
+                    # (the annotation used to be silently discarded).
+                    self.check_assignable(ty, et)
             if ty is None:
                 ty = et
                 if ty in ("null", None):

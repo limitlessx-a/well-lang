@@ -1,0 +1,10 @@
+module demo.var_type_error;
+
+controller Main {
+    run() {
+        var x: int = "hello";
+        print(x);
+    }
+}
+
+entry Main;
