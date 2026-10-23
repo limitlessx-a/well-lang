@@ -136,6 +136,7 @@ print(Color.toString("red"));  // RED
 
 - enum 成员用 `;` 分隔；int 枚举可显式赋值/自增；重复 int 值报错；
 - `E.fromInt` 仅 int 枚举；String 枚举只有 `toString`。
+- `const` 的值必须是**编译期常量**：字面量、枚举成员、其它 `const`，或它们的数值运算；`const` 会生成 C 宏并在每次使用时展开，因此 `new`/函数调用/`Host.nowMs()`/String 拼接（会分配对象）都会在 check 阶段报错。
 
 #### controller
 

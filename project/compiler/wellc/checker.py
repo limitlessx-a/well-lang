@@ -300,6 +300,36 @@ class Checker:
                     self.check_type_name(f.ret.name)
         for name, d in self.consts.items():
             self.check_type_name(d.type.name)
+            vt = self.check_expr(d.value, {})
+            # ``const`` is emitted as a C macro and expanded at every use
+            # site, so its initializer must be a pure compile-time constant
+            # (no ``new``/calls/host reads, no String concatenation which
+            # would allocate a fresh object per use).
+            if not self.is_pure_const(d.value):
+                self.err(
+                    f"const {name}: initializer must be a compile-time constant "
+                    f"(literal, enum member, another const, or arithmetic on them)")
+            self.check_assignable(d.type.name, vt)
+
+    def is_pure_const(self, e) -> bool:
+        """True when ``e`` can be expanded as a C macro with no side effects."""
+        if isinstance(e, (IntLit, FloatLit, BoolLit, NullLit)):
+            return True
+        if isinstance(e, StrLit):
+            return True
+        if isinstance(e, Ident):
+            return e.name in self.consts
+        if isinstance(e, Member):
+            return getattr(e, "is_enum", False)
+        if isinstance(e, Unary):
+            return e.op in ("+", "-", "!", "~") and self.is_pure_const(e.expr)
+        if isinstance(e, Binary):
+            lt = getattr(e.left, "ty", None)
+            rt = getattr(e.right, "ty", None)
+            if lt == "String" or rt == "String":
+                return False
+            return self.is_pure_const(e.left) and self.is_pure_const(e.right)
+        return False
 
     def block_returns(self, b: Block) -> bool:
         return bool(b.stmts) and self.stmt_returns(b.stmts[-1])

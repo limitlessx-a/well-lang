@@ -1,0 +1,11 @@
+module demo.const_nonconst_error;
+
+const NOW: long = Host.nowMs();
+
+controller Main {
+    run() {
+        print(NOW);
+    }
+}
+
+entry Main;

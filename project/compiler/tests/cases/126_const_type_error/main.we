@@ -1,0 +1,11 @@
+module demo.const_type_error;
+
+const X: int = "str";
+
+controller Main {
+    run() {
+        print(X);
+    }
+}
+
+entry Main;

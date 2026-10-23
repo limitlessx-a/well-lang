@@ -3,7 +3,7 @@
 `wellc` 把 `.we` 源码编译为 C99，再由 C 编译器生成可执行文件。当前是可工作的 MVP，已打通：
 
 - `module` / `import`（本地相对/点路径解析，声明合并）
-- `const` / `enum`（int、String；enum 不再承担事件名；`E.fromInt(v)` / `E.toString(v)`）
+- `const` / `enum`（int、String；enum 不再承担事件名；`E.fromInt(v)` / `E.toString(v)`）。`const` 生成 C 宏，值必须是**编译期常量**（字面量/枚举成员/其它 const/其数值运算），`new`、函数调用、`Host.nowMs()`、String 拼接会报编译错误
 - `struct`（单继承字段展平）、`event`（事件类型即身份，无 `bind`）
 - 根类型：`struct S` ≡ `extends Vo`，`event E` ≡ `extends Event`；**controller/handler 不支持 `extends`（写了编译错误）**
 - `controller`（`on/once/off/start/stop/emit/run`）；`start(C)` 单例幂等，`stop(C)` 注销该 controller 类型的订阅并允许重新 start

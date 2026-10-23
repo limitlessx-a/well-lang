@@ -60,7 +60,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 | `module a.b;` | ✅ 解析忽略 | 单文件/import 合并时不参与命名 |
 | `import "relative.we";` / `import a.b;` | ✅ | 本地相对/点路径解析，decl 合并 |
 | `entry Controller;` | ✅ | 生成 `main()`，调用 `Controller_ensure`（幂等启动） |
-| `const N: int = 1;` | ✅ | 生成 C 宏 |
+| `const N: int = 1;` | ✅ | 生成 C 宏；值必须是编译期常量（字面量/枚举成员/其它 const/它们的数值运算），`new`/函数调用/Host 读取/String 拼接会在 check 阶段报错 |
 | `enum E { A = 1; B; }` | ✅ | int 自增 |
 | `enum E { A = "A"; }` | ✅ | String 枚举，生成字符串宏（普通常量，不承担事件名） |
 | `E.fromInt(v)` / `E.toString(v)` | ✅ | int 枚举：整数→枚举值（未知→0）、值→成员名 String（未知→""）；String 枚举只支持 `toString`（值→成员名） |
