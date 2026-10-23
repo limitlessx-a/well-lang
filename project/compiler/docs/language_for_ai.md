@@ -1,7 +1,7 @@
 # Well 语言与运行时（AI 参考）
 
 > 面向需要生成/修改 Well 代码的 AI。只覆盖三部分：**语法规则**、**实现方式**、**注意事项**。
-> 以当前实现为准（2026-10-23，全部 `.we` 用例（当前 151 个）+ 全部 C 测试通过）。冲突时以源码/测试为准。
+> 以当前实现为准（2026-10-23，184 个 `.we` 用例 + 18 个 C 测试）。冲突时以源码/测试为准。
 
 ---
 
@@ -65,7 +65,7 @@ import lib.util;          // 点路径：lib/util.we 或 lib/util/index.we
 entry MainController;     // 生成 main()，启动入口 controller
 ```
 
-- `import` 的声明合并；同一文件重复声明报错；跨文件同名声明同样报错（错误信息含首次定义文件）；
+- `import` 的声明合并；同一文件重复声明报错；跨文件同名声明（任意类别）同样报错（全局单命名空间，错误信息含首次定义文件）；参数重名、同作用域 `var` 重名报错；内层遮蔽允许；
 - 必须有 `entry` 才能生成可执行入口。
 - 源码编码：UTF-8（允许带 BOM，lexer 会跳过 U+FEFF）；换行 LF/CRLF 均可。
 
@@ -82,10 +82,13 @@ entry MainController;     // 生成 main()，启动入口 controller
 | `Array<T>` / `Map<T>` / `Linked<T>` | `WellArray* / WellMap* / WellLinked*` | 同质容器；Map 键为 String，保留插入序 |
 | `struct` / `event` | `T*` | 引用类型、有 oid |
 | `null` | `void*` | 所有引用类型可为 null |
-| `void` | — | 返回类型/表达式 |
+| `void` | — | **只能作返回类型**（不能作变量/字段/参数/表达式值） |
 
 - 没有 enum 类型（enum 只是 int/String 常量）；没有 `char/short`；
 - 所有引用类型默认 null；struct/event 的 String 字段默认 `""`。
+- **赋值兼容性**：同类型允许；数值只允许 widening（`bool→int→long→double`，`double`/`float` 同属最高档），窄化（`long→int`、`double→int`）报 `narrowing conversion is not allowed`；
+- `null` 只能赋给引用类型（String/Bytes/Array/Map/Linked/struct/event）；赋给数值类型报错；
+- 带注解 `var` 必须与初始值兼容；用户函数/方法实参逐项校验类型。
 
 ### 1.3 声明
 
@@ -135,8 +138,9 @@ print(Color.toString("red"));  // RED
 ```
 
 - enum 成员用 `;` 分隔；int 枚举可显式赋值/自增；重复 int 值报错；
-- `E.fromInt` 仅 int 枚举；String 枚举只有 `toString`。
+- `E.fromInt` 仅 int 枚举；String 枚举只有 `toString`；String 枚举成员可作为值（生成 `well_string_lit`）和 switch case；`enum E: String`（以及 `: int/long`）声明会校验成员类型与基类型一致；
 - `const` 的值必须是**编译期常量**：字面量、枚举成员、其它 `const`，或它们的数值运算；`const` 会生成 C 宏并在每次使用时展开，因此 `new`/函数调用/`Host.nowMs()`/String 拼接（会分配对象）都会在 check 阶段报错。
+- **字段默认值**（struct/event 字段、static 字段）：只允许字面量/const、容器字面量、`new Bytes()`/`new Array<T>()`/`new Map<T>()`；函数调用、`new <struct>`、Host 读取报错。
 
 #### controller
 
@@ -151,6 +155,7 @@ controller MainController {
 ```
 
 - 单例；`start(C)` 幂等，`stop(C)` 注销该 controller 的订阅并允许重启；
+- **controller 只允许 `run()`**（写其它方法编译错误，且必须定义 `run()`）；
 - `run()` 在事件循环前执行，`ctx.oid = 0`（装配期 oid）；
 - 可以在 `run()` 里注册路由/订阅、初始化 static、创建 **oid=0 系统级只读数据**；
 - **controller/handler 不支持 `extends`**：语法已移除，写了会直接编译错误（不再静默忽略）。
@@ -165,9 +170,9 @@ handler PingHandler {
 }
 ```
 
-- 方法名也接受 `handle` / `on` / `handler`；
-- 参数必须是事件类型；handler 无字段；
-- `on(H)` 时事件类型从 `onEvent(e: T)` 推断。
+- 只允许一个事件方法，方法名可用 `onEvent` / `handle` / `on` / `handler`；
+- 参数必须是**具体 event 类型**（根 `Event` 报 `parameter must be a concrete event type`）；handler 无字段；
+- `on(H)` 时事件类型从事件方法参数 `e: T` 推断。
 
 #### func / namespace / static
 
@@ -220,8 +225,9 @@ break;
 continue;
 ```
 
+- `for`/`for-of`/`for-in` 的循环变量必须带 `var`（`for (var x of a)` / `for (var k in m)`），for-of/for-in 内 `break`/`continue` 正常；
 - switch 支持 `int/long/String`；**无 fallthrough**（每个 case 自动 break）；
-- case 值必须是字面量/const/枚举成员，重复 case 报错；
+- case 值必须是字面量/const/枚举成员（String 枚举成员可用），重复 case 报错；
 - switch 也计入 breakable：`break` 退出 switch；`continue` 只作用于外层循环。
 
 ### 1.5 表达式
@@ -239,6 +245,8 @@ new UserVo(), new PingEvent(oid) { n: 1 }, new Bytes()
 
 - 整数 `/`、`%` 生成 checked helper：除数为 0 → panic（带 file:line）；
 - 字面量常量除零/常量溢出 → 编译错误；运行期整数溢出语义为二补码 **wrap**（gcc/clang 构建始终追加 `-fwrapv`，TCC 实现即 wrap，见 §3.4.4）；
+- **数值字面量**：十进制（`08` 即 8）与 `0x` 十六进制；空 hex、指数缺数字、非有限 float 报词法/语法错误；字符串未知转义（如 `\q`）报错；
+- **`??` 未实现**：checker 报 ``operator ?? is not implemented; write `x == null ? y : x` instead``；空值合并用三元；
 - 容器字面量 `[]`/`{}` 支持：`var` 初始化、下标赋值、static 字段默认值/启动期 static 赋值；
 - **不能**把容器字面量直接当函数实参/普通 struct 初始化字段，先赋给变量；
 - 没有闭包/lambda/用户泛型/接口/元组；`->` 保留给 lambda/管道（未实现，使用会编译错误）。
@@ -329,9 +337,11 @@ enum:     E.fromInt(v)（int 枚举）、E.toString(v)
 - 容器写要求 `container.oid == ctx.oid`；插入引用元素要求 `element.oid == container.oid`（String 例外）；
 - 不支持 `Map.entries`。
 
-### 1.8 错误模型
+### 1.8 错误模型与诊断
 
-- 编译错误：`file:line:col: message`，非 0 退出；
+- 编译错误：人类可读模式每行 `FILE:LINE:COL: severity: message`；`wellc check --json` 输出**单个 JSON 对象**（`ok`/`file`/`diagnostics`），`diagnostics` 可含多条（同一方法体内仍首错即停）；
+- `diagnostics[].code` 取值：`lex` / `parse` / `semantic` / `import` / `internal`；
+- 退出码：无 error 为 0（仅 warning 也算 0）、有 error 为 1、参数/IO 错误为 2；
 - handler panic：打印 `well panic: file:line: message`，**只终止当前任务**，调度器继续；
 - controller/装配期 panic：未捕获，**exit 70**；
 - 没有 try/catch / Result / 异常；可恢复解析用 `Json.tryParse`；
@@ -346,20 +356,20 @@ enum:     E.fromInt(v)（int 枚举）、E.toString(v)
 ```text
 .we
  → Python 前端：lexer → parser → checker → codegen
- → build/<name>.c
+ → build/<stem>_<sha1前8>.c   （不同目录同名源码不再互相覆盖；-o 可显式指定）
  → C 编译器（默认仓库内 TinyCC；可用 WELL_CC=gcc/clang，自动 -O2 -fwrapv）
  → 可执行文件（链接 runtime/core + 用到的 modules）
 ```
 
-- codegen 为每个 struct/event 生成：`WellObj hdr` + 字段、`T_<name>` type_id 宏、`new_*`/`destroy_*`；
-- handler 生成 `H_onEvent(WellCtx*, void*)`；controller 生成 `ensure/run/stop`；func/namespace 生成 `static` C 函数；
+- codegen 为每个 struct/event 生成：类型 `wt_<Name>`、`T_wt_<Name>` type_id 宏、`new_wt_<Name>`/`destroy_wt_<Name>`、元数据 `desc_wt_<Name>`；
+- handler 生成 `hd_<H>_onEvent(WellCtx*, void*)`；controller 生成 `ctl_<C>_ensure/_run/_stop`；func/namespace/static 生成 `static wf_<Name>`（namespace/static 为 `wf_<N>__<f>`）；enum/const/static 字段前缀 `E_`/`C_`/`wst_`；局部变量 `v_`、字段 `f_`（Well 原名保留在元数据/JSON/诊断中）；
 - 每个语句前生成 `well_source_set(file,line)`，用于 panic 定位；
 - 只编译程序实际用到的 `Http/Ws/Mysql` 模块源文件；
 - `WELL_CC` 指定编译器；gcc/clang 默认 `-O2` 并**始终**追加 `-fwrapv`（`WELL_CFLAGS` 只覆盖优化等其它 flags）；TCC 使用默认参数。
 
 ### 2.2 对象模型与引用计数
 
-- 每个对象以 `WellObj` 开头：`rc`、`type_id`、`flags`、`oid`、registry 指针、`alloc_size`（x64 约 56B）；
+- 每个对象以 `WellObj` 开头：`rc`、`type_id`、`flags`、`oid`、`exec_pins`、registry 前后指针、`alloc_size`（x64 sizeof=56B）；
 - RC 是原子计数；`new` 为 1；字段赋值/Model 引用会增加，释放减少；
 - `WellCtx` 是 handler 帧日志：内联 16 个 refs + 4 个 pins，统一 release；
 - 允许成环；环不立即回收，最终由 oid 过期回收兜底；
@@ -422,10 +432,10 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 
 ### 2.8 HTTP / WebSocket / Timer / MySQL（实现要点）
 
-- HTTP：listener + 每连接 reader 线程；keep-alive（空闲 15s 关闭）；每请求 task 在 worker 上执行；`Http.respond` 首个响应生效，5s 无响应 504；header 单次 recv 内最多约 64KB，跨 recv 超 16KB 拒绝，头部总时限 5s；body 1MB；连接数上限 `WELL_HTTP_MAX_CONNECTIONS`（默认 1024，超出回 503）；无 TLS/chunked/pipelining；
-- WS：listener + 每连接 reader 线程；每连接一个 oid，open/message/close task 串行；text/ping/pong/close；无 TLS/分片/二进制/背压；
+- HTTP：listener + 每连接 reader 线程；keep-alive（空闲 15s 关闭）+ 顺序 pipelining（保留跨请求残余字节）；每请求 task 在 worker 上执行；`Http.respond` 首个响应生效；header 总期限 5s、header 上限 16KB、body 1MB、发送超时 15s；连接上限 `WELL_HTTP_MAX_CONNECTIONS`（1024，超出 503）；HTTP/1.1 缺 `Host`→400、HEAD 只发头、未知方法→405、body 含 NUL→400；5s 未响应 504 且 `Connection: close`；无 TLS/chunked；
+- WS：listener + 每连接 reader 线程；每连接一个 oid，open/message/close task 串行；每连接写锁；握手 10s、空闲 60s、发送 15s、连接上限 4096（超出 503）；1MB 帧上限；先查路由再 101，query 传入事件；二进制帧回 close 1003，协议错误回 1002/1003/1009；无 TLS/分片/压缩/背压；
 - Timer：独立线程约 5ms 轮询；到期以 timer id 为 oid 投递 task；有 timer 时进程保持运行；
-- MySQL：自实现 wire protocol，native auth + COM_QUERY；连接池；同步调用。
+- MySQL：自实现 wire protocol，native auth + COM_QUERY；connect 5s / IO 15s；`exec` 遇结果集排空后报错；连接池 acquire 前 `COM_PING`；列数上限 4096；JSON 控制字符转义、内嵌 NUL 保留；同步调用、无 TLS。
 
 ---
 
@@ -459,7 +469,7 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 #### 3.4.1 未实现（功能缺口，不是 bug）
 
 - 无异常 / `try-catch` / `Result`；错误处理是 panic + 可空 API（见 §1.8）；
-- 无用户泛型 / 接口 / 元组 / 闭包 / lambda；函数不是一等值，不能捕获局部变量；
+- 无 `??` 空值合并（checker 明确报未实现，用三元）；无用户泛型 / 接口 / 元组 / 闭包 / lambda；函数不是一等值，不能捕获局部变量；
 - 无 `Map.entries`；可用 `keys()` / `values()` / `for-in`；entries 需要键值对/tuple 类型设计；
 - 无 `char/short`；整数只有 `int/long`，`float` 是 `double` 别名；
 - 容器字面量不能直接当函数实参/普通 struct 初始化字段；当前只支持 `var` 初始化、下标赋值、static 字段默认值/启动期 static 赋值；
@@ -489,10 +499,12 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 
 ```powershell
 python wellc.py build app.we -o build\app.exe
-python tools\verify.py --quick    # 全部 .we 用例
+python tools\verify.py --quick    # 全部 .we 用例 + check-cli（跳过 C 测试）
 python tools\verify.py            # + 全部 C 测试
+python tools\verify.py --full     # + HTTP bench smoke
 ```
 
-- `WELL_WORKERS` 未设置时按 CPU 自动；测试 runner 固定 1；
+- 测试规模：184 个 `.we` 用例 + 18 个 C 测试；MySQL 依赖用例（`52/53/128/140/141/169`）与 `mysql_conn_test` 无服务时 SKIP；
+- `WELL_WORKERS` 未设置时按 CPU 自动；测试 runner 固定 1 保证确定性；
 - `WELL_CC=gcc` 使用 gcc（自动 -O2 -fwrapv）；`WELL_CFLAGS` 覆盖优化 flags；
-- 生成的 C 在 `build/<name>.c`，是排查 codegen 问题的第一手材料。
+- 生成的 C 在 `build/<stem>_<sha1前8>.c`（`-o` 可指定），是排查 codegen 问题的第一手材料；`emit-c -o` 会自动建父目录。

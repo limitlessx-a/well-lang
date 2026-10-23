@@ -1,7 +1,14 @@
 # HTTP 解析器性能基线（C vs Well）
 
-> 日期：2026-10-22
+> 日期：2026-10-22（数据采集日）
 > 目的：判断"用 Well 实现 HTTP 协议层"的性能可行性，给出量化基线。
+>
+> **复核说明（2026-10-23 补记，Lead 委托）**
+>
+> - 本文所有数值均为 **2026-10-22 的历史基线**：Windows x64 + 仓库内 TinyCC 0.9.27（driver 默认，不加 `-O2`）、本机 loopback、多轮交替取样；文中已注明单次测量波动 20–30%，读数只用于**量级与相对关系**判断。
+> - **当前实现已变化**（2026-10-23 核心代码审计与修复后，测试规模为 184 个 `.we` 用例 + 18 个 C 测试）。下列结论的**定性判断仍然成立**（Well 解析器比等价的 C 实现慢一个数量级、分配是主要成本、端到端瓶颈在连接/线程而非解析），但**不应把文中的绝对 µs/req 当成当前值**。本轮修复对性能相关行为的影响见 §6。
+> - 相关资产仍存在且可用：`compiler/examples/http_parser_bench/main.we`、`compiler/examples/lib/http_parser.we`、用例 `65_well_http_parser` / `66_http_parser_route`、`compiler/tools/bench.py` 的 `parser` 场景（已核对文件存在与用例名）。
+> - 复跑方法见 §1「复现」与 `compiler/tools/README.md`；若要作为当前基线，请另存新数据并注明机器/编译器/负载。
 
 ## 1. 方法
 
@@ -32,7 +39,14 @@ python wellc.py build examples/http_parser_bench/main.we -o build/bench_well.exe
 build/bench_well.exe
 ```
 
+> 复现说明（2026-10-23 补记）：
+> - 程序输出 `iters / total_ms / us_per_parse / parses_per_sec / checksum`；默认 20000 次计时 + 500 次预热，属短跑（秒级以内），不是长压测。产物写在 `compiler/build/`（gitignored）。
+> - `tools/bench.py --scenario parser` 测的是**编译器前端**（`wellc` 的 `lex` + `parse_program`，对同一份 `bench_http_server.we`，单位 µs/parse），与本节的 **Well 运行时 HTTP 解析器**微基准**不是同一口径**，不能直接比较；`compiler/tools/README.md` 有 bench 场景、基线保存与 `--compare` 阈值说明。
+> - 在当前代码上复跑时，请记录 `WELL_CC`、`WELL_CFLAGS`/优化级别、CPU 型号与机器负载，同一配置交替跑 ≥3 轮取最小值；单次读数受本机抖动影响可达 20–30%。
+
 ## 2. 结果
+
+> 以下表格与 §4.x 的吞吐/延迟数字均为 **2026-10-22 历史测量**（条件见文首复核说明），仅用于相对比较。
 
 | 实现 | µs / 次解析 | 解析/秒 | 相对 C |
 |---|---|---|---|
@@ -74,6 +88,8 @@ build/bench_well.exe
    - 长期（等 TLS/keep-alive 等大头落地）再决定是否切换默认实现。
 
 ## 4.1 keep-alive 后的端到端吞吐（同机补充测量）
+
+> 注：§4.1–§4.5 的 req/s、µs/req 均为 2026-10-22 的历史测量（同机同工具链），只用于相对比较；当前实现见 §6。
 
 为区分"解析成本"和"连接成本"，对 `GET /ping → 200 ok` 的最小服务器用 Python 客户端做两组测量（各 2000 次请求，统计含 Python 客户端开销）：
 
@@ -143,3 +159,30 @@ Python 客户端自身开销会掩盖优化，故补一个 C 压测客户端（�
 
 - `WellString` 增加 `len` 字段缓存字节长度：`s.length`、`s[i]`、`trim/startsWith/endsWith/split` 从 O(n) 降到 O(1)，避免解析循环里的 O(n²)。
 - 新增 `String.fromInt(n)`、`String.toLower()/toUpper()`（ASCII，单次分配并刷新缓存 hash）。
+
+## 6. 2026-10-23 审计修复对性能相关行为的影响（补记）
+
+本轮（核心代码审计 P0/P1/P2/P3 修复）**没有重新跑长压测**；以下为代码级影响分析，用于说明本文历史结论与当前实现的差异来源。
+
+### 6.1 HTTP 模块（运行期，端到端）
+
+- 头部总期限 `WELL_HTTP_HEADER_TIMEOUT_MS = 5000`：每请求多一次时钟比较，代价可忽略；作用是拒绝慢速头（slowloris）。
+- 连接上限 `WELL_HTTP_MAX_CONNECTIONS = 1024`：超限返回 503 并关闭，避免 1 连接 1 线程 + 64KB scratch 被耗尽；压测并发在数十连接以内无影响。
+- 严格 `Content-Length` 解析（拒绝负数/溢出/重复/尾随垃圾）：解析分支略增，安全收益远大于性能成本。
+- keep-alive 残余字节保留（滚动缓冲）：同一 TCP 段内到达的后续请求不再被丢弃，pipelining 由“静默挂起 15 s”变为正确响应；本文压测是顺序请求，结论不受影响。
+- 504 改为 `Connection: close`；新增发送超时 `SO_SNDTIMEO = 15 s`，慢读客户端不再永久阻塞 responder。
+- `examples/lib/http_parser.we`（Well 解析器）**本轮未改动**（文件最后修改时间 2026-10-22）；服务端默认仍是 C 解析器，§4 的路线结论不变。
+
+### 6.2 生成代码（影响 Well 解析器的微基准）
+
+- **实参左到右求值**（`wellc/codegen.py: gen_call_ordered`，`:789`）：跨函数/内建调用先把每个实参提为临时变量（C 语句表达式 `({ cty _agN = ...; ...call...; })`），保证 TCC 与 GCC 语义一致。对调用密集的解析器代码，每调用多若干条临时赋值，单元微基准可能比本文历史值略有上升（未实测）；这是为“同一程序跨编译器结果一致”付出的可解释成本。
+- **循环/块级 temp journal 释放**（`gen_scoped` / `push_scope` / `pop_scope`，`:843`；循环/`for-of` 体在 `:1005`、`:1046` 各建 mark 并 `well_temp_release_to`）：临时对象在作用域/迭代结束时释放，长时间解析循环的内存峰值显著下降（旧实现会累积到函数末尾，journal 满 1024 后还会静默漏释放），短循环开销仅每作用域 1–2 次整型操作。
+- **C 标识符修饰**（`c_var/c_field/c_func`，`:32-40`；`v_/f_/wf_` 等前缀）：只改变生成符号名，消除与 C 关键字、libc、运行时符号的冲突，**不影响运行期性能**（可能轻微改变编译产物布局/符号表）。
+- **for-of 迭代源只求值一次**（`:1016-1030`）：迭代源表达式在循环前求值一次并按所有权释放（旧实现每轮 length/get 重复求值并泄漏容器）。解析器若用 for-of 遍历数组/Map，行为更正确且更快。
+- 其余修复（引用计数泄漏、switch/作用域、panic 定位等）主要修正正确性/内存，不改变本文“分配是解析器主要成本”的判断。
+
+### 6.3 复跑建议
+
+- 微基准：按 §1 命令构建并运行 `examples/http_parser_bench`（默认 20000 次，秒级以内），同配置交替 ≥3 轮取最小值，记录 `WELL_CC`/flags/CPU/负载。
+- 端到端：`python tools/bench.py --scenario http --iterations 2000 --clients 1 --seconds 2`（短跑），或 `--save-baseline` 后用 `--compare` 与历史基线做 ±30% 阈值的回归判断（见 `compiler/tools/README.md`）。
+- 若要形成**当前**基线，建议新建 JSON 基线文件（`compiler/build/bench/`，gitignored）并在文件名/提交说明中注明采集日期、机器、编译器与负载；本文数值仅作历史参照。

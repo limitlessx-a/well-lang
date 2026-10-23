@@ -3,15 +3,23 @@
 ## `verify.py` — one-command correctness regression
 
 ```bash
-python tools/verify.py            # all .we cases + C tests
-python tools/verify.py --quick    # .we cases only (fast, no C tests)
+python tools/verify.py            # 184 .we cases + 18 C tests + check-cli
+python tools/verify.py --quick    # .we cases + check-cli (fast, no C tests)
 python tools/verify.py --full     # all tests + short HTTP bench smoke
 ```
 
 Checks the toolchain (`WELL_CC` / tcc / gcc / clang via `wellc.driver.find_cc`),
-runs the end-to-end cases and (unless `--quick`) the C tests, then prints a
-summary and exits non-zero on any failure. `--full` additionally runs
-`tools/bench.py --scenario http` with a tiny workload as a build/run smoke test.
+runs the end-to-end cases, the `check-cli` self-test and (unless `--quick`) the
+C tests, then prints a summary and exits non-zero on any failure. `--full`
+additionally runs `tools/bench.py --scenario http` with a tiny workload as a
+build/run smoke test; `bench.py` exits non-zero when the HTTP run reports
+client errors, so the smoke also asserts `errors == 0`. The test runner forces
+`WELL_WORKERS=1` for deterministic ordering.
+
+Cases that need a local MySQL (`52_mysql`, `53_mysql_pool`,
+`128_mysql_big_column`, `140_mysql_exec_resultset`, `141_mysql_pool_panic`,
+`169_mysql_json_escapes`) and the C `mysql_conn_test` declare the dependency in
+`requires.txt` and print `SKIP` when `127.0.0.1:3306` is unreachable.
 
 ## `bench.py` — reproducible benchmarks
 
@@ -58,7 +66,9 @@ The repository-root `.github/workflows/verify.yml` runs the **full**
 `check-cli` self-test, on every push/PR that touches `project/compiler/**`.
 POSIX builds use gcc because TinyCC 0.9.27's Linux port lacks the `__atomic_*`
 builtins the runtime needs; the driver adds `-O2 -fwrapv` there automatically.
-Cases that need a local MySQL (`52_mysql`/`53_mysql_pool`, `mysql_conn_test`)
-print `SKIP` when `127.0.0.1:3306` is unreachable. Benchmarks are **not** part
-of the push gate: the `bench` job only runs for manual `workflow_dispatch` with
-`run_bench=true`, to avoid timing noise on shared runners.
+Cases that need a local MySQL (`52_mysql`, `53_mysql_pool`,
+`128_mysql_big_column`, `140_mysql_exec_resultset`, `141_mysql_pool_panic`,
+`169_mysql_json_escapes`) and the C `mysql_conn_test` print `SKIP` when
+`127.0.0.1:3306` is unreachable. Benchmarks are **not** part of the push gate:
+the `bench` job only runs for manual `workflow_dispatch` with `run_bench=true`,
+to avoid timing noise on shared runners.

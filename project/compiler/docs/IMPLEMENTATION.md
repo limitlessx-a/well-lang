@@ -14,7 +14,7 @@
   │  checker.py      符号表 + 类型检查 + 事件绑定校验
   │  codegen.py      C99
   ▼
-build/<name>_<hash8>.c  ──(TCC / gcc / clang)──►  <name>_<hash8>.exe
+build/<stem>_<sha1前8>.c  ──(TCC / gcc / clang)──►  <stem>_<sha1前8>.exe
                          │
                   runtime/core/wellrt.c
                   runtime/core/well_model.c
@@ -62,15 +62,19 @@ build/<name>_<hash8>.c  ──(TCC / gcc / clang)──►  <name>_<hash8>.exe
 | `entry Controller;` | ✅ | 生成 `main()`，调用 `ctl_<Controller>_ensure`（幂等启动） |
 | `const N: int = 1;` | ✅ | 生成 C 宏；值必须是编译期常量（字面量/枚举成员/其它 const/它们的数值运算），`new`/函数调用/Host 读取/String 拼接会在 check 阶段报错 |
 | `enum E { A = 1; B; }` | ✅ | int 自增 |
-| `enum E { A = "A"; }` | ✅ | String 枚举，生成字符串宏（普通常量，不承担事件名） |
+| `enum E { A = "A"; }` | ✅ | String 枚举，成员生成 `well_string_lit(...)`；可作值/switch case（普通常量，不承担事件名）；`enum E: String` 声明类型会校验成员与基类型一致 |
 | `E.fromInt(v)` / `E.toString(v)` | ✅ | int 枚举：整数→枚举值（未知→0）、值→成员名 String（未知→""）；String 枚举只支持 `toString`（值→成员名） |
 | `struct S extends Base { f: T; }` | ✅ | 继承字段展平（无多态）；`extends Base` 可省略，默认 `Vo` |
 | `event E extends Event { ... }` | ✅ | 事件类型即身份；无 `bind`，无名字注册表；`extends Event` 可省略，默认 `Event` |
-| `controller C { run(){...} }` | ✅ | 单例装配器；`start(C)` 幂等，无 `start(C, oid)`；不支持 `extends`（语法已移除） |
-| `handler H { onEvent(e:E){...} }` | ✅ | 也接受 `handle`/`on`/`handler` 方法名；不支持 `extends`（语法已移除） |
+| `controller C { run(){...} }` | ✅ | 单例装配器；`start(C)` 幂等，无 `start(C, oid)`；**只允许 `run()`**（其它方法编译错误），必须定义 `run()`；不支持 `extends`（语法已移除） |
+| `handler H { onEvent(e:E){...} }` | ✅ | 只允许一个事件方法，方法名可为 `onEvent`/`handle`/`on`/`handler`；参数必须是**具体 event 类型**（根 `Event` 报错）；不支持 `extends`（语法已移除） |
 | `func f(a:int):int { ... }` | ✅ | 生成带隐藏 `WellCtx*` 的 C 函数 |
 | `namespace N { f(a:int):int {...} }` | ✅ | 静态函数集合；`N.f(...)` 编译期解析，生成 `static wf_N__f(WellCtx*, ...)`，零运行时开销、不占 oid/RC |
 | `static S { f: int = 1; m(): int {...} }` | ✅ | 静态类：**启动期可写、运行期只读**的静态字段 + 静态函数，不可实例化；`S.f` / `S.m()` 编译期解析 |
+
+**声明唯一性**：同文件重复声明报错；跨文件同名（任意类别：类型/函数/controller/handler/enum/const/namespace/static）同样报错（全局单命名空间，错误信息带首次定义文件）；参数重名、同作用域 `var` 重名报错；内层作用域可遮蔽外层。
+
+**字段默认值**（struct/event 字段与 static 字段同一套规则）：只允许字面量/const、容器字面量、`new Bytes()` / `new Array<T>()` / `new Map<T>()`；函数调用、`new <struct>`、Host 读取等在 check 阶段报错。
 
 `namespace` 语义（2026-10-22 加入）：
 - 成员只能是函数（暂不放 const/enum/struct）；函数可省略返回类型（视为 void）；
@@ -101,12 +105,17 @@ build/<name>_<hash8>.c  ──(TCC / gcc / clang)──►  <name>_<hash8>.exe
 - `int`/`bool` → C `int`；`long` → `long long`；`double`/`float` → `double`；`Bytes` → `WellBytes*`。
 - `Array<T>` → `WellArray*`；`Map<T>` → `WellMap*`；`Linked<T>` → `WellLinked*`；三者是引用类型，带 oid。
 - 所有引用类型可为 `null`。
+- **赋值兼容性**：同类型直接允许；数值只允许 widening——`numeric_rank` 为 `bool=int=0 < long=1 < float=double=2`，即 `bool→int`、`int→long`、`int/long→double` 可赋值，窄化（`long→int`、`double→int`、`double→long`）报 `cannot assign ... (narrowing conversion is not allowed)`；
+- `null` 只能赋给引用类型（String/Bytes/Array/Map/Linked/struct/event），赋给数值类型报 `cannot assign null to ...`；
+- `void` 只能作返回类型（`check_type_name` 的 `allow_void`），作为局部变量/字段/参数/表达式值都报错；
+- 带注解 `var` 必须与初始值类型兼容；用户函数/方法的实参逐项用 `check_assignable` 校验（不再只看个数）。
 
 ### 2.3 语句
 
 `var`（可带类型）、赋值、`if/else`、`while`、`for(init;cond;step)`、`for (var x of array)`、`for (var k in map)`、`switch/case/default`、`return`、`break`、`continue`、块。
 
-- `switch (expr) { case <常量>: 语句...; default: 语句...; }`：expr 支持 `int/long/String`；**无 fallthrough**（每个 case 自动 break）；case 值必须是字面量/const/枚举成员；`break` 在 switch 内表示退出 switch（switch 也计入 breakable 结构）；String switch 生成 `well_string_eq` 的 if/else 链。
+- `for-of`/`for-in` 的循环变量必须有 `var`（`for (var x of a)`），`for-of`/`for-in` 内 `break`/`continue` 正常。
+- `switch (expr) { case <常量>: 语句...; default: 语句...; }`：expr 支持 `int/long/String`；**无 fallthrough**（每个 case 自动 break）；case 值必须是字面量/const/枚举成员且不能重复；`break` 在 switch 内表示退出 switch（switch 也计入 breakable 结构），`continue` 只作用于外层循环；String switch 生成 `well_string_eq` 的 if/else 链（String 枚举成员可作 case）。
 
 ### 2.4 表达式
 
@@ -115,6 +124,8 @@ build/<name>_<hash8>.c  ──(TCC / gcc / clang)──►  <name>_<hash8>.exe
 - **整数除法/取模**：`int`/`long` 上的 `/`、`%` 生成 `well_int_div` / `well_int_mod`；除数为 0 时 panic `integer division/modulo by zero`（带 `file:line`），不再触发 `0xC0000094` 崩溃；
 - **编译期常量检查**：字面量除数/模数为 0 直接编译错误；只含整数字面量的常量算术表达式在编译期检查 int32/`long` 64 位溢出（`integer constant overflow`）；
 - 超出 int32 的整数字面量自动按 `long` 处理；运行期整数溢出语义为**二补码 wrap**：gcc/clang 构建始终追加 `-fwrapv`，TCC 代码生成本身即按 wrap 实现。
+- **数值字面量**：十进制（`08` 按 8 处理）与 `0x` 十六进制；空 hex（`0x`）、指数缺数字（`1e`）、非有限 float（`float literal out of range`）报词法/语法错误；字符串未知转义（如 `\q`）报错。
+- `??` **未实现**：checker 对 `??` 报 ``operator ?? is not implemented; write `x == null ? y : x` instead``，用三元代替。
 
 String 方法（全部字节语义）：
 
@@ -373,7 +384,7 @@ typedef struct WellStore {
 - 编码：int/long/bool 为 8 字节、double 8 字节、String 长度+字节、ref 为 `present + type_id + oid`、容器为 `present + count + elements`；
 - ref 解码通过 `WellRefResolver` 回调按 `(type_id, oid)` 查找；无 resolver 时为 null；
 - 容器元素支持标量/String/ref；不支持嵌套容器内联；
-- 解码对象走 `well_new`，容器走 `well_array_new` 等；`well_set_ref` 负责 RC/DAG；
+- 解码对象走 `well_new`，容器走 `well_array_new` 等；`well_set_ref` 负责 RC 与 oid 校验；
 - 这是行级格式，不内联完整对象图。
 
 ### 3.10 JSON 解析
@@ -388,7 +399,7 @@ typedef struct WellStore {
 - Array/Map/Linked：JSON array/object；
 - Map key 为 String；
 - 解析错误：`parse` panic（handler 内可被隔离），`tryParse` 返回 `null`；
-- 解析对象走 `well_set_ref`，保留 RC/DAG 检查。
+- 解析对象走 `well_set_ref`，保留 RC 与 oid 检查。
 
 ### 3.11 File / Host API
 
@@ -407,22 +418,24 @@ typedef struct WellStore {
 - `Http.listen` 非阻塞：启动监听线程与超时清扫线程，并 `well_service_hold()`；主线程进入 `well_run_loop`，`Http.stop()` 释放服务后返回；
 - listener 只做 accept：每个连接交给独立 reader 线程，连接之间互不阻塞；每连接持有一个 service 计数，连接关闭前 run loop 不会退出；
 - reader 线程按需循环读请求（**HTTP/1.1 默认 keep-alive**，`Connection: close` 时单次；HTTP/1.0 需显式 `Connection: keep-alive`），把请求作为 task 投递到该请求 oid 的队列，然后等待响应写出（`written`）再读下一个请求；
-- 空闲连接超过 `WELL_HTTP_IDLE_TIMEOUT_MS`（15s）没有新请求则关闭（`SO_RCVTIMEO`）；
+- **保留跨请求残余字节**（`scratch` 滚动缓冲）：一次 `recv` 多读到的下一个请求/body 尾部不丢弃，下一次循环从缓冲区继续解析，因此支持**顺序 pipelining**（同一连接上流水线发送的请求依次得到响应；同一时刻仍只有一个在飞请求）；
+- 空闲连接超过 `WELL_HTTP_IDLE_TIMEOUT_MS`（15s）没有新请求则关闭（`SO_RCVTIMEO`）；发送侧设 `WELL_HTTP_SEND_TIMEOUT_MS`（15s，`SO_SNDTIMEO`），慢读客户端不会永久阻塞连接线程；
 - handler 在 worker 线程执行（每请求一个 task，run-to-completion）；handler 内可 `emit` 业务事件，由另一个 oid 的 handler 稍后响应；
 - `Http.respond(reqId, status, body)` 可在任意 oid/handler 中调用，首个响应生效：认领 `responded` 后写响应（`Connection: keep-alive/close` 按请求决定），置 `written` 通知 reader；后续调用为空操作；
 - 同步响应快速路径：http task 在进入 handler 前把当前请求记录到线程局部（TLS），`Http.respond` 命中同一 reqId 时直接使用该指针，跳过全局请求表锁；异步响应（业务 oid）仍走哈希表；
 - 引用计数：请求（list + 连接线程 + task）、连接（list + 每个在飞请求），各自最后引用释放时销毁；响应者（handler/清扫线程）只写响应、不释放请求引用，请求引用统一由连接线程在 `written` 后释放；
 - 请求结构体本身有上限 64 的对象池，避免每请求 calloc/free；
-- 超时清扫线程：`WELL_HTTP_TIMEOUT_MS`（5s）内无人响应则返回 504 并关闭该连接；
+- 超时清扫线程：`WELL_HTTP_TIMEOUT_MS`（5s）内无人响应则返回 504 并关闭该连接；504 响应强制 `Connection: close`（连接随后即关闭，不给客户端留下"可复用"的错觉），清扫线程写响应期间对请求加引用，避免与连接线程的释放竞争；
 - 路由按 method + path 精确匹配，未命中返回 404；连接级缓存上一次的 `method+path -> route`，keep-alive 下命中即跳过模块锁；
-- 自写 parser：request line、headers、Content-Length、body；
-- 头部自首字节起总时限 `WELL_HTTP_HEADER_TIMEOUT_MS`（5s）；在线连接数硬上限 `WELL_HTTP_MAX_CONNECTIONS`（默认 1024），超出时直接回 503 并关闭，避免线程/内存耗尽；
-- 限制：header 若在一次 `recv` 内完整到达，可接受至连接 scratch 上限（65536 字节，约 64KB）；跨多次 `recv` 且长度超过 16KB 仍未读到 `\r\n\r\n` 则拒绝；body 1MB；
+- 自写 parser：request line（仅 origin-form `/...`，method 必须是 RFC 7230 token）、headers、严格 Content-Length、body；
+- 头部自首字节起总时限 `WELL_HTTP_HEADER_TIMEOUT_MS`（5s）；header 大小上限 `WELL_HTTP_MAX_HEADER`（16KB，命中 `\r\n\r\n` 后仍按头部长度校验），body 上限 1MB；
+- 协议校验：HTTP/1.1 缺 `Host` → 400；Content-Length 非法（符号/尾随垃圾/溢出/重复且冲突）→ 400；body 含 NUL → 400（语言层把 body 当 C 字符串，NUL 会截断）；HEAD 由 GET 路由服务、只发响应头（Content-Length 与 GET 相同）；未知路径 404，路径存在但方法不匹配 405；
+- 在线连接数硬上限 `WELL_HTTP_MAX_CONNECTIONS`（默认 1024，编译期 `-D` 可调），超出时回 503 并关闭，避免线程/内存耗尽；
 - Handler 通过 `HttpRequestEvent` 接收 `reqId/method/path/query/body`；
 - codegen 为每个 route 生成 wrapper，构造事件并直接调用 handler；
 - handler panic 在 worker 线程用 setjmp 捕获隔离；
 - 写响应：`TCP_NODELAY` 关闭 Nagle；响应体 ≤3800 字节且响应头 ≤320 字节时，头+体合并成一次 send（总长 <4096），减少系统调用与分段；
-- 当前限制：每连接同一时刻一个在飞请求（不支持 pipelining 并发）；无 chunked/TLS；每连接一个线程，连接总数受 `WELL_HTTP_MAX_CONNECTIONS`（默认 1024）限制；
+- 当前限制：支持顺序 pipelining（残余字节保留），但每连接同一时刻仍只有一个在飞请求；无 chunked/TLS；每连接一个线程，连接总数受 `WELL_HTTP_MAX_CONNECTIONS`（默认 1024）限制；
 - Windows：动态加载 `ws2_32.dll`（TCC 无 winsock 头）；Linux：POSIX socket。
 
 ### 3.13 WebSocket
@@ -431,22 +444,26 @@ typedef struct WellStore {
 - `Ws.listen` 非阻塞：启动监听线程并 `well_service_hold()`；主线程进入 `well_run_loop`，`Ws.stop()` 后返回；
 - listener 只做 accept，每连接交给独立 reader 线程完成握手与收帧，因此已有连接不会阻塞新连接；
 - 每个连接是一个 oid；open/message/close handler 作为 task 投递到该 oid 队列（同 oid 单 runner，消息 FIFO）；
-- `Ws.send/Ws.close(clientId, ...)` 按 clientId 查连接表，可从任意 handler（含业务 oid）调用；写帧在模块锁内完成；
+- `Ws.send/Ws.close(clientId, ...)` 按 clientId 查连接表，可从任意 handler（含业务 oid）调用；**每连接一把写锁**串行化帧写入（handler 线程与 reader 的 pong/close 不会交错帧），发送时不在全局锁内阻塞 `send`；
 - 连接对象引用计数（连接表 + 每个 task）；reader 退出后由最后一个引用释放；
 - 每连接持有一个 service 计数：连接未关闭时 run loop 不会退出；
 - `Ws.stop` 对连接调用 `shutdown()` 而非 `close()`：reader 线程正阻塞在 recv 上，由它自己关闭 socket，避免 RST 丢掉刚发出的帧；
-- 握手：SHA1 + Base64 `Sec-WebSocket-Accept`；
-- frame：text、ping/pong、close；客户端必须 mask；不支持分片/二进制；
+- **握手**：SHA1 + Base64 `Sec-WebSocket-Accept`；头名大小写不敏感，最后一行头也能解析；握手自 accept 起期限 `WS_HANDSHAKE_TIMEOUT_MS`（10s），握手头块上限 16KB；
+- **路由/query**：先按 path（`?` 之前）查路由，路由不存在直接回 HTTP 404（不先回 101）；query 字符串传入 open 事件；
+- **超时/上限**：空闲 `WS_IDLE_TIMEOUT_MS`（60s，收到任何帧即刷新）、发送 `WS_SEND_TIMEOUT_MS`（15s）；连接上限 `WS_MAX_CONNECTIONS`（默认 4096，编译期 `-D` 可调，超出回 503）；
+- **frame**：text、ping/pong、close；客户端必须 mask；1MB 帧上限（超出回 1009）；不支持分片；二进制帧回 close 1003；RSV/未 mask/非法控制帧等协议错误回 1002，`Ws.close` 主动关闭等待对端回应（带超时兜底）；
 - handler panic 由调度器 setjmp 隔离，连接保持；
-- v1 限制：无 TLS、无压缩、无同端口 HTTP Upgrade、无背压、无空闲超时。
+- v1 限制：无 TLS、无压缩、无同端口 HTTP Upgrade、无背压。
 
 ### 3.14 MySQL 客户端与连接池
 
 - 自实现 MySQL wire protocol，无 `.dll`/客户端库依赖；`WellMysqlConn` 句柄 + `WellMysqlPool`；
 - 支持 `mysql_native_password`；
 - 支持 `COM_QUERY`、OK/ERR、text result set；
-- `Mysql.queryJson` 输出数组对象 JSON；
-- 连接池：`Mysql.pool/execPool/queryJsonPool/closePool`；`WellMysqlPool` 提供 acquire/release、max 限制、acquire 超时、release 回池；
+- `Mysql.queryJson` 输出数组对象 JSON：字符串做 JSON 转义（控制字符 `\u00XX`），按 lenenc 长度处理，**内嵌 NUL 保留为 `\u0000`**；列数上限 4096；
+- 超时：connect 5s（`MYSQL_CONNECT_TIMEOUT_MS`）、读写 15s（`MYSQL_IO_TIMEOUT_MS`），超时报 `MySQL: ... timed out after N ms`；
+- `Mysql.exec` 只接受 OK/ERR；若语句返回结果集，先**排空**列定义/行/EOF 到包边界再报错（连接可继续使用）；排空失败则关闭连接；
+- 连接池：`Mysql.pool/execPool/queryJsonPool/closePool`；`WellMysqlPool` 提供 acquire/release、max 限制、acquire 超时、release 回池；acquire 前对空闲连接做 `COM_PING`，失效连接丢弃重连；
 - v1 仍为同步、无 TLS/prepared statement；
 - `caching_sha2_password` 明确拒绝。
 
@@ -505,7 +522,7 @@ typedef struct WellStore {
 - controller 生成 `static void ctl_C_ensure(WellCtx*)` + `static void ctl_C_run(WellCtx*)`；`start(C)` 调 `ctl_C_ensure`，重复启动只执行一次。
 - `func` 生成 `static <ret> wf_f(WellCtx* ctx, ...)`，调用时自动补 `ctx`；实参先按源码顺序提升为临时变量，保证求值顺序与编译器无关。
 - 每个函数入口 `(void)ctx;` 避免未使用告警。
-- 生成 C 保留在 `build/<name>_<hash8>.c`（`<hash8>` 是源码路径的 sha1 前 8 位，避免不同目录同名 `main.we` 互相覆盖），便于调试；显式 `-o` 时输出到指定路径。
+- 生成 C 保留在 `build/<stem>_<sha1前8>.c`（`<sha1前8>` 是源码绝对路径的 sha1 前 8 位，避免不同目录同名 `main.we` 互相覆盖），便于调试；显式 `-o` 时输出到指定路径（`emit-c -o` 会自动创建父目录）。
 
 ---
 
@@ -521,10 +538,11 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（全部 .we 用例 + C serialize/store/cleanup/ttl/pool/json/rtfix 等测试）
+# 端到端测试（184 个 .we 用例 + 18 个 C 测试；runner 默认 WELL_WORKERS=1）
 python tests\run_tests.py
 
-# 一键回归（推荐）：全部用例 + C 测试；--quick 只跑 .we；--full 加 bench smoke
+# 一键回归（推荐）：默认全部 .we 用例 + C 测试 + check-cli；
+# --quick 只跑 .we 用例 + check-cli；--full 再跑 HTTP bench smoke
 python tools\verify.py [--quick|--full]
 
 # 可复现性能基线：http_latency / http_throughput / parser
@@ -534,10 +552,13 @@ python tools\bench.py --compare build\bench\baseline.json --threshold 30
 # POSIX CI：仓库根 .github/workflows/verify.yml，Linux + gcc -O2 跑完整 verify.py（全部 .we 用例 + C 测试 + check-cli）；bench 仅 workflow_dispatch 手动触发
 ```
 
-C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang，见 §3.2 的 TinyCC 原子内建函数限制）。使用 gcc：`WELL_CC=gcc`（自动 `-O2 -fwrapv`）。
+构建产物：默认 `build/<stem>_<sha1前8>.c/.exe`（源码绝对路径的 sha1 前 8 位混入文件名，避免不同目录同名源码互相覆盖）；`-o` 显式指定输出；`emit-c -o` 自动创建父目录；`build` 对未解析 `import` 打印 `wellc: warning: ...`（不中断）。
+
+C 编译器查找顺序：`WELL_CC` → 仓库内 `project/tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang，见 §3.2 的 TinyCC 原子内建函数限制）。使用 gcc：`WELL_CC=gcc`（自动 `-O2 -fwrapv`）。
 额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`，并**始终**追加 `-fwrapv`（语言溢出语义，`WELL_CFLAGS` 不能关闭）；TCC 使用默认参数（不追加 `-O2`）。切换优化级别后先跑 `tools/verify.py`。
-本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2 -fwrapv`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 C 测试，全量 `.we` 用例串行编译过慢（~25s/case），本机未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）跑全部 `.we` 用例（2 个 MySQL 用例跳过）。
-需要本机 MySQL 的 `52_mysql`/`53_mysql_pool` 用 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时测试打印 `SKIP`（CI runner 无 MySQL 时不会误报）。
+本机验证环境：TinyCC 0.9.27 x86_64（仓库 `project/tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2 -fwrapv`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 C 测试，全量 `.we` 用例串行编译过慢（~25s/case），本机未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）跑全部 `.we` 用例（无 MySQL 的依赖用例 SKIP）。
+测试规模（2026-10-23）：**184 个 `.we` 用例 + 18 个 C 测试**；runner 默认 `WELL_WORKERS=1` 保证确定性。需要本机 MySQL 的 `52_mysql`/`53_mysql_pool`/`128_mysql_big_column`/`140_mysql_exec_resultset`/`141_mysql_pool_panic`/`169_mysql_json_escapes` 与 C `mysql_conn_test` 用 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP`（CI runner 无 MySQL 时不会误报）。
+诊断契约：`check` 人类可读模式每行 `FILE:LINE:COL: severity: message`；`--json` 只输出一个 JSON 对象，`diagnostics` 可含多条（同一方法体内仍首错即停），`code` 取值为 `lex`/`parse`/`semantic`/`import`/`internal`；退出码无 error=0（仅 warning 也算 0）、有 error=1、参数/IO 错误=2。
 
 ---
 
@@ -546,11 +567,12 @@ C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe
 | 缺口 | 说明 |
 |---|---|
 | 线程池 | 已实现每 oid 队列 + N worker + work stealing；仍无 reduction / 抢占，长 handler 会占一个 worker |
-| 容器字面量上下文受限 | `[]`/`{}` 目前只在 `var` 初始化与下标赋值中生成；函数实参、struct/event 初始化里的容器字面量尚未支持 |
-| 容器回调方法 | Array/Map/Linked 的常用方法（`push/pop/shift/unshift/slice/concat/join/indexOf/includes/clear/sort/reverse`、Map `keys/values/entries`、下标、`for-of/in`）已实现；缺 `map/filter/forEach` 等回调方法（需要 lambda） |
+| 容器字面量上下文受限 | `[]`/`{}` 目前只允许 `var` 初始化、赋值、static/struct 字段默认值；作为函数实参/`return` 值/三元分支等会报 checker 错误（先赋给变量） |
+| 容器回调方法 | Array/Map/Linked 的常用方法（`push/pop/shift/unshift/slice/concat/join/indexOf/includes/clear/sort/reverse`、Map `keys/values`、下标、`for-of/in`）已实现；`Map.entries` 未实现（需 tuple/泛型），缺 `map/filter/forEach` 等回调方法（需要 lambda） |
 | 无泛型/接口/异常 | 仅内置 `Array<T>`/`Map<T>`；用户自定义泛型 v2 |
 | 无 `invoke` | D-21 已从语言删除；计算用 `func`，跨 handler 用 `emit` |
-| DAG 检查开销 | 每次引用写入做 DFS，O(V+E)；图锁串行化，后续可优化/分级 |
+| 无 `??` 空值合并 | checker 明确报“未实现”，用三元 `x == null ? y : x` 代替 |
+| 环 / DAG 检查 | 运行时不做 DFS/环检查（`well_graph_*` 为 no-op 桩）；环由 oid 过期整组回收兜底 |
 | controller oid=0 | 设计语义：controller `run` 中 `new` + `Model.set` 是系统级只读数据（oid=0，可读不可写、不参与 TTL 回收）；需要运行期修改的数据在事件 handler 中创建 |
 | String.length 按字节 | 设计稿要求 UTF-8 码点 |
 | 热重载 | `stop(C)` 可注销订阅并重新 start；模块卸载/热更新尚未实现 |
@@ -564,5 +586,5 @@ C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe
 
 - **加语法**：`ast_nodes.py` → `parser.py` → `checker.py`（类型标注）→ `codegen.py`。
 - **加运行时能力**：`runtime/core/wellrt.h` 声明 + 对应模块（`well_model.c` / `well_containers.c` / `well_event.c` / `wellrt.c`）实现 + `codegen.py` 的 builtin 分发。
-- **加类型**：`checker.check_type_name`、`codegen.ctype/is_ref`、`new_*`/`destroy_*` 生成。
+- **加类型**：`checker.check_type_name`、`codegen.ctype/is_ref`、`new_wt_*`/`destroy_wt_*` 生成。
 - **加测试**：`tests/cases/<name>/main.we` + `expected.txt`（或 `expect_fail.txt` / `expect_compile_error.txt` / `rc_debug.txt`）。

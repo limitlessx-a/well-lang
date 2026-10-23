@@ -8,7 +8,7 @@ Well（`.we`）语言的 VS Code 插件，提供：
   - `import "..."` 路径上 Ctrl+点击直接打开被导入文件；
   - `obj.field` / `Enum.MEMBER`：基于 `var`/参数/字段的简单类型推断跳到字段或枚举成员（含 `extends` 基类字段、跨文件 import）；
   - 工作区其它文件里的声明也能跳（未 import 也可以）。
-- **错误检查**：保存/输入时调用 `wellc check --json`，把词法、语法、语义错误以及未解析的 `import` 显示到“问题”面板，支持跨文件（被导入文件）诊断。
+- **错误检查**：保存/输入时调用 `wellc check --json`，把词法（`lex`）、语法（`parse`）、语义（`semantic`）错误以及未解析的 `import`（`import`，warning）显示到“问题”面板，支持一次多条诊断与跨文件（被导入文件）诊断；诊断的 `code` 字段随 JSON 透传。
 - **格式化**：文档格式化（`formatWell`），支持 `editor.formatOnSave`。
 - **自动导入 / 整理包**：
   - 补全时自动建议工作区其它 `.we` 文件中的顶层声明，选中后自动插入 `import "..."`；
@@ -52,6 +52,7 @@ code --install-extension well-language-0.1.0.vsix
 - 使用命令 `Well: 检查当前文件` 手动触发。
 - 诊断来源为 `wellc`，可在“问题”面板按文件查看；被导入文件中的语法错误也会显示。
 - 检查使用 `python <wellc.py> check --json <file>`，不生成可执行文件、不写构建产物。
+- 契约：stdout 是单个 JSON 对象 `{ok, file, diagnostics[]}`；每条诊断含 `file/line/col/endLine/endCol/severity/message/code`，`code` 取值 `lex`/`parse`/`semantic`/`import`/`internal`；退出码 0=无 error（warning 也算 0）、1=有 error、2=参数/IO 错误。
 
 ### 格式化
 
@@ -143,12 +144,16 @@ npm run package        # 生成 vsix（需要 @vscode/vsce）
 ```
 
 - `npm test` 会先 `tsc -p .`，再编译 3 个纯 node 模块到 `build/ts/`，最后跑 `test/`：
-  - `format.test.js`：扫描 `project/compiler` 下 123 个真实 `.we`，断言 token 守恒 + 幂等 + 无行尾空白，另有 22 个手写边界用例；
+  - `format.test.js`：自动扫描 `project/compiler` 下全部真实 `.we` 文件（含全部 184 个用例；数量由扫描决定，不硬编码），断言 token 守恒 + 幂等 + 无行尾空白，另有 22 个手写边界用例；
   - `imports.test.js`：`wellParse`/`imports` 单测（import 解析、整理/排序/去重/移除未使用、CRLF/BOM、与 `driver.py::_resolve_import` 对拍）；
   - `grammar.test.js`：TextMate/language-configuration/snippets 的 JSON 结构与关键 scope 校验；
   - `activation.test.js`：不需要 Electron，用 mock 的 `vscode` 模块加载 `out/`，验证激活注册、格式化 Provider、真实 `wellc check` 诊断链路、整理导入、自动导入命令与 Ctrl+Click 转到定义（8 个场景）。
 - 仅跑激活冒烟：`npm run test:activation`。
 - `npm run package` 产物为 `well-language-0.1.0.vsix`；`code --install-extension well-language-0.1.0.vsix` 安装后重载窗口即可。
+
+### CI
+
+插件 CI 在**仓库根** `.github/workflows/extension.yml`：`project/vscode_extension/**` 变化的 push 与所有 PR 上，Ubuntu + Node 20 执行 `npm install --no-package-lock` + `npm test`（含 4 组测试与真实 `wellc check` 诊断链路），失败信息以 check-run 注解输出。
 
 目录结构：
 
