@@ -848,7 +848,7 @@ class Checker:
                 self.err(f"operator {e.op} requires bool operands, got {lt} and {rt}")
             e.ty = "bool"
         elif e.op == "??":
-            e.ty = lt if lt != "null" else rt
+            self.err("operator ?? is not implemented; write `x == null ? y : x` instead")
         elif e.op == "[]":
             e.ty = "int"
         elif e.op in ("+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"):

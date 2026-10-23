@@ -1,0 +1,11 @@
+module demo.null_coalesce_error;
+
+controller Main {
+    run() {
+        var a: String = "x";
+        var b: String = "y";
+        print(a ?? b);
+    }
+}
+
+entry Main;
