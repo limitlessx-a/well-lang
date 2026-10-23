@@ -165,14 +165,22 @@ def load_program(path: str) -> Program:
 
     visit(path)
     merged: list = []
-    names: set[tuple[str, str]] = set()
+    owners: dict[tuple[str, str], str] = {}
     for p in order:
         prog = _parse_file(p)
         for d in prog.decls:
             key = (type(d).__name__, getattr(d, "name", ""))
-            if key in names:
+            if key in owners:
+                first = owners[key]
+                # Same-file duplicates are reported by _check_duplicate_decls;
+                # reach here only for a name declared in two different files.
+                if os.path.abspath(first) != os.path.abspath(p):
+                    raise CheckError(
+                        f"{p}: duplicate declaration '{getattr(d, 'name', '')}' "
+                        f"(already defined in {first})"
+                    )
                 continue
-            names.add(key)
+            owners[key] = p
             merged.append(d)
         if os.path.abspath(p) == os.path.abspath(path):
             main = prog

@@ -1,0 +1,5 @@
+module demo.dup.a;
+
+struct DupVo {
+    a: int;
+}

@@ -1,0 +1,13 @@
+module demo.dup;
+
+import "a.we";
+import "b.we";
+
+controller DupController {
+    run() {
+        var d: DupVo = new DupVo();
+        d.a = 1;
+    }
+}
+
+entry DupController;

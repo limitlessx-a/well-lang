@@ -65,7 +65,7 @@ import lib.util;          // 点路径：lib/util.we 或 lib/util/index.we
 entry MainController;     // 生成 main()，启动入口 controller
 ```
 
-- `import` 的声明合并；同一文件重复声明报错；
+- `import` 的声明合并；同一文件重复声明报错；跨文件同名声明同样报错（错误信息含首次定义文件）；
 - 必须有 `entry` 才能生成可执行入口。
 - 源码编码：UTF-8（允许带 BOM，lexer 会跳过 U+FEFF）；换行 LF/CRLF 均可。
 
