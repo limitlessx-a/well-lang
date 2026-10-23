@@ -645,6 +645,20 @@ class CodeGen:
         raise Exception("unsupported call")
 
     # ---------- statements ----------
+    def gen_scoped(self, fn):
+        """Run ``fn`` with a block-scoped copy of ``env``.
+
+        Block/loop/if bodies may declare variables that shadow outer ones;
+        the C scopes already handle the storage, but the code generator's
+        type environment must be restored as well or a later assignment to
+        the outer variable is generated with the inner shadow's type.
+        """
+        saved = dict(self.env)
+        try:
+            fn()
+        finally:
+            self.env = saved
+
     def gen_block(self, b: Block):
         for s in b.stmts:
             self.gen_stmt(s)
@@ -688,12 +702,12 @@ class CodeGen:
         elif isinstance(s, If):
             self.w(f"if ({self.gen_expr(s.cond)}) {{")
             self.ind += 1
-            self.gen_stmt(s.then)
+            self.gen_scoped(lambda: self.gen_stmt(s.then))
             self.ind -= 1
             if s.els:
                 self.w("} else {")
                 self.ind += 1
-                self.gen_stmt(s.els)
+                self.gen_scoped(lambda: self.gen_stmt(s.els))
                 self.ind -= 1
             self.w("}")
         elif isinstance(s, Switch):
@@ -716,7 +730,7 @@ class CodeGen:
                     else:
                         self.w(f"}} else if ({cond}) {{")
                     self.ind += 1
-                    self.gen_block(body)
+                    self.gen_scoped(lambda b=body: self.gen_block(b))
                     self.ind -= 1
                 if s.default:
                     if first:
@@ -725,7 +739,7 @@ class CodeGen:
                     else:
                         self.w("} else {")
                     self.ind += 1
-                    self.gen_block(s.default)
+                    self.gen_scoped(lambda: self.gen_block(s.default))
                     self.ind -= 1
                 if not first:
                     self.w("}")
@@ -739,13 +753,13 @@ class CodeGen:
                 for val, body in s.cases:
                     self.w(f"case (long long)({self.gen_expr(val)}): {{")
                     self.ind += 1
-                    self.gen_block(body)
+                    self.gen_scoped(lambda b=body: self.gen_block(b))
                     self.ind -= 1
                     self.w("} break;")
                 if s.default:
                     self.w("default: {")
                     self.ind += 1
-                    self.gen_block(s.default)
+                    self.gen_scoped(lambda: self.gen_block(s.default))
                     self.ind -= 1
                     self.w("} break;")
                 self.ind -= 1
@@ -758,7 +772,7 @@ class CodeGen:
             self.w(f"int {mk} = well_ctx_mark(ctx);")
             self.push_scope(mk, True)
             self.continue_stack.append(None)
-            self.gen_stmt(s.body)
+            self.gen_scoped(lambda: self.gen_stmt(s.body))
             self.continue_stack.pop()
             self.emit_scope_release(mk)
             self.pop_scope(mk)
@@ -768,30 +782,36 @@ class CodeGen:
             it = self.gen_expr(s.iter)
             kind, et = self.container_info(getattr(s.iter, "ty", None) or "")
             n = self.next_id()
+            saved = dict(self.env)
             if kind == "array":
                 self.w(f"for (long long _i{n} = 0; _i{n} < well_array_len({it}); _i{n}++) {{")
                 self.ind += 1
                 self.w(f"{self.ctype(et)} {s.var} = {self.unbox_value(f'well_array_get({it}, _i{n})', et)};")
+                self.var_decl(s.var, et)
             elif kind == "linked":
                 self.w(f"for (WellLinkedNode* _n{n} = well_linked_first({it}); _n{n}; _n{n} = well_linked_next(_n{n})) {{")
                 self.ind += 1
                 self.w(f"{self.ctype(et)} {s.var} = {self.unbox_value(f'well_linked_value(_n{n})', et)};")
+                self.var_decl(s.var, et)
             else:
                 self.w(f"for (long long _i{n} = 0; _i{n} < well_map_len({it}); _i{n}++) {{")
                 self.ind += 1
                 self.w(f"WellString* {s.var} = well_map_key_at({it}, _i{n});")
+                self.var_decl(s.var, "String")
             m = self.next_id()
             mk = f"_m{m}"
             self.w(f"int {mk} = well_ctx_mark(ctx);")
             self.push_scope(mk, True)
             self.continue_stack.append(None)
-            self.gen_stmt(s.body)
+            self.gen_scoped(lambda: self.gen_stmt(s.body))
             self.continue_stack.pop()
             self.emit_scope_release(mk)
             self.pop_scope(mk)
             self.ind -= 1
             self.w("}")
+            self.env = saved
         elif isinstance(s, For):
+            saved = dict(self.env)
             self.w("{")
             self.ind += 1
             if s.init:
@@ -805,7 +825,7 @@ class CodeGen:
             self.push_scope(mk, True)
             cont = f"_cont{m}"
             self.continue_stack.append(cont)
-            self.gen_stmt(s.body)
+            self.gen_scoped(lambda: self.gen_stmt(s.body))
             self.continue_stack.pop()
             self.emit_scope_release(mk)
             self.w(f"{cont}: ;")
@@ -816,6 +836,7 @@ class CodeGen:
             self.w("}")
             self.ind -= 1
             self.w("}")
+            self.env = saved
         elif isinstance(s, Return):
             self.gen_return(s)
         elif isinstance(s, Break):
@@ -834,7 +855,7 @@ class CodeGen:
             mk = f"_m{m}"
             self.w(f"int {mk} = well_ctx_mark(ctx);")
             self.push_scope(mk, False)
-            self.gen_block(s)
+            self.gen_scoped(lambda: self.gen_block(s))
             self.emit_scope_release(mk)
             self.pop_scope(mk)
             self.ind -= 1

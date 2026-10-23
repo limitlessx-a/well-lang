@@ -1,0 +1,28 @@
+module demo.scope_shadow;
+
+controller Main {
+    run() {
+        var x: int = 1;
+        if (1 == 1) {
+            var x: String = "shadow";
+            print(x);
+        }
+        x = 5;
+        print(x);
+        var y: int = 0;
+        while (y < 2) {
+            var y2: String = "s";
+            y = y + 1;
+        }
+        print(y);
+        var z: int = 9;
+        {
+            var z: String = "inner";
+            print(z);
+        }
+        z = 10;
+        print(z);
+    }
+}
+
+entry Main;
