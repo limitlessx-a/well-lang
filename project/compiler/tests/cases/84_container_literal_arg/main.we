@@ -8,7 +8,7 @@ func sum(xs: Array<int>): int {
     return t;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(sum([1, 2, 3]));
     }

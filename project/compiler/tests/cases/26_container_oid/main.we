@@ -8,7 +8,7 @@ struct ItemVo extends Vo {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, PingHandler);
         var f = new ItemVo();
@@ -17,7 +17,7 @@ controller MainController extends Controller {
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         var a: Array<ItemVo> = [];
         a.push(e.foreign);

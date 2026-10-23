@@ -29,7 +29,7 @@ event GoEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(RoleConfig.title);
         print(RoleConfig.maxLevel);
@@ -46,7 +46,7 @@ controller MainController extends Controller {
     }
 }
 
-handler GoHandler extends Handler {
+handler GoHandler {
     onEvent(e: GoEvent) {
         print(RoleConfig.title);
         print(RoleConfig.maxLevel);

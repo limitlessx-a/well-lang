@@ -4,7 +4,7 @@ event AEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(AEvent, HandlerA);
         off(AEvent, HandlerA);
@@ -13,7 +13,7 @@ controller MainController extends Controller {
     }
 }
 
-handler HandlerA extends Handler {
+handler HandlerA {
     onEvent(e: AEvent) {
         print("should not print");
     }

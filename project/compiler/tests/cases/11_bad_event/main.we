@@ -4,13 +4,13 @@ event PingEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(MissingEvent, Handler);
     }
 }
 
-handler Handler extends Handler {
+handler Handler {
     onEvent(e: PingEvent) {
         print("should not compile");
     }

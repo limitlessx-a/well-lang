@@ -1,6 +1,6 @@
 module demo.mysqlpool;
 
-controller PoolController extends Controller {
+controller PoolController {
     run() {
         Mysql.pool("127.0.0.1", 3306, "root", "db@root", "mysql", 1, 4);
         Mysql.execPool("SET @well_pool_x = 1");

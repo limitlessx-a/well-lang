@@ -22,7 +22,7 @@ event WsBusinessEvent extends Event {
     text: String;
 }
 
-controller WsController extends Controller {
+controller WsController {
     run() {
         on(WsBusinessEvent, WsBizHandler);
         Ws.route("/chat", WsOpenHandler, WsMessageHandler, WsCloseHandler);
@@ -30,19 +30,19 @@ controller WsController extends Controller {
     }
 }
 
-handler WsOpenHandler extends Handler {
+handler WsOpenHandler {
     onEvent(e: WsOpenEvent) {
         Ws.send(e.clientId, "welcome");
     }
 }
 
-handler WsMessageHandler extends Handler {
+handler WsMessageHandler {
     onEvent(e: WsMessageEvent) {
         emit(new WsBusinessEvent(0) { clientId: e.clientId, text: e.text });
     }
 }
 
-handler WsBizHandler extends Handler {
+handler WsBizHandler {
     onEvent(e: WsBusinessEvent) {
         Ws.send(e.clientId, e.text);
         Ws.close(e.clientId, 1000, "bye");
@@ -50,7 +50,7 @@ handler WsBizHandler extends Handler {
     }
 }
 
-handler WsCloseHandler extends Handler {
+handler WsCloseHandler {
     onEvent(e: WsCloseEvent) {
         print("closed ", e.code);
     }

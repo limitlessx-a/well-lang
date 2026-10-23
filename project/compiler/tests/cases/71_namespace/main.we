@@ -17,7 +17,7 @@ namespace UserTool {
     }
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(UserTool.add(1, 2));
         print(UserTool.sub(9, 4));

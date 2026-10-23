@@ -25,14 +25,14 @@ func add(a: int, b: int): int {
     return a + b;
 }
 
-controller ChildController extends Controller {
+controller ChildController {
     run() {
         on(PingEvent, ChildPingHandler);
         print("child controller started");
     }
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print("main controller started");
         start(ChildController);
@@ -56,7 +56,7 @@ controller MainController extends Controller {
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         print("ping handler:", e.n);
         var c: CounterVo = Model.get(CounterVo, e.n);
@@ -72,13 +72,13 @@ handler PingHandler extends Handler {
     }
 }
 
-handler ChildPingHandler extends Handler {
+handler ChildPingHandler {
     onEvent(e: PingEvent) {
         print("child ping handler:", e.n);
     }
 }
 
-handler OnceHandler extends Handler {
+handler OnceHandler {
     onEvent(e: OnceEvent) {
         print("once handler fired:", e.n);
     }

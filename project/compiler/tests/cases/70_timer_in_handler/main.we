@@ -10,21 +10,21 @@ event TickEvent extends Event {
     fires: long;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(GoEvent, GoHandler);
         emit(new GoEvent(0) { n: 1 });
     }
 }
 
-handler GoHandler extends Handler {
+handler GoHandler {
     onEvent(e: GoEvent) {
         print("go");
         Timer.once(20, TickHandler);
     }
 }
 
-handler TickHandler extends Handler {
+handler TickHandler {
     onEvent(e: TickEvent) {
         print("tick ", e.fires);
     }

@@ -11,7 +11,7 @@ event ReadEvent extends Event {
     item: ItemVo;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(MakeEvent, MakeHandler);
         on(ReadEvent, ReadHandler);
@@ -19,7 +19,7 @@ controller MainController extends Controller {
     }
 }
 
-handler MakeHandler extends Handler {
+handler MakeHandler {
     onEvent(e: MakeEvent) {
         var item: ItemVo = new ItemVo();
         item.value = 100;
@@ -28,7 +28,7 @@ handler MakeHandler extends Handler {
     }
 }
 
-handler ReadHandler extends Handler {
+handler ReadHandler {
     onEvent(e: ReadEvent) {
         print("foreign value:", e.item.value);
     }

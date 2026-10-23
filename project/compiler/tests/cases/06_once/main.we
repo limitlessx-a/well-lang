@@ -4,7 +4,7 @@ event AEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         once(AEvent, HandlerA);
         emit(new AEvent(1) { n: 1 });
@@ -12,7 +12,7 @@ controller MainController extends Controller {
     }
 }
 
-handler HandlerA extends Handler {
+handler HandlerA {
     onEvent(e: AEvent) {
         print("once ", e.n);
     }

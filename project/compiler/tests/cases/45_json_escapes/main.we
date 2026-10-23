@@ -4,7 +4,7 @@ struct TextVo extends Vo {
     text: String;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var v: TextVo = Json.parse(TextVo, "{\"text\":\"a\\nb\\u4f60\\u597d\"}");
         print(v.text);

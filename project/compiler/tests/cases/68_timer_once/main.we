@@ -6,7 +6,7 @@ event TickEvent extends Event {
     fires: long;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var cancelled: long = Timer.once(1000, LaterHandler);
         Timer.cancel(cancelled);
@@ -15,13 +15,13 @@ controller MainController extends Controller {
     }
 }
 
-handler TickHandler extends Handler {
+handler TickHandler {
     onEvent(e: TickEvent) {
         print("tick ", e.fires);
     }
 }
 
-handler LaterHandler extends Handler {
+handler LaterHandler {
     onEvent(e: TickEvent) {
         print("cancelled fired");
     }

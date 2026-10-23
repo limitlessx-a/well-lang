@@ -1,6 +1,6 @@
 module demo.mysql;
 
-controller MysqlController extends Controller {
+controller MysqlController {
     run() {
         Mysql.connect("127.0.0.1", 3306, "root", "db@root", "mysql");
         Mysql.exec("SET @well_x = 1");

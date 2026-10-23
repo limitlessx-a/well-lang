@@ -1,6 +1,6 @@
 module demo.linked;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var l: Linked<int> = new Linked<int>();
 

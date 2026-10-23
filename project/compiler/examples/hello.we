@@ -10,7 +10,7 @@ event UserLoginEvent extends Event {
     name: String;
 }
 
-controller AppController extends Controller {
+controller AppController {
     run() {
         on(UserLoginEvent, UserHandler);
 
@@ -22,7 +22,7 @@ controller AppController extends Controller {
     }
 }
 
-handler UserHandler extends Handler {
+handler UserHandler {
     onEvent(e: UserLoginEvent) {
         print("handler oid =", e.id, ", name =", e.name);
 

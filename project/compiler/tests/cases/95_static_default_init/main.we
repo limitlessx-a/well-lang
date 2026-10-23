@@ -14,7 +14,7 @@ event TickEvent extends Event {
     fires: long;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         Cfg.buf.appendStr("!");
         print(Cfg.arr.length, " ", Cfg.arr[2]);
@@ -25,7 +25,7 @@ controller MainController extends Controller {
     }
 }
 
-handler TickHandler extends Handler {
+handler TickHandler {
     onEvent(e: TickEvent) {
         print(Cfg.arr[0]);
         print(Cfg.buf.length);

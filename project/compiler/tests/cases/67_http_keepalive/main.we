@@ -8,7 +8,7 @@ event HttpRequestEvent extends Event {
     body: String;
 }
 
-controller HttpController extends Controller {
+controller HttpController {
     run() {
         Http.route("/a", "GET", AHandler);
         Http.route("/b", "GET", BHandler);
@@ -16,13 +16,13 @@ controller HttpController extends Controller {
     }
 }
 
-handler AHandler extends Handler {
+handler AHandler {
     onEvent(e: HttpRequestEvent) {
         Http.respond(e.reqId, 200, "alpha");
     }
 }
 
-handler BHandler extends Handler {
+handler BHandler {
     onEvent(e: HttpRequestEvent) {
         Http.respond(e.reqId, 200, "beta");
         Http.stop();

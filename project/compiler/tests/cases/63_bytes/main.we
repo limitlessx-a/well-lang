@@ -1,6 +1,6 @@
 module demo.bytes;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var b: Bytes = new Bytes();
         print(b.length);

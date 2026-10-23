@@ -8,14 +8,14 @@ event TickEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(TickEvent, TickHandler);
         emit(new TickEvent(1) { n: 1 });
     }
 }
 
-handler TickHandler extends Handler {
+handler TickHandler {
     onEvent(e: TickEvent) {
         var t: TempVo = new TempVo();
         t.value = 1;

@@ -12,7 +12,7 @@ event TouchEvent extends Event {
     item: ItemVo;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(TouchEvent, TouchHandler);
         var item: ItemVo = new ItemVo();
@@ -24,7 +24,7 @@ controller MainController extends Controller {
     }
 }
 
-handler TouchHandler extends Handler {
+handler TouchHandler {
     onEvent(e: TouchEvent) {
         print("foreign item value:", e.item.value);
         e.item.value = 99;

@@ -152,7 +152,7 @@ controller MainController {
 - 单例；`start(C)` 幂等，`stop(C)` 注销该 controller 的订阅并允许重启；
 - `run()` 在事件循环前执行，`ctx.oid = 0`（装配期 oid）；
 - 可以在 `run()` 里注册路由/订阅、初始化 static、创建 **oid=0 系统级只读数据**；
-- `controller A extends B` 的父类逻辑不会执行（不支持继承，不要写）。
+- **controller/handler 不支持 `extends`**：语法已移除，写了会直接编译错误（不再静默忽略）。
 
 #### handler
 

@@ -47,7 +47,7 @@
   "controller": {
     "prefix": "controller",
     "body": [
-      "controller ${1:MainController} extends ${2:Controller} {",
+      "controller ${1:MainController} {",
       "\trun() {",
       "\t\t$0",
       "\t}",
@@ -58,7 +58,7 @@
   "controller-entry": {
     "prefix": "ctrlentry",
     "body": [
-      "controller ${1:MainController} extends ${2:Controller} {",
+      "controller ${1:MainController} {",
       "\trun() {",
       "\t\t$0",
       "\t}",
@@ -71,8 +71,8 @@
   "handler": {
     "prefix": "handler",
     "body": [
-      "handler ${1:NameHandler} extends ${2:Handler} {",
-      "\tonEvent(e: ${3:PingEvent}) {",
+      "handler ${1:NameHandler} {",
+      "\tonEvent(e: ${2:PingEvent}) {",
       "\t\t$0",
       "\t}",
       "}"

@@ -8,14 +8,14 @@ event HttpRequestEvent extends Event {
     body: String;
 }
 
-controller HttpController extends Controller {
+controller HttpController {
     run() {
         Http.route("/hello", "GET", HelloHandler);
         Http.listen(18080);
     }
 }
 
-handler HelloHandler extends Handler {
+handler HelloHandler {
     onEvent(e: HttpRequestEvent) {
         Http.respond(e.reqId, 200, "hello");
         Http.stop();

@@ -1,6 +1,6 @@
 module demo.switcherr;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var x: int = 1;
         switch (1) {

@@ -18,7 +18,7 @@ struct UserVo extends Vo {
     list: Linked<int>;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var text: String = "{\"id\":123,\"name\":\"alice\",\"age\":30,\"active\":true,\"score\":1.5,\"addr\":{\"city\":\"NY\",\"zip\":10001},\"addrs\":[{\"city\":\"LA\",\"zip\":2},{\"city\":\"SF\",\"zip\":3}],\"tags\":[\"a\",\"b\"],\"counts\":{\"x\":7,\"y\":8},\"list\":[10,20]}";
         var u: UserVo = Json.parse(UserVo, text);

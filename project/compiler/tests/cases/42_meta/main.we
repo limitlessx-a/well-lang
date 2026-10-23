@@ -16,7 +16,7 @@ struct MetaVo extends Vo {
     link: Linked<ChildVo>;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print("meta ok");
     }

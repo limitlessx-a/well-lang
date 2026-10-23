@@ -4,7 +4,7 @@ struct ItemVo extends Vo {
     v: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var a = new ItemVo() { v: 7 };
         Model.set(a);

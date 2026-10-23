@@ -4,7 +4,7 @@ static RoleConfig {
     maxLevel: int = 1;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var c: RoleConfig = new RoleConfig();
         print(c.maxLevel);

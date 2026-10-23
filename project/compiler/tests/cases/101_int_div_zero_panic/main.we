@@ -4,7 +4,7 @@ event GoEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(GoEvent, GoHandler);
         emit(new GoEvent(1) { n: 1 });
@@ -12,7 +12,7 @@ controller MainController extends Controller {
     }
 }
 
-handler GoHandler extends Handler {
+handler GoHandler {
     onEvent(e: GoEvent) {
         var zero: int = 0;
         var a: int = 10;

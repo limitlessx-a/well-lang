@@ -13,7 +13,7 @@ event RoleBusinessEvent extends Event {
     value: String;
 }
 
-controller HttpController extends Controller {
+controller HttpController {
     run() {
         on(RoleBusinessEvent, BizHandler);
         Http.route("/biz", "GET", IngressHandler);
@@ -21,14 +21,14 @@ controller HttpController extends Controller {
     }
 }
 
-handler IngressHandler extends Handler {
+handler IngressHandler {
     onEvent(e: HttpRequestEvent) {
         print("ingress ", e.path);
         emit(new RoleBusinessEvent(0) { reqId: e.reqId, value: "business-ok" });
     }
 }
 
-handler BizHandler extends Handler {
+handler BizHandler {
     onEvent(e: RoleBusinessEvent) {
         print("biz ", e.value);
         Http.respond(e.reqId, 200, e.value);

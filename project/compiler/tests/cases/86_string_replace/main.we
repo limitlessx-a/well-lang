@@ -1,6 +1,6 @@
 module demo.replace;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var s: String = "a-b-c";
         print(s.replace("-", "+"));

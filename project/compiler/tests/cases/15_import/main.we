@@ -2,7 +2,7 @@ module app.main;
 
 import "lib/item.we";
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var item: ItemVo = new ItemVo();
         item.value = 5;

@@ -238,13 +238,16 @@ class Parser:
         body = self.parse_block()
         return MethodDecl(name, params, ret, body)
 
+    def reject_extends(self):
+        """controller/handler 的继承未实现，语法上也已移除。"""
+        if self.at("extends"):
+            self.err("controller/handler does not support extends (inheritance is not implemented)")
+
     def parse_controller(self) -> ControllerDecl:
         self.eat("controller")
         name = self.eat_id()
+        self.reject_extends()
         base = None
-        if self.at("extends"):
-            self.eat("extends")
-            base = self.eat_id()
         self.eat("{")
         methods = []
         while not self.at("}"):
@@ -255,10 +258,8 @@ class Parser:
     def parse_handler(self) -> HandlerDecl:
         self.eat("handler")
         name = self.eat_id()
+        self.reject_extends()
         base = None
-        if self.at("extends"):
-            self.eat("extends")
-            base = self.eat_id()
         self.eat("{")
         methods = []
         while not self.at("}"):

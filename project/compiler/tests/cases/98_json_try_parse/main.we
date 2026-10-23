@@ -5,7 +5,7 @@ struct Item {
     b: String;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var ok: Item = Json.tryParse(Item, "{\"a\":1,\"b\":\"x\"}");
         if (ok != null) {

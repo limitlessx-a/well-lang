@@ -4,7 +4,7 @@ event PingEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, GlobalHandler);
         on(PingEvent, ChannelOneHandler, 1);
@@ -15,19 +15,19 @@ controller MainController extends Controller {
     }
 }
 
-handler GlobalHandler extends Handler {
+handler GlobalHandler {
     onEvent(e: PingEvent) {
         print("global ", e.n);
     }
 }
 
-handler ChannelOneHandler extends Handler {
+handler ChannelOneHandler {
     onEvent(e: PingEvent) {
         print("channel1 ", e.n);
     }
 }
 
-handler AllHandler extends Handler {
+handler AllHandler {
     onEvent(e: PingEvent) {
         print("all ", e.n);
     }

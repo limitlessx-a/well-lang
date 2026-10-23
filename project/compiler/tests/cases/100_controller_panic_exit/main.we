@@ -4,7 +4,7 @@ struct X {
     a: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var x: X = Json.parse(X, "bad");
     }

@@ -8,7 +8,7 @@ event ChanEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingHandler);
         on(ChanHandler, 7);
@@ -27,37 +27,37 @@ controller MainController extends Controller {
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         print("ping ", e.n);
     }
 }
 
-handler OnceHandler extends Handler {
+handler OnceHandler {
     onEvent(e: PingEvent) {
         print("once ", e.n);
     }
 }
 
-handler ExplicitHandler extends Handler {
+handler ExplicitHandler {
     onEvent(e: PingEvent) {
         print("explicit ", e.n);
     }
 }
 
-handler ChanHandler extends Handler {
+handler ChanHandler {
     onEvent(e: ChanEvent) {
         print("chan7 ", e.n);
     }
 }
 
-handler NeverHandler extends Handler {
+handler NeverHandler {
     onEvent(e: PingEvent) {
         print("never ", e.n);
     }
 }
 
-handler ChanNeverHandler extends Handler {
+handler ChanNeverHandler {
     onEvent(e: ChanEvent) {
         print("chan-never ", e.n);
     }

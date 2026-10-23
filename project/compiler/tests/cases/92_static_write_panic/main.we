@@ -9,7 +9,7 @@ event GoEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         Cfg.title = "startup";
         Cfg.n = 2;
@@ -20,7 +20,7 @@ controller MainController extends Controller {
     }
 }
 
-handler GoHandler extends Handler {
+handler GoHandler {
     onEvent(e: GoEvent) {
         if (e.n == 1) {
             Cfg.title = "runtime";

@@ -1,6 +1,6 @@
 module demo.brkout;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         break;
     }

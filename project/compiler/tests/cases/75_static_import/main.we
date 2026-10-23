@@ -6,7 +6,7 @@ event PingEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(AppConfig.name);
         print(AppConfig.port);
@@ -18,7 +18,7 @@ controller MainController extends Controller {
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         print(AppUtil.addr());
     }

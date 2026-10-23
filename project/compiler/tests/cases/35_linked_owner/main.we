@@ -9,7 +9,7 @@ struct ItemVo extends Vo {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, PingHandler);
 
@@ -22,7 +22,7 @@ controller MainController extends Controller {
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         e.l.pushTail(e.item);   // ctx.oid = 2, l.oid = 0 -> must panic
         print("should not print");

@@ -6,7 +6,7 @@ namespace U {
     }
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(U.f());
     }

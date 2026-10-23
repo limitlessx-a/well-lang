@@ -12,7 +12,7 @@ event UpdateEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(CreateEvent, CreateHandler);
         on(UpdateEvent, UpdateHandler);
@@ -21,7 +21,7 @@ controller MainController extends Controller {
     }
 }
 
-handler CreateHandler extends Handler {
+handler CreateHandler {
     onEvent(e: CreateEvent) {
         var item: ItemVo = new ItemVo();
         item.value = 10;
@@ -30,7 +30,7 @@ handler CreateHandler extends Handler {
     }
 }
 
-handler UpdateHandler extends Handler {
+handler UpdateHandler {
     onEvent(e: UpdateEvent) {
         var item: ItemVo = Model.get(ItemVo, 1);
         print("updating foreign item");

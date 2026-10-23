@@ -1,6 +1,6 @@
 module demo.control;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var i: int = 0;
         while (i < 5) {

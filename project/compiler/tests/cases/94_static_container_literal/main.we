@@ -11,7 +11,7 @@ event TickEvent extends Event {
     fires: long;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         Cfg.arr = [10, 20, 30];
         Cfg.names = {"a": 1, "b": 2};
@@ -21,7 +21,7 @@ controller MainController extends Controller {
     }
 }
 
-handler TickHandler extends Handler {
+handler TickHandler {
     onEvent(e: TickEvent) {
         print(Cfg.arr.length, " ", Cfg.arr[2]);
         print(Cfg.names.get("a"));

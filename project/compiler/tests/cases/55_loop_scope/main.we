@@ -7,14 +7,14 @@ struct Temp extends Vo {
 event PingEvent extends Event {
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, PingHandler);
         emit(new PingEvent());
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         for (var i: int = 0; i < 1000; i = i + 1) {
             var t = new Temp();

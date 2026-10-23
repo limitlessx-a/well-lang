@@ -1,6 +1,6 @@
 module demo.filehost;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var path: String = "build/well_file_host_test.txt";
 

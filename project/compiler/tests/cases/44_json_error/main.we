@@ -8,14 +8,14 @@ struct TinyVo extends Vo {
     x: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, PingHandler);
         emit(new PingEvent(1) { n: 1 });
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         var u: TinyVo = Json.parse(TinyVo, "{\"x\":}");
         print("should not print ", u.x);

@@ -4,14 +4,14 @@ event PingEvent extends Event {
     n: int;
 }
 
-controller ChildController extends Controller {
+controller ChildController {
     run() {
         print("child started");
         on(PingEvent, ChildHandler);
     }
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         start(ChildController);
         start(ChildController);
@@ -21,13 +21,13 @@ controller MainController extends Controller {
     }
 }
 
-handler ChildHandler extends Handler {
+handler ChildHandler {
     onEvent(e: PingEvent) {
         print("child ", e.n);
     }
 }
 
-handler MainHandler extends Handler {
+handler MainHandler {
     onEvent(e: PingEvent) {
         print("main ", e.n);
     }

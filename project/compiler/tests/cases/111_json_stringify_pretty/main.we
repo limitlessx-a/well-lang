@@ -11,7 +11,7 @@ struct Item {
     m: Map<int>;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var item: Item = new Item();
         item.a = 1;

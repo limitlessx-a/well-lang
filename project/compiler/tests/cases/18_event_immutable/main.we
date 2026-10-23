@@ -4,14 +4,14 @@ event PingEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, Handler);
         emit(new PingEvent(1) { n: 1 });
     }
 }
 
-handler Handler extends Handler {
+handler Handler {
     onEvent(e: PingEvent) {
         print("before:", e.n);
         e.n = 2;

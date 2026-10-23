@@ -4,7 +4,7 @@ func join(a: String, b: String): String {
     return a + "|" + b;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var s: String = join("a", "b");
         print(s);

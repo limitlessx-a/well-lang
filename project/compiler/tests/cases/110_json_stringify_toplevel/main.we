@@ -1,6 +1,6 @@
 module demo.jsontop;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var a: Array<int> = [1, 2];
         print(Json.stringify(a));

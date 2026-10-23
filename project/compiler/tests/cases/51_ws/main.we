@@ -17,20 +17,20 @@ event WsCloseEvent extends Event {
     reason: String;
 }
 
-controller WsController extends Controller {
+controller WsController {
     run() {
         Ws.route("/chat", WsOpenHandler, WsMessageHandler, WsCloseHandler);
         Ws.listen(18082);
     }
 }
 
-handler WsOpenHandler extends Handler {
+handler WsOpenHandler {
     onEvent(e: WsOpenEvent) {
         Ws.send(e.clientId, "welcome");
     }
 }
 
-handler WsMessageHandler extends Handler {
+handler WsMessageHandler {
     onEvent(e: WsMessageEvent) {
         Ws.send(e.clientId, e.text);
         Ws.close(e.clientId, 1000, "bye");
@@ -38,7 +38,7 @@ handler WsMessageHandler extends Handler {
     }
 }
 
-handler WsCloseHandler extends Handler {
+handler WsCloseHandler {
     onEvent(e: WsCloseEvent) {
         print("closed ", e.code);
     }

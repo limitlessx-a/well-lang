@@ -5,7 +5,7 @@ enum Kind {
     B = 2;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var x: int = 2;
         switch (x) {

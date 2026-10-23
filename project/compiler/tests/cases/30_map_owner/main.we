@@ -4,7 +4,7 @@ event PingEvent extends Event {
     m: Map<int>;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, PingHandler);
 
@@ -15,7 +15,7 @@ controller MainController extends Controller {
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         e.m.set("x", 2);   // ctx.oid = 2, m.oid = 0 -> must panic
         print("should not print");

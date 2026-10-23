@@ -1,6 +1,6 @@
 module demo.jsonstringifyerr;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(Json.stringify(1, "x"));
     }

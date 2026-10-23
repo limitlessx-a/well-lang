@@ -885,7 +885,7 @@ async function main() {
       "    RUNNING;",
       "}",
       "",
-      "controller DefController extends Controller {",
+      "controller DefController {",
       "    run() {",
       "        var item: ItemVo = new ItemVo();",
       "        item.value = 1;",

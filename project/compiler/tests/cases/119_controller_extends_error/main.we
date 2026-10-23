@@ -1,0 +1,11 @@
+module demo.ctrl_ext;
+
+controller BaseController {
+    run() {}
+}
+
+controller ChildController extends BaseController {
+    run() {}
+}
+
+entry ChildController;

@@ -10,14 +10,14 @@ event HttpRequestEvent extends Event {
     body: String;
 }
 
-controller HttpController extends Controller {
+controller HttpController {
     run() {
         Http.route("/parse", "POST", ParseHandler);
         Http.listen(18088);
     }
 }
 
-handler ParseHandler extends Handler {
+handler ParseHandler {
     onEvent(e: HttpRequestEvent) {
         var r: ParsedReq = parseRequest(e.body);
         if (!r.ok) {

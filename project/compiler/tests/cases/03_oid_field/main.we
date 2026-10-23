@@ -12,7 +12,7 @@ event TouchEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(MakeEvent, MakeHandler);
         on(TouchEvent, TouchHandler);
@@ -21,7 +21,7 @@ controller MainController extends Controller {
     }
 }
 
-handler MakeHandler extends Handler {
+handler MakeHandler {
     onEvent(e: MakeEvent) {
         var item: ItemVo = new ItemVo();
         item.value = 100;
@@ -30,7 +30,7 @@ handler MakeHandler extends Handler {
     }
 }
 
-handler TouchHandler extends Handler {
+handler TouchHandler {
     onEvent(e: TouchEvent) {
         var item: ItemVo = Model.get(ItemVo, 1);
         print("trying to write oid 1 from handler oid", e.n);

@@ -6,13 +6,13 @@ event TickEvent extends Event {
     fires: long;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         Timer.loop(10, TickHandler);
     }
 }
 
-handler TickHandler extends Handler {
+handler TickHandler {
     onEvent(e: TickEvent) {
         print("tick ", e.fires, " every ", e.interval);
         if (e.fires >= 3) {

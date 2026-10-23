@@ -8,7 +8,7 @@ event PongEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, PingHandler);
         on(PongEvent, PongHandler);
@@ -17,19 +17,19 @@ controller MainController extends Controller {
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         print("should not print ping");
     }
 }
 
-handler PongHandler extends Handler {
+handler PongHandler {
     onEvent(e: PongEvent) {
         print("pong ", e.n);
     }
 }
 
-handler OnceHandler extends Handler {
+handler OnceHandler {
     onEvent(e: PongEvent) {
         print("once ", e.n);
     }

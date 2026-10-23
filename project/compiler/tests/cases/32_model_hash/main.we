@@ -8,7 +8,7 @@ struct ItemVo extends Vo {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, PingHandler);
 
@@ -22,7 +22,7 @@ controller MainController extends Controller {
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         if (e.n > 0) {
             var vo = Model.get(ItemVo, oid);

@@ -19,7 +19,7 @@ func show(r: ParsedReq): void {
     print("len ", r.body.length);
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var raw1: String = "GET /index.html?a=1&b=2 HTTP/1.1\r\nHost: example.com\r\nUser-Agent: well\r\nContent-Type: text/plain\r\nContent-Length: 11\r\n\r\nhello world";
         var r1: ParsedReq = parseRequest(raw1);

@@ -1,6 +1,6 @@
 module demo.intoverflow;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var x: int = 2147483647 + 1;
         print(x);

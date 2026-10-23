@@ -1,0 +1,21 @@
+module demo.handler_ext;
+
+event PingEvent {
+    n: int;
+}
+
+handler BaseHandler {
+    onEvent(e: PingEvent) {}
+}
+
+handler PingHandler extends BaseHandler {
+    onEvent(e: PingEvent) {}
+}
+
+controller MainController {
+    run() {
+        on(PingHandler);
+    }
+}
+
+entry MainController;

@@ -12,7 +12,7 @@ event ChildEvent extends Event {
     child: ChildVo;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var c: ChildVo = new ChildVo();
         c.a = 7;

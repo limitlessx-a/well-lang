@@ -66,8 +66,8 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 | `E.fromInt(v)` / `E.toString(v)` | ✅ | int 枚举：整数→枚举值（未知→0）、值→成员名 String（未知→""）；String 枚举只支持 `toString`（值→成员名） |
 | `struct S extends Base { f: T; }` | ✅ | 继承字段展平（无多态）；`extends Base` 可省略，默认 `Vo` |
 | `event E extends Event { ... }` | ✅ | 事件类型即身份；无 `bind`，无名字注册表；`extends Event` 可省略，默认 `Event` |
-| `controller C extends Controller { run(){...} }` | ✅ | 单例装配器；`start(C)` 幂等，无 `start(C, oid)`；`extends Controller` 可省略，默认 `Controller` |
-| `handler H extends Handler { onEvent(e:E){...} }` | ✅ | 也接受 `handle`/`on`/`handler` 方法名；`extends Handler` 可省略，默认 `Handler` |
+| `controller C { run(){...} }` | ✅ | 单例装配器；`start(C)` 幂等，无 `start(C, oid)`；不支持 `extends`（语法已移除） |
+| `handler H { onEvent(e:E){...} }` | ✅ | 也接受 `handle`/`on`/`handler` 方法名；不支持 `extends`（语法已移除） |
 | `func f(a:int):int { ... }` | ✅ | 生成带隐藏 `WellCtx*` 的 C 函数 |
 | `namespace N { f(a:int):int {...} }` | ✅ | 静态函数集合；`N.f(...)` 编译期解析，生成 `static N__f(WellCtx*, ...)`，零运行时开销、不占 oid/RC |
 | `static S { f: int = 1; m(): int {...} }` | ✅ | 静态类：**启动期可写、运行期只读**的静态字段 + 静态函数，不可实例化；`S.f` / `S.m()` 编译期解析 |

@@ -1,6 +1,6 @@
 module demo.sortrev;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var xs: Array<int> = [3, 1, 2, 5, 4];
         xs.sort();

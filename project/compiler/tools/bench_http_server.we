@@ -10,14 +10,14 @@ event HttpRequestEvent extends Event {
     body: String;
 }
 
-controller BenchController extends Controller {
+controller BenchController {
     run() {
         Http.route("/bench", "GET", BenchHandler);
         Http.listen({{PORT}});
     }
 }
 
-handler BenchHandler extends Handler {
+handler BenchHandler {
     onEvent(e: HttpRequestEvent) {
         Http.respond(e.reqId, 200, "ok");
     }

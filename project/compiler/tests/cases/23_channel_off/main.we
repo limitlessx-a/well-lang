@@ -4,7 +4,7 @@ event PingEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, HandlerA, 1);
         off(PingEvent, HandlerA, 1);
@@ -16,13 +16,13 @@ controller MainController extends Controller {
     }
 }
 
-handler HandlerA extends Handler {
+handler HandlerA {
     onEvent(e: PingEvent) {
         print("a ", e.n);
     }
 }
 
-handler HandlerB extends Handler {
+handler HandlerB {
     onEvent(e: PingEvent) {
         print("b ", e.n);
     }

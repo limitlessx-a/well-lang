@@ -5,7 +5,7 @@
 - `module` / `import`（本地相对/点路径解析，声明合并）
 - `const` / `enum`（int、String；enum 不再承担事件名；`E.fromInt(v)` / `E.toString(v)`）
 - `struct`（单继承字段展平）、`event`（事件类型即身份，无 `bind`）
-- 根类型继承可省略：`struct S` ≡ `extends Vo`，`event E` ≡ `extends Event`，`controller C` ≡ `extends Controller`，`handler H` ≡ `extends Handler`
+- 根类型：`struct S` ≡ `extends Vo`，`event E` ≡ `extends Event`；**controller/handler 不支持 `extends`（写了编译错误）**
 - `controller`（`on/once/off/start/stop/emit/run`）；`start(C)` 单例幂等，`stop(C)` 注销该 controller 类型的订阅并允许重新 start
 - `handler`（`onEvent` 事件处理、无字段）
 - `func` 函数

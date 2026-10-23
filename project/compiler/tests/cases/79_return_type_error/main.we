@@ -4,7 +4,7 @@ func f(): int {
     return "abc";
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(f());
     }

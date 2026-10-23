@@ -8,7 +8,7 @@ func f(): int {
     return 2;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(f());
     }

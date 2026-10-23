@@ -12,7 +12,7 @@ event ReplaceEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(MakeEvent, MakeHandler);
         on(ReplaceEvent, ReplaceHandler);
@@ -21,7 +21,7 @@ controller MainController extends Controller {
     }
 }
 
-handler MakeHandler extends Handler {
+handler MakeHandler {
     onEvent(e: MakeEvent) {
         var item: ItemVo = new ItemVo();
         item.value = 1;
@@ -30,7 +30,7 @@ handler MakeHandler extends Handler {
     }
 }
 
-handler ReplaceHandler extends Handler {
+handler ReplaceHandler {
     onEvent(e: ReplaceEvent) {
         var item: ItemVo = Model.get(ItemVo, e.n);
         if (item != null) {

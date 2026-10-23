@@ -8,14 +8,14 @@ event GoEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(GoEvent, GoHandler);
         emit(new GoEvent(1) { n: 1 });
     }
 }
 
-handler GoHandler extends Handler {
+handler GoHandler {
     onEvent(e: GoEvent) {
         var x: X = Json.parse(X, "bad");
         print("should not print");

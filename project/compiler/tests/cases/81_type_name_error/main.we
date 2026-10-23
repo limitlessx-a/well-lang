@@ -4,7 +4,7 @@ struct S {
     a: Nope;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(1);
     }

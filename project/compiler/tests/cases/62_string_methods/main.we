@@ -1,6 +1,6 @@
 module demo.strmethods;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var s: String = "  Hello,World  ";
         var t: String = s.trim();

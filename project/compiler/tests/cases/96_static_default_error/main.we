@@ -4,7 +4,7 @@ static Cfg {
     n: int = [1, 2];
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(Cfg.n);
     }

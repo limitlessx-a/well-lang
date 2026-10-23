@@ -14,7 +14,7 @@ func buildRequest(): String {
     return b.toString();
 }
 
-controller BenchController extends Controller {
+controller BenchController {
     run() {
         var raw: String = buildRequest();
         var iters: long = 20000;

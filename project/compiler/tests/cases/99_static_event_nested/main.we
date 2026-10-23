@@ -12,7 +12,7 @@ static Cfg {
     h: Holder;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(1);
     }

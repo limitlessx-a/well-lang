@@ -8,14 +8,14 @@ struct ItemVo extends Vo {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, PingHandler);
         emit(new PingEvent(1) { n: 1 });
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         var l: Linked<ItemVo> = new Linked<ItemVo>();
 

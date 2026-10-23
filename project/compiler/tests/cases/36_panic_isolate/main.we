@@ -8,7 +8,7 @@ struct ItemVo extends Vo {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         on(PingEvent, PingHandler);
         emit(new PingEvent(1) { n: 1 });
@@ -17,7 +17,7 @@ controller MainController extends Controller {
     }
 }
 
-handler PingHandler extends Handler {
+handler PingHandler {
     onEvent(e: PingEvent) {
         if (e.n == 1) {
             Model.remove(ItemVo, oid + 1);   // panic: oid mismatch

@@ -1,6 +1,6 @@
 module demo.maphash;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var keys: Array<String> = [
             "k0", "k1", "k2", "k3", "k4",

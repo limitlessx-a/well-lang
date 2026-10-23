@@ -1,6 +1,6 @@
 module demo.intdivconst;
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         var x: int = 1 / 0;
         print(x);

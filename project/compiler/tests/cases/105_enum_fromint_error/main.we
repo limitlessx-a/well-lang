@@ -4,7 +4,7 @@ enum Color {
     RED = "red"
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         print(Color.fromInt(1));
     }

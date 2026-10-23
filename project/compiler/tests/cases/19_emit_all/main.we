@@ -4,7 +4,7 @@ event PingEvent extends Event {
     n: int;
 }
 
-controller MainController extends Controller {
+controller MainController {
     run() {
         emit(new PingEvent(1) { n: 1 }, ALL);
     }
