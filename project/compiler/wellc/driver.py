@@ -405,6 +405,8 @@ def check_file(path: str) -> tuple[dict, int]:
     order: list = []
     try:
         _scan_for_check(path, cache, order, diags)
+    except CheckIOError:
+        raise  # exit code 2, reported by the CLI (not an internal diagnostic)
     except Exception as e:  # noqa: BLE001 - --json must stay machine-readable
         diags.append(make(path, 1, 1, 1, 2, "error",
                           f"internal compiler error: {type(e).__name__}: {e}", "internal"))

@@ -1,0 +1,10 @@
+module demo.null_compare_error;
+
+controller Main {
+    run() {
+        var x: int = 1;
+        print(x == null);
+    }
+}
+
+entry Main;

@@ -1,0 +1,13 @@
+module demo.ternary_ok;
+
+controller Main {
+    run() {
+        var a: String = null;
+        var b: String = "fallback";
+        print(a == null ? b : a);
+        var n: int = 2;
+        print(n > 1 ? 10 : 20);
+    }
+}
+
+entry Main;

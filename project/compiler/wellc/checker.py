@@ -233,13 +233,19 @@ class Checker:
             elif isinstance(d, HandlerDecl):
                 self.handlers[d.name] = d
                 seen_m = set()
+                event_methods = 0
                 for m in d.methods:
                     if m.name in seen_m:
                         self.err(f"handler {d.name}: duplicate method {m.name}")
                     seen_m.add(m.name)
-                    if m.name not in ("onEvent", "handle", "on", "handler"):
+                    if m.name in ("onEvent", "handle", "on", "handler"):
+                        event_methods += 1
+                    else:
                         self.err(f"handler {d.name}: unsupported method {m.name} "
                                  f"(a handler only supports its event method)")
+                if event_methods > 1:
+                    self.err(f"handler {d.name} must define exactly one event method, "
+                             f"found {event_methods}")
             elif isinstance(d, NamespaceDecl):
                 if d.name in self.namespaces:
                     self.err(f"duplicate namespace {d.name}")
@@ -978,12 +984,25 @@ class Checker:
 
     def check_binary(self, e: Binary, env):
         if e.op == "?:":
-            self.check_expr(e.left, env)
+            ct = self.check_expr(e.left, env)
+            if ct not in ("bool", "int", "long"):
+                self.err(f"ternary condition must be bool/int/long, got {ct}")
             inner = e.right  # Binary(":", a, b)
             if isinstance(inner, Binary) and inner.op == ":":
                 ta = self.check_expr(inner.left, env)
                 tb = self.check_expr(inner.right, env)
-                e.ty = ta if ta != "null" else tb
+                if ta == tb:
+                    e.ty = ta
+                elif "null" in (ta, tb):
+                    other = tb if ta == "null" else ta
+                    if not self.is_ref_type(other):
+                        self.err(f"ternary: cannot mix null with {other}")
+                    e.ty = other
+                elif ta in NUMERIC and tb in NUMERIC:
+                    rank = {"int": 0, "long": 1, "double": 2, "float": 2}
+                    e.ty = ta if rank.get(ta, 0) >= rank.get(tb, 0) else tb
+                else:
+                    self.err(f"ternary branches have incompatible types {ta} and {tb}")
             else:
                 e.ty = self.check_expr(inner, env)
             return
@@ -999,7 +1018,14 @@ class Checker:
                 self.err("String concatenation requires both operands to be String")
             e.ty = "String"
         elif e.op in ("==", "!="):
-            if lt != rt and not (lt in NUMERIC and rt in NUMERIC) and "null" not in (lt, rt):
+            if "null" in (lt, rt):
+                if lt == rt:
+                    pass  # null == null
+                else:
+                    other = rt if lt == "null" else lt
+                    if not self.is_ref_type(other):
+                        self.err(f"cannot compare {other} with null")
+            elif lt != rt and not (lt in NUMERIC and rt in NUMERIC):
                 self.err(f"cannot compare {lt} with {rt}")
             e.ty = "bool"
         elif e.op in ("<", "<=", ">", ">="):

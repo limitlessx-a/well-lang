@@ -1,0 +1,27 @@
+module demo.handler_multi_event_error;
+
+event AEvent extends Event {
+    n: int;
+}
+
+event BEvent extends Event {
+    n: int;
+}
+
+handler H {
+    onEvent(e: AEvent) {
+        print(e.n);
+    }
+
+    handle(e: BEvent) {
+        print(e.n);
+    }
+}
+
+controller Main {
+    run() {
+        on(H);
+    }
+}
+
+entry Main;
