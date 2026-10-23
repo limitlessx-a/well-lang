@@ -71,7 +71,9 @@ static void *timer_thread(void *arg) {
             well_sleep_ms(WELL_TIMER_SLEEP_MS);
             continue;
         }
-        now = well_host_now_ms();
+        /* R-18: deadlines are monotonic-clock based; wall clock
+         * (well_host_now_ms) could step backwards and delay timers. */
+        now = well_mono_ms();
         pp = &g_timers;
         while (*pp && n < WELL_TIMER_BATCH) {
             WellTimer *t = *pp;
@@ -143,7 +145,8 @@ static long long timer_add(long long ms, long long interval, WellTimerFn fn) {
                                  * is dropped (R-06) */
     t->id = id;
     t->interval = interval;
-    t->deadline = well_host_now_ms() + (ms > 0 ? ms : 1);
+    /* R-18: same monotonic time base as the timer thread's `now`. */
+    t->deadline = well_mono_ms() + (ms > 0 ? ms : 1);
     t->fires = 0;
     t->fn = fn;
     t->canceled = 0;

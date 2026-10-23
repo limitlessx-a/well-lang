@@ -174,6 +174,7 @@ static int g_worker_count = 0;
 static long long g_pending = 0;
 static int g_stop = 0;
 static int g_service_count = 0;
+static int g_cleanup_running = 0;
 static WellThread g_threads[WELL_MAX_WORKERS];
 static int g_thread_count = 0;
 
@@ -265,6 +266,65 @@ void well_service_signal(void) {
 
 void well_event_shutdown(void) {
     if (!g_sched_inited) return;
+    /* R-16: release the subscription list, the oid queue map and its queued
+     * nodes, plus the node/queue object pools. This is only safe once no worker
+     * can touch the queues (well_run_loop() has joined its workers), so the
+     * deep cleanup is skipped while workers could still be running; the caller
+     * is expected to shut down after the run loop (process exit path). */
+    if (g_thread_count == 0 && g_worker_count == 0) {
+        WellSub *s;
+        int i;
+        s = g_subs;
+        g_subs = NULL;
+        while (s) {
+            WellSub *next = s->next;
+            free(s);
+            s = next;
+        }
+        if (g_qmap) {
+            for (i = 0; i < g_qmap_cap; i++) {
+                WellOidQueue *q = g_qmap[i];
+                WellEventNode *n;
+                if (!q || q == QMAP_TOMB) continue;
+                n = q->head;
+                while (n) {
+                    WellEventNode *next = n->next;
+                    /* Undelivered events hold one reference each. Task nodes'
+                     * arguments/done callbacks belong to the submitter: at
+                     * process exit the OS reclaims them (documented). */
+                    if (n->kind == 0 && n->event) well_release(n->event);
+                    free(n);
+                    n = next;
+                }
+                free(q);
+            }
+            free(g_qmap);
+            g_qmap = NULL;
+            g_qmap_cap = 0;
+            g_qmap_used = 0;
+            g_qmap_tomb = 0;
+        }
+        /* Ready-queue links only point at the queues freed above. */
+        g_inject_head = NULL;
+        g_inject_tail = NULL;
+        memset(g_local, 0, sizeof(g_local));
+        while (g_node_pool) {
+            WellEventNode *n = g_node_pool;
+            g_node_pool = n->next;
+            free(n);
+        }
+        g_node_pool_n = 0;
+        while (g_queue_pool) {
+            WellOidQueue *q = g_queue_pool;
+            g_queue_pool = q->ready_next;
+            free(q);
+        }
+        g_queue_pool_n = 0;
+        g_pending = 0;
+        g_service_count = 0;
+        g_cleanup_running = 0;
+        g_stop = 0;
+    }
     well_cond_destroy(&g_sched_cond);
     well_mutex_destroy(&g_sched_mutex);
     g_sched_inited = 0;
@@ -528,7 +588,11 @@ static void event_pin_visit(void *obj, EventScan *s) {
     WellObj *o = (WellObj *)obj;
     if (!o || event_seen(s, o)) return;
     if (o->type_id == WELL_T_STRING) return;
-    if (o->flags & WELL_FLAG_IN_MODEL) event_pin_add(s->pl, o->oid);
+    /* R-15: pin every referenced oid, not only rows flagged IN_MODEL. An event
+     * can carry a local object from another oid (well_set_ref does not oid-check
+     * during construction), and TTL must not force-free that object while the
+     * event is still queued/dispatching. */
+    event_pin_add(s->pl, o->oid);
     well_visit_fields(o, event_pin_field, s);
 }
 
@@ -780,8 +844,6 @@ static void *well_worker_thread(void *arg) {
     return NULL;
 }
 
-static int g_cleanup_running = 0;
-
 /* Single-flight: only one thread may run oid-group reclamation at a time. */
 int well_scheduler_cleanup_enter(void) {
     int ok;
@@ -800,7 +862,12 @@ void well_scheduler_cleanup_leave(void) {
 
 /* Quarantine an idle oid: no running/queued task, and workers will not pick it
  * up until well_scheduler_end_cleanup(). Enqueues during this window only append
- * nodes; they are made runnable again by end_cleanup(). */
+ * nodes; they are made runnable again by end_cleanup().
+ * R-14: the quarantine must also be recorded when the oid has no queue yet.
+ * Otherwise a concurrent well_schedule_task(oid) could create a fresh queue for
+ * that oid and run it immediately, while the TTL path is force-freeing the old
+ * object group of the same oid. Creating the (empty) queue here marks the oid
+ * as cleaning; end_cleanup() removes it again if it stayed empty. */
 int well_scheduler_begin_cleanup(long long oid) {
     WellOidQueue *q;
     well_mutex_lock(&g_sched_mutex);
@@ -809,7 +876,8 @@ int well_scheduler_begin_cleanup(long long oid) {
         well_mutex_unlock(&g_sched_mutex);
         return 0;
     }
-    if (q) q->cleaning = 1;
+    if (!q) q = qmap_create(oid);
+    q->cleaning = 1;
     well_mutex_unlock(&g_sched_mutex);
     return 1;
 }
@@ -823,6 +891,9 @@ void well_scheduler_end_cleanup(long long oid) {
         if (q->head && !q->scheduled && !q->running) {
             ready_push(q);
             well_cond_signal(&g_sched_cond);
+        } else if (!q->head && !q->scheduled && !q->running) {
+            /* R-14: drop the placeholder queue created by begin_cleanup. */
+            qmap_remove(q);
         }
     }
     well_mutex_unlock(&g_sched_mutex);

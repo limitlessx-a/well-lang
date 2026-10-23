@@ -87,6 +87,128 @@ static void rd_bytes(SerCur *c, void *p, size_t n) {
     c->pos += n;
 }
 
+/* ---------- payload validation (R-10) ----------
+ * well_decode() must not allocate anything until the whole record has been
+ * checked: a panic (longjmp) in the middle of decoding used to leak the object
+ * built so far and any partially built container/string. The read-format is
+ * self-describing (field metadata comes from the registered WellTypeDesc, the
+ * payload only carries present/length prefixes), so a single bounds-checked
+ * pass over the bytes is enough. The decode pass can then never hit a
+ * truncated read for the same buffer. */
+static int ser_can(const SerCur *c, size_t n) {
+    return c->pos <= c->len && n <= c->len - c->pos;
+}
+
+static int ser_skip(SerCur *c, size_t n) {
+    if (!ser_can(c, n)) return 0;
+    c->pos += n;
+    return 1;
+}
+
+static int ser_v_u32_read(SerCur *c, unsigned *out) {
+    if (!ser_can(c, 4)) return 0;
+    *out = (unsigned)c->buf[c->pos] |
+           ((unsigned)c->buf[c->pos + 1] << 8) |
+           ((unsigned)c->buf[c->pos + 2] << 16) |
+           ((unsigned)c->buf[c->pos + 3] << 24);
+    c->pos += 4;
+    return 1;
+}
+
+/* ser_string() payload: present flag, u32 length, bytes. */
+static int ser_v_string_present(SerCur *c) {
+    unsigned len;
+    if (!ser_v_u32_read(c, &len)) return 0;
+    return ser_skip(c, (size_t)len);
+}
+
+/* Optional string field (present == 0 means NULL). */
+static int ser_v_ostring(SerCur *c) {
+    unsigned present;
+    if (!ser_can(c, 1)) return 0;
+    present = c->buf[c->pos++];
+    return present ? ser_v_string_present(c) : 1;
+}
+
+/* Map keys are never NULL on encode; decode panics on a null key. */
+static int ser_v_key(SerCur *c) {
+    unsigned present;
+    if (!ser_can(c, 1)) return 0;
+    present = c->buf[c->pos++];
+    return present ? ser_v_string_present(c) : 0;
+}
+
+/* ser_ref() payload: present flag, u32 type_id, u64 oid. */
+static int ser_v_ref(SerCur *c) {
+    unsigned present;
+    if (!ser_can(c, 1)) return 0;
+    present = c->buf[c->pos++];
+    return present ? ser_skip(c, 4 + 8) : 1;
+}
+
+static int ser_v_value(SerCur *c, int kind) {
+    switch (kind) {
+    case WELL_FIELD_INT:
+    case WELL_FIELD_LONG:
+    case WELL_FIELD_BOOL:
+    case WELL_FIELD_DOUBLE:
+        return ser_skip(c, 8);
+    case WELL_FIELD_STRING:
+        return ser_v_ostring(c);
+    case WELL_FIELD_REF:
+        return ser_v_ref(c);
+    default:
+        return 0;
+    }
+}
+
+/* ser_container() payload: present flag, u32 count, count elements (maps add
+ * a mandatory string key before each value). */
+static int ser_v_container(SerCur *c, int kind, int elem_kind) {
+    unsigned present, n, i;
+    if (!ser_can(c, 1)) return 0;
+    present = c->buf[c->pos++];
+    if (!present) return 1;
+    if (kind != WELL_FIELD_ARRAY && kind != WELL_FIELD_MAP &&
+        kind != WELL_FIELD_LINKED)
+        return 0;
+    if (!ser_v_u32_read(c, &n)) return 0;
+    for (i = 0; i < n; i++) {
+        if (kind == WELL_FIELD_MAP && !ser_v_key(c)) return 0;
+        if (!ser_v_value(c, elem_kind)) return 0;
+    }
+    return 1;
+}
+
+static int ser_validate_body(SerCur *c, const WellTypeDesc *d) {
+    int i;
+    for (i = 0; i < d->field_count; i++) {
+        const WellFieldDesc *f = &d->fields[i];
+        switch (f->kind) {
+        case WELL_FIELD_INT:
+        case WELL_FIELD_LONG:
+        case WELL_FIELD_BOOL:
+        case WELL_FIELD_DOUBLE:
+            if (!ser_skip(c, 8)) return 0;
+            break;
+        case WELL_FIELD_STRING:
+            if (!ser_v_ostring(c)) return 0;
+            break;
+        case WELL_FIELD_REF:
+            if (!ser_v_ref(c)) return 0;
+            break;
+        case WELL_FIELD_ARRAY:
+        case WELL_FIELD_MAP:
+        case WELL_FIELD_LINKED:
+            if (!ser_v_container(c, f->kind, f->elem_kind)) return 0;
+            break;
+        default:
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void ser_string(SerBuf *b, WellString *s) {
     if (!s) {
         sb_u8(b, 0);
@@ -108,7 +230,9 @@ static WellString *deser_string(SerCur *c) {
     if (!tmp) well_panic("out of memory (decode string)");
     rd_bytes(c, tmp, len);
     tmp[len] = '\0';
-    s = well_string_new(tmp);
+    /* R-12: preserve the explicit length (a string serialized from
+     * Bytes.toString()/substring may contain NUL bytes). */
+    s = well_string_new_n(tmp, (size_t)len);
     free(tmp);
     return s;
 }
@@ -339,6 +463,17 @@ void *well_decode(unsigned int type_id, long long oid,
     if (rd_u32(&c) != type_id) well_panic("decode: type id mismatch");
     fields = rd_u32(&c);
     if (fields != (unsigned)d->field_count) well_panic("decode: field count mismatch");
+    /* R-10: check the whole body against the metadata before allocating the
+     * object, so a malformed row from an external Store/FFI write panics before
+     * leaking a half-built object graph. */
+    {
+        SerCur vc;
+        vc.buf = buf;
+        vc.len = len;
+        vc.pos = c.pos;
+        if (!ser_validate_body(&vc, d))
+            well_panic("bad serialization: truncated");
+    }
     o = (WellObj *)well_new(d->size, type_id, oid);
     for (i = 0; i < d->field_count; i++) {
         const WellFieldDesc *f = &d->fields[i];

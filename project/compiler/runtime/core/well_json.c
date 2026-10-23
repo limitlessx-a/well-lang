@@ -5,6 +5,7 @@
 #include <string.h>
 #include <setjmp.h>
 #include <math.h>
+#include <limits.h>
 
 typedef struct {
     const char *s;
@@ -12,7 +13,18 @@ typedef struct {
     size_t pos;
     int depth;
     jmp_buf *err_env;   /* non-NULL: jump here instead of panicking (tryParse) */
-    void *root;         /* top-level object, released if parsing fails */
+    char errmsg[256];   /* last parse error, re-raised by json_parse_impl */
+    /* R-09: objects created while parsing, each holding exactly one creation
+     * reference. An object is removed from this list when its creation
+     * reference is consumed (attached and then released). Whatever is still
+     * listed when parsing fails is released by the error path, so a failed
+     * tryParse cannot leak partially built containers/refs/strings. */
+    void **objs;
+    int obj_n;
+    int obj_cap;
+    /* Raw scratch buffer of the string currently being decoded (malloc'ed by
+     * jstr_push): freed on the error path as well. */
+    char *scratch;
 } JsonParser;
 
 typedef struct {
@@ -22,11 +34,64 @@ typedef struct {
 } JsonStr;
 
 static void jerr(JsonParser *p, const char *msg) {
-    char buf[256];
-    snprintf(buf, sizeof(buf), "JSON parse error at %lu: %s",
+    snprintf(p->errmsg, sizeof(p->errmsg), "JSON parse error at %lu: %s",
              (unsigned long)p->pos, msg);
     if (p->err_env) longjmp(*p->err_env, 1);
-    well_panic(buf);
+    well_panic(p->errmsg);
+}
+
+/* ---------- parser-owned objects (R-09) ---------- */
+static void jreg_add(JsonParser *p, void *obj) {
+    if (!obj) return;
+    if (p->obj_n == p->obj_cap) {
+        int ncap = p->obj_cap ? p->obj_cap * 2 : 16;
+        void **no = (void **)realloc(p->objs, (size_t)ncap * sizeof(void *));
+        if (!no) {
+            well_release(obj);
+            jerr(p, "out of memory (JSON parser)");
+            return;
+        }
+        p->objs = no;
+        p->obj_cap = ncap;
+    }
+    p->objs[p->obj_n++] = obj;
+}
+
+/* Consume the creation reference of `obj` after it has been attached. */
+static void jreg_drop(JsonParser *p, void *obj) {
+    int i;
+    if (!obj) return;
+    for (i = p->obj_n - 1; i >= 0; i--) {
+        if (p->objs[i] == obj) {
+            p->objs[i] = p->objs[--p->obj_n];
+            break;
+        }
+    }
+    well_release(obj);
+}
+
+/* Error path: release every object whose creation reference is still owned by
+ * the parser, plus the raw scratch string. */
+static void jreg_cleanup(JsonParser *p) {
+    int i;
+    free(p->scratch);
+    p->scratch = NULL;
+    for (i = 0; i < p->obj_n; i++) well_release(p->objs[i]);
+    p->obj_n = 0;
+    free(p->objs);
+    p->objs = NULL;
+    p->obj_cap = 0;
+}
+
+/* Success path: the top-level object's creation reference is handed to the
+ * caller; nested objects were dropped when attached. */
+static void jreg_success(JsonParser *p) {
+    free(p->scratch);
+    p->scratch = NULL;
+    free(p->objs);
+    p->objs = NULL;
+    p->obj_n = 0;
+    p->obj_cap = 0;
 }
 
 static void jskip_ws(JsonParser *p) {
@@ -51,32 +116,44 @@ static void jexpect(JsonParser *p, char c) {
     p->pos++;
 }
 
-static void jstr_push(JsonStr *b, char c) {
+static void jstr_push(JsonParser *p, JsonStr *b, char c) {
     if (b->len + 1 >= b->cap) {
         size_t ncap = b->cap ? b->cap * 2 : 32;
         char *np = (char *)realloc(b->p, ncap);
-        if (!np) well_panic("out of memory (JSON string)");
+        if (!np) {
+            /* The old buffer stays valid and reachable from the parser so the
+             * error path can free it; jerr() does not return. */
+            p->scratch = b->p;
+            jerr(p, "out of memory (JSON string)");
+            return;
+        }
         b->p = np;
         b->cap = ncap;
+        p->scratch = np;
     }
     b->p[b->len++] = c;
 }
 
-static void jstr_utf8(JsonStr *b, unsigned cp) {
+static void jstr_utf8(JsonParser *p, JsonStr *b, unsigned cp) {
+    /* R-13: a UTF-16 surrogate is not a Unicode scalar value and must never be
+     * encoded (CESU-8 style ED A0.. / ED B0.. bytes are invalid UTF-8). Lone
+     * surrogates are replaced with U+FFFD; paired surrogates are combined by
+     * the caller before reaching here. */
+    if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFD;
     if (cp <= 0x7F) {
-        jstr_push(b, (char)cp);
+        jstr_push(p, b, (char)cp);
     } else if (cp <= 0x7FF) {
-        jstr_push(b, (char)(0xC0 | (cp >> 6)));
-        jstr_push(b, (char)(0x80 | (cp & 0x3F)));
+        jstr_push(p, b, (char)(0xC0 | (cp >> 6)));
+        jstr_push(p, b, (char)(0x80 | (cp & 0x3F)));
     } else if (cp <= 0xFFFF) {
-        jstr_push(b, (char)(0xE0 | (cp >> 12)));
-        jstr_push(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
-        jstr_push(b, (char)(0x80 | (cp & 0x3F)));
+        jstr_push(p, b, (char)(0xE0 | (cp >> 12)));
+        jstr_push(p, b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+        jstr_push(p, b, (char)(0x80 | (cp & 0x3F)));
     } else {
-        jstr_push(b, (char)(0xF0 | (cp >> 18)));
-        jstr_push(b, (char)(0x80 | ((cp >> 12) & 0x3F)));
-        jstr_push(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
-        jstr_push(b, (char)(0x80 | (cp & 0x3F)));
+        jstr_push(p, b, (char)(0xF0 | (cp >> 18)));
+        jstr_push(p, b, (char)(0x80 | ((cp >> 12) & 0x3F)));
+        jstr_push(p, b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+        jstr_push(p, b, (char)(0x80 | (cp & 0x3F)));
     }
 }
 
@@ -99,12 +176,15 @@ static unsigned jhex4(JsonParser *p) {
 static char *jparse_string_alloc(JsonParser *p) {
     JsonStr b;
     memset(&b, 0, sizeof(b));
+    p->scratch = NULL;
     if (jpeek(p) != '"') jerr(p, "expected string");
     p->pos++;
     while (p->pos < p->len) {
         unsigned char c = (unsigned char)p->s[p->pos++];
         if (c == '"') {
-            jstr_push(&b, '\0');
+            jstr_push(p, &b, '\0');
+            /* Hand the buffer to the caller: it is no longer error-path state. */
+            p->scratch = NULL;
             return b.p;
         }
         if (c == '\\') {
@@ -112,14 +192,14 @@ static char *jparse_string_alloc(JsonParser *p) {
             if (p->pos >= p->len) jerr(p, "truncated escape");
             e = (unsigned char)p->s[p->pos++];
             switch (e) {
-            case '"': jstr_push(&b, '"'); break;
-            case '\\': jstr_push(&b, '\\'); break;
-            case '/': jstr_push(&b, '/'); break;
-            case 'b': jstr_push(&b, '\b'); break;
-            case 'f': jstr_push(&b, '\f'); break;
-            case 'n': jstr_push(&b, '\n'); break;
-            case 'r': jstr_push(&b, '\r'); break;
-            case 't': jstr_push(&b, '\t'); break;
+            case '"': jstr_push(p, &b, '"'); break;
+            case '\\': jstr_push(p, &b, '\\'); break;
+            case '/': jstr_push(p, &b, '/'); break;
+            case 'b': jstr_push(p, &b, '\b'); break;
+            case 'f': jstr_push(p, &b, '\f'); break;
+            case 'n': jstr_push(p, &b, '\n'); break;
+            case 'r': jstr_push(p, &b, '\r'); break;
+            case 't': jstr_push(p, &b, '\t'); break;
             case 'u': {
                 unsigned cp = jhex4(p);
                 if (cp >= 0xD800 && cp <= 0xDBFF) {
@@ -133,14 +213,14 @@ static char *jparse_string_alloc(JsonParser *p) {
                         jerr(p, "bad low surrogate");
                     cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
                 }
-                jstr_utf8(&b, cp);
+                jstr_utf8(p, &b, cp);
                 break;
             }
             default: jerr(p, "bad escape");
             }
         } else {
             if (c < 0x20) jerr(p, "control character in string");
-            jstr_push(&b, (char)c);
+            jstr_push(p, &b, (char)c);
         }
     }
     jerr(p, "unterminated string");
@@ -181,17 +261,26 @@ static double jparse_double(JsonParser *p) {
 
 static long long jparse_long(JsonParser *p) {
     size_t start;
-    long long v = 0;
+    unsigned long long v = 0;
+    /* Magnitude limit: LLONG_MAX for positive values, and LLONG_MAX+1 for
+     * negative ones so that LLONG_MIN is representable. R-08: the check runs
+     * before the multiply/add, so an out-of-range JSON integer is an explicit
+     * parse error instead of silently wrapping to an arbitrary value (the old
+     * code did `v = v*10 + digit` unchecked). */
+    unsigned long long limit = (unsigned long long)LLONG_MAX;
     int neg = 0;
     int digits = 0;
     jskip_ws(p);
     start = p->pos;
     if (p->pos < p->len && p->s[p->pos] == '-') {
         neg = 1;
+        limit += 1ULL;
         p->pos++;
     }
     while (p->pos < p->len && p->s[p->pos] >= '0' && p->s[p->pos] <= '9') {
-        v = v * 10 + (p->s[p->pos] - '0');
+        unsigned long long digit = (unsigned long long)(p->s[p->pos] - '0');
+        if (v > (limit - digit) / 10ULL) jerr(p, "integer overflow");
+        v = v * 10ULL + digit;
         p->pos++;
         digits++;
     }
@@ -199,7 +288,11 @@ static long long jparse_long(JsonParser *p) {
         p->pos = start;
         jerr(p, "bad integer");
     }
-    return neg ? -v : v;
+    if (neg) {
+        if (v == (unsigned long long)LLONG_MAX + 1ULL) return LLONG_MIN;
+        return -(long long)v;
+    }
+    return (long long)v;
 }
 
 static void jskip_value(JsonParser *p);
@@ -291,6 +384,7 @@ static WellValue jparse_elem(JsonParser *p, int kind, unsigned int type_id,
         char *s = jparse_string_alloc(p);
         WellString *ws = well_string_new(s);
         free(s);
+        jreg_add(p, ws);
         v.p = ws;
         if (owned) *owned = ws;
         break;
@@ -314,6 +408,7 @@ static void *jparse_container(JsonParser *p, int kind, int elem_kind,
     well_ctx_init(&ctx, oid);
     if (kind == WELL_FIELD_ARRAY) {
         WellArray *a = well_array_new(&ctx, is_ref);
+        jreg_add(p, a);
         jexpect(p, '[');
         if (jpeek(p) == ']') { p->pos++; }
         else {
@@ -321,7 +416,7 @@ static void *jparse_container(JsonParser *p, int kind, int elem_kind,
                 void *owned = NULL;
                 WellValue v = jparse_elem(p, elem_kind, elem_type_id, oid, &owned);
                 well_array_push(a, v, &ctx);
-                if (owned) well_release(owned);
+                if (owned) jreg_drop(p, owned);
                 if (jpeek(p) == ',') { p->pos++; continue; }
                 jexpect(p, ']');
                 break;
@@ -332,6 +427,7 @@ static void *jparse_container(JsonParser *p, int kind, int elem_kind,
     }
     if (kind == WELL_FIELD_MAP) {
         WellMap *m = well_map_new(&ctx, is_ref);
+        jreg_add(p, m);
         jexpect(p, '{');
         if (jpeek(p) == '}') { p->pos++; }
         else {
@@ -341,11 +437,12 @@ static void *jparse_container(JsonParser *p, int kind, int elem_kind,
                 void *owned = NULL;
                 WellValue v;
                 free(raw);
+                jreg_add(p, key);
                 jexpect(p, ':');
                 v = jparse_elem(p, elem_kind, elem_type_id, oid, &owned);
                 well_map_set(m, key, v, &ctx);
-                well_release(key);
-                if (owned) well_release(owned);
+                jreg_drop(p, key);
+                if (owned) jreg_drop(p, owned);
                 if (jpeek(p) == ',') { p->pos++; continue; }
                 jexpect(p, '}');
                 break;
@@ -356,6 +453,7 @@ static void *jparse_container(JsonParser *p, int kind, int elem_kind,
     }
     if (kind == WELL_FIELD_LINKED) {
         WellLinked *l = well_linked_new(&ctx, is_ref);
+        jreg_add(p, l);
         jexpect(p, '[');
         if (jpeek(p) == ']') { p->pos++; }
         else {
@@ -363,7 +461,7 @@ static void *jparse_container(JsonParser *p, int kind, int elem_kind,
                 void *owned = NULL;
                 WellValue v = jparse_elem(p, elem_kind, elem_type_id, oid, &owned);
                 well_linked_push_tail(l, v, &ctx);
-                if (owned) well_release(owned);
+                if (owned) jreg_drop(p, owned);
                 if (jpeek(p) == ',') { p->pos++; continue; }
                 jexpect(p, ']');
                 break;
@@ -381,6 +479,11 @@ static void jparse_field(JsonParser *p, WellObj *obj, const WellFieldDesc *f, lo
     void *slot = (char *)obj + f->offset;
     switch (f->kind) {
     case WELL_FIELD_INT:
+        /* JSON integers are parsed as long long. A value outside int range is
+         * truncated by the cast (documented limitation of R-08, same semantics
+         * as assigning a long to an int in the language): Json.parse does not
+         * range-check int fields. Values outside long range are rejected by
+         * jparse_long() with "integer overflow". */
         *(int *)slot = (int)jparse_long(p);
         break;
     case WELL_FIELD_LONG:
@@ -407,14 +510,15 @@ static void jparse_field(JsonParser *p, WellObj *obj, const WellFieldDesc *f, lo
         raw = jparse_string_alloc(p);
         s = well_string_new(raw);
         free(raw);
+        jreg_add(p, s);
         well_set_ref(obj, (void **)slot, s);
-        well_release(s);
+        jreg_drop(p, s);
         break;
     }
     case WELL_FIELD_REF: {
         void *r = jparse_ref(p, f->type_id, oid);
         well_set_ref(obj, (void **)slot, r);
-        if (r) well_release(r);
+        if (r) jreg_drop(p, r);
         break;
     }
     case WELL_FIELD_ARRAY:
@@ -428,7 +532,7 @@ static void jparse_field(JsonParser *p, WellObj *obj, const WellFieldDesc *f, lo
         }
         c = jparse_container(p, f->kind, f->elem_kind, f->elem_type_id, oid);
         well_set_ref(obj, (void **)slot, c);
-        well_release(c);
+        jreg_drop(p, c);
         break;
     }
     default:
@@ -440,7 +544,7 @@ static void *jparse_object(JsonParser *p, const WellTypeDesc *d, long long oid) 
     WellObj *o;
     if (++p->depth > 128) jerr(p, "nesting too deep");
     o = (WellObj *)well_new(d->size, d->type_id, oid);
-    if (!p->root) p->root = o;
+    jreg_add(p, o);
     jexpect(p, '{');
     if (jpeek(p) == '}') {
         p->pos++;
@@ -786,56 +890,53 @@ WellString *well_json_stringify_str_take(WellString *s, int indent) {
     return r;
 }
 
-void *well_json_parse(unsigned int type_id, const char *text, long long oid) {
-    JsonParser p;
-    const WellTypeDesc *d;
-    void *obj;
-    if (!text) well_panic("Json.parse(null)");
-    d = well_type_desc(type_id);
-    if (!d) well_panic("Json.parse: unknown type");
-    p.s = text;
-    p.len = strlen(text);
-    p.pos = 0;
-    p.depth = 0;
-    p.err_env = NULL;
-    p.root = NULL;
-    if (jpeek(&p) == 'n') {
-        if (!jmatch_lit(&p, "null")) jerr(&p, "bad null");
-        jskip_ws(&p);
-        if (p.pos != p.len) jerr(&p, "trailing characters");
-        return NULL;
-    }
-    if (jpeek(&p) != '{') jerr(&p, "top-level value must be an object");
-    obj = jparse_object(&p, d, oid);
-    jskip_ws(&p);
-    if (p.pos != p.len) jerr(&p, "trailing characters");
-    return obj;
-}
-
-/* Non-panicking variant: returns NULL on syntax/type errors (and for JSON
- * "null"). Any partially built top-level object is released. */
-void *well_json_try_parse(unsigned int type_id, const char *text, long long oid) {
+/* Shared parse driver for Json.parse / Json.tryParse.
+ *
+ * Both variants parse behind a setjmp boundary so a syntax error can release
+ * everything created so far (R-09): the object arena and the raw string scratch
+ * buffer. `recoverable` selects the failure contract: tryParse returns NULL,
+ * parse re-raises the original error through well_panic (preserving the
+ * "JSON parse error at N: msg" text).
+ *
+ * Only allocation failure (well_panic from well_new/well_string_new/realloc
+ * outside jerr) can still leak a partial object graph, as with any OOM panic. */
+static void *json_parse_impl(unsigned int type_id, const char *text, long long oid,
+                             int recoverable) {
     JsonParser *p;
     const WellTypeDesc *d;
     jmp_buf jb;
     void *obj;
-    if (!text) return NULL;
+    if (!text) {
+        if (recoverable) return NULL;
+        well_panic("Json.parse(null)");
+    }
     d = well_type_desc(type_id);
-    if (!d) return NULL;
+    if (!d) {
+        if (recoverable) return NULL;
+        well_panic("Json.parse: unknown type");
+    }
     p = (JsonParser *)calloc(1, sizeof(JsonParser));
-    if (!p) return NULL;
+    if (!p) {
+        if (recoverable) return NULL;
+        well_panic("out of memory (JSON parser)");
+    }
     p->s = text;
     p->len = strlen(text);
     p->err_env = &jb;
     if (setjmp(jb) != 0) {
-        if (p->root) well_release(p->root);
+        char msg[sizeof(p->errmsg)];
+        memcpy(msg, p->errmsg, sizeof(msg));
+        jreg_cleanup(p);
         free(p);
-        return NULL;
+        if (recoverable) return NULL;
+        well_panic(msg);
+        return NULL; /* not reached */
     }
     if (jpeek(p) == 'n') {
         if (!jmatch_lit(p, "null")) jerr(p, "bad null");
         jskip_ws(p);
         if (p->pos != p->len) jerr(p, "trailing characters");
+        jreg_success(p);
         free(p);
         return NULL;
     }
@@ -843,6 +944,17 @@ void *well_json_try_parse(unsigned int type_id, const char *text, long long oid)
     obj = jparse_object(p, d, oid);
     jskip_ws(p);
     if (p->pos != p->len) jerr(p, "trailing characters");
+    jreg_success(p);
     free(p);
     return obj;
+}
+
+void *well_json_parse(unsigned int type_id, const char *text, long long oid) {
+    return json_parse_impl(type_id, text, oid, 0);
+}
+
+/* Non-panicking variant: returns NULL on syntax/type errors (and for JSON
+ * "null"). Everything created before the failure point is released (R-09). */
+void *well_json_try_parse(unsigned int type_id, const char *text, long long oid) {
+    return json_parse_impl(type_id, text, oid, 1);
 }

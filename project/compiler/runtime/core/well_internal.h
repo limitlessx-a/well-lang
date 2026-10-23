@@ -60,6 +60,9 @@ void well_sleep_ms(int ms);
 void well_temp_thread_cleanup(void);
 
 /* Cross-module hooks. Public API stays in wellrt.h. */
+/* Build a String from an explicit byte count (keeps embedded NULs); used where
+ * the caller already knows the length instead of re-running strlen() (R-12). */
+WellString *well_string_new_n(const char *src, size_t n);
 void well_containers_register(void);
 void well_model_shutdown(void);
 void well_event_init(void);
@@ -68,7 +71,6 @@ void well_cache_shutdown(void);
 void *well_cache_get(unsigned int type_id, long long oid);
 void well_cache_set(void *obj);
 void well_cache_remove(unsigned int type_id, long long oid);
-int well_cache_evict_oid(long long oid);
 int well_cache_evict_oid_all(long long oid);
 int well_cache_oid_rows(long long oid);
 WellStore *well_memory_store_new(void);
@@ -83,13 +85,11 @@ void well_graph_remove_edge(WellObj *from, WellObj *to);
 void well_type_debug_dump(void);
 long long well_now_ms(void);
 long long well_mono_ms(void);
-int well_rc_is_one(void *obj);
 void well_model_touch_oid(long long oid);
 void well_oid_pin(long long oid);
 void well_oid_unpin(long long oid);
 void well_event_pin_payload(void *event);
 void well_event_unpin_payload(void *event);
-void well_force_cleanup_oid(long long oid);
 void well_pool_sweep(void);
 int well_cache_discard_oid(long long oid);
 void well_array_force_clear(void *arr);

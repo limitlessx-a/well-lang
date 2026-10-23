@@ -21,7 +21,31 @@
 static void (*g_destroy[WELL_MAX_TYPES])(void *);
 static const WellTypeDesc *g_type_desc[WELL_MAX_TYPES];
 static int g_inited = 0;
-static long long g_live = 0;
+
+/* Live-object counter (R-07): diagnostic only (WELL_RC_DEBUG / well_live_count),
+ * but it is incremented/decremented from every worker thread, so the update must
+ * be atomic: a plain ++/-- is a read-modify-write data race that loses updates
+ * (e.g. 8 threads creating/releasing strings left a bogus non-zero count).
+ * Windows uses the 64-bit Interlocked API (TinyCC can call it too); gcc/clang
+ * use __atomic; other compilers get a single-thread fallback, matching the
+ * existing RC-atomic policy above. */
+#if defined(_WIN32)
+static volatile LONG64 g_live = 0;
+static long long live_inc(void) { return (long long)InterlockedIncrement64(&g_live); }
+static long long live_dec(void) { return (long long)InterlockedDecrement64(&g_live); }
+static long long live_load(void) { return (long long)InterlockedCompareExchange64(&g_live, 0, 0); }
+#elif defined(__GNUC__) || defined(__clang__)
+static volatile long long g_live = 0;
+static long long live_inc(void) { return __atomic_add_fetch(&g_live, 1, __ATOMIC_RELAXED); }
+static long long live_dec(void) { return __atomic_sub_fetch(&g_live, 1, __ATOMIC_RELAXED); }
+static long long live_load(void) { return __atomic_load_n(&g_live, __ATOMIC_RELAXED); }
+#else
+/* No atomic builtins: the runtime is only supported single-threaded here. */
+static volatile long long g_live = 0;
+static long long live_inc(void) { return ++g_live; }
+static long long live_dec(void) { return --g_live; }
+static long long live_load(void) { return g_live; }
+#endif
 
 /* ---------- oid object registry ---------- */
 #define REG_SHARDS 256
@@ -382,7 +406,7 @@ void *well_new(size_t size, unsigned int type_id, long long oid) {
     o->reg_next = NULL;
     o->reg_prev = NULL;
     o->alloc_size = alloc_size;
-    g_live++;
+    live_inc();
     well_registry_add(o);
     return o;
 }
@@ -475,7 +499,7 @@ void well_release(void *obj) {
     if (o->flags & WELL_FLAG_IMMORTAL) return;
     if (well_atomic_load(&o->rc) <= 0) well_panic("release of dead object");
     if (well_atomic_dec(&o->rc) == 0) {
-        g_live--;
+        live_dec();
         well_event_unpin_payload(o);
         well_registry_remove(o);
         if (o->type_id < WELL_MAX_TYPES && g_destroy[o->type_id])
@@ -846,7 +870,10 @@ static unsigned long long hash_bytes(const char *s, size_t n) {
 }
 
 static void string_set_hash(WellString *s) {
-    s->hash = hash_bytes(s->data, strlen(s->data));
+    /* R-12: hash over the cached byte length, not strlen(): a String may hold
+     * embedded NULs (Bytes.toString, substring, deserialize, JSON edge cases),
+     * and the hash is used by Map key lookups together with well_string_eq(). */
+    s->hash = hash_bytes(s->data, (size_t)s->len);
 }
 
 static void string_destroy(void *p) {
@@ -872,7 +899,7 @@ static WellString *string_alloc_n(const char *src, size_t n) {
     s->hdr.alloc_size = sizeof(WellString);
     s->hash = hash_bytes(s->data, n);
     s->len = (long long)n;
-    g_live++;
+    live_inc();
     return s;
 }
 
@@ -882,6 +909,12 @@ static WellString *string_alloc(const char *src) {
 
 WellString *well_string_new(const char *src) {
     return string_alloc(src);
+}
+
+/* Internal (well_internal.h): build a String from an explicit byte count so
+ * callers can preserve embedded NULs (R-12). */
+WellString *well_string_new_n(const char *src, size_t n) {
+    return string_alloc_n(src, n);
 }
 
 static WellString *lits_lookup(WellLitTable *t, const char *key) {
@@ -903,7 +936,7 @@ static WellString *lits_insert(const char *key) {
     int n, cap;
     s = string_alloc(key);
     s->hdr.flags |= WELL_FLAG_IMMORTAL;
-    g_live--; /* literals are process-lifetime and not "live objects" */
+    live_dec(); /* literals are process-lifetime and not "live objects" */
     well_lock_acquire(&g_lits_lock);
     t = lits_pub_load();
     found = lits_lookup(t, key);
@@ -986,9 +1019,9 @@ WellString *well_string_concat(WellString *a, WellString *b) {
     s->hdr.reg_next = NULL;
     s->hdr.reg_prev = NULL;
     s->hdr.alloc_size = sizeof(WellString);
-    string_set_hash(s);
     s->len = (long long)(la + lb);
-    g_live++;
+    string_set_hash(s);
+    live_inc();
     return s;
 }
 
@@ -999,8 +1032,12 @@ const char *well_string_cstr(WellString *s) {
 int well_string_eq(WellString *a, WellString *b) {
     if (a == b) return 1;
     if (!a || !b) return 0;
+    /* R-12: compare the cached lengths and bytes, not strcmp(): strcmp stops at
+     * an embedded NUL and would report "a\0b" == "a\0c". The cached hash is over
+     * the full length, so a hash mismatch already proves inequality. */
+    if (a->len != b->len) return 0;
     if (a->hash != b->hash) return 0;
-    return strcmp(a->data, b->data) == 0;
+    return a->len == 0 || memcmp(a->data, b->data, (size_t)a->len) == 0;
 }
 
 long long well_string_len(WellString *s) {
@@ -1060,7 +1097,9 @@ void well_bytes_append_str(WellBytes *b, WellString *s, WellCtx *ctx) {
     if (!b) well_panic("appendStr on null Bytes");
     well_check_oid((void *)b, ctx, "Bytes.appendStr");
     if (!s) return;
-    n = strlen(s->data);
+    /* R-12: use the cached length; strlen() would cut the string at a NUL. */
+    n = (size_t)s->len;
+    if (n == 0) return;
     bytes_reserve(b, b->len + (long long)n);
     memcpy(b->data + b->len, s->data, n);
     b->len += (long long)n;
@@ -1320,15 +1359,32 @@ WellString *well_str_substring(WellString *s, long long start, long long end) {
     return string_alloc_n(d + start, (size_t)(end - start));
 }
 
+/* Length-aware substring search (a portable memmem for the String helpers).
+ * R-12: strstr()/strlen() stop at an embedded NUL, so all matching here works
+ * on the cached lengths instead. Returns the byte offset or -1. */
+static long long mem_find(const char *hay, size_t hay_len,
+                          const char *needle, size_t needle_len) {
+    size_t i;
+    if (needle_len == 0) return 0;
+    if (needle_len > hay_len) return -1;
+    for (i = 0; i + needle_len <= hay_len; i++) {
+        if (hay[i] == needle[0] && memcmp(hay + i, needle, needle_len) == 0)
+            return (long long)i;
+    }
+    return -1;
+}
+
 long long well_str_index_of_from(WellString *s, WellString *needle, long long from) {
     const char *d = s ? s->data : "";
-    const char *hit;
     long long n = well_string_len(s);
+    long long nn = needle ? needle->len : 0;
+    long long hit;
     if (from < 0) from = 0;
     if (from > n) return -1;
-    if (!needle || needle->data[0] == 0) return from;
-    hit = strstr(d + from, needle->data);
-    return hit ? (long long)(hit - d) : -1;
+    if (nn == 0) return from;
+    if (n - from < nn) return -1;
+    hit = mem_find(d + from, (size_t)(n - from), needle->data, (size_t)nn);
+    return hit < 0 ? -1 : from + hit;
 }
 
 long long well_str_index_of(WellString *s, WellString *needle) {
@@ -1415,27 +1471,27 @@ WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx) {
     const char *d = s ? s->data : "";
     const char *sp = sep ? sep->data : "";
     size_t spl = sep ? (size_t)sep->len : 0;
+    size_t total = (size_t)well_string_len(s);
+    size_t start = 0;
     WellValue v;
-    const char *p = d;
-    const char *end = d + well_string_len(s);
+    /* R-12: split on the cached lengths; strstr() would stop at an embedded
+     * NUL in either operand (and a NUL separator is a valid byte). */
     if (spl == 0) {
-        v.p = well_string_new(d);
+        v.p = string_alloc_n(d, total);
         well_array_push(a, v, ctx);
         well_release(v.p);
         return a;
     }
     for (;;) {
-        const char *hit = strstr(p, sp);
-        size_t n;
-        if (hit && hit >= end) hit = NULL;
-        n = hit ? (size_t)(hit - p) : (size_t)(end - p);
-        WellString *part = string_alloc_n(p, n);
+        long long hit = mem_find(d + start, total - start, sp, spl);
+        size_t end = hit < 0 ? total : start + (size_t)hit;
+        WellString *part = string_alloc_n(d + start, end - start);
         v.p = part;
         well_array_push(a, v, ctx);
         well_release(part);
-        if (!hit) break;
-        p = hit + spl;
-        if (p > end) break;
+        if (hit < 0) break;
+        start = end + spl;
+        if (start > total) break;
     }
     return a;
 }
@@ -1456,7 +1512,7 @@ void well_shutdown(void) {
     {
         const char *dbg = getenv("WELL_RC_DEBUG");
         if (dbg && dbg[0] && dbg[0] != '0') {
-            fprintf(stderr, "well: live objects at shutdown = %lld\n", g_live);
+            fprintf(stderr, "well: live objects at shutdown = %lld\n", live_load());
             fflush(stderr);
         }
     }
@@ -1497,11 +1553,6 @@ long long well_mono_ms(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000LL + (long long)ts.tv_nsec / 1000000LL;
 #endif
-}
-
-int well_rc_is_one(void *obj) {
-    WellObj *o = (WellObj *)obj;
-    return o && well_atomic_load(&o->rc) == 1;
 }
 
 long long well_id_util_get_id(void) {
@@ -1565,7 +1616,7 @@ void well_print_nl(void) {
 }
 
 long long well_live_count(void) {
-    return g_live;
+    return live_load();
 }
 
 static void force_clear_field(void *field_ptr, const WellFieldDesc *f, void *user) {
@@ -1594,7 +1645,7 @@ static void force_free_obj(WellObj *o) {
         well_event_unpin_payload(o);
         well_visit_fields(o, force_clear_field, NULL);
     }
-    g_live--;
+    live_dec();
     well_obj_free(o);
 }
 
@@ -1612,8 +1663,4 @@ void well_force_free_objects(WellObj *p) {
         force_free_obj(p);
         p = next;
     }
-}
-
-void well_force_cleanup_oid(long long oid) {
-    well_force_free_objects(well_oid_take_objects(oid));
 }

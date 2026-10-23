@@ -212,33 +212,6 @@ void well_cache_shutdown(void) {
     }
 }
 
-int well_cache_evict_oid(long long oid) {
-    int s, i, removed = 0;
-    for (s = 0; s < MODEL_SHARDS; s++) {
-        WellModelShard *sh = &g_model_shards[s];
-        well_lock_acquire(&sh->lock);
-        for (i = 0; i < sh->cap; i++) {
-            WellModelEntry *e = &sh->entries[i];
-            if (e->state != 1 || e->oid != oid || !e->obj) continue;
-            if (!well_rc_is_one(e->obj)) continue;
-            {
-                WellObj *o = (WellObj *)e->obj;
-                e->obj = NULL;
-                e->state = MODEL_TOMB;
-                sh->live--;
-                sh->tomb++;
-                o->flags &= ~WELL_FLAG_IN_MODEL;
-                well_release(o);
-                removed++;
-            }
-        }
-        if (sh->cap && (sh->live + sh->tomb) * MODEL_LOAD_DEN >= sh->cap * MODEL_LOAD_NUM)
-            model_rehash(sh, sh->cap);
-        well_lock_release(&sh->lock);
-    }
-    return removed;
-}
-
 int well_cache_evict_oid_all(long long oid) {
     int s, i, removed = 0;
     for (s = 0; s < MODEL_SHARDS; s++) {

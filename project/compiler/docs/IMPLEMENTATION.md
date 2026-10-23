@@ -236,7 +236,7 @@ typedef struct WellObj {
 > **状态（2026-10-22）**：对象图实现已移除（`well_graph_add_edge/remove_edge` 为 no-op 桩，`WellObj` 不再保留图字段）。成环被允许，由 oid 空闲清理整组回收（见 §3.3「不活跃清理」）。
 
 - 历史设计（未启用）：`graph_edges` 出边表 + 加边前 DFS 判环，命中 panic `"DAG violation"`；因每次引用写入 O(V+E)、且环已由 oid 整组清理兜底，未启用。
-- 现在的回收路径：自动路径 `WELL_MODEL_TTL_MS` **默认开启**（默认 60 秒，设为 `0`/负数关闭）→ 对过期未使用 oid 组执行回收；装配期 oid（`well_static_owner_oid()`，当前 0，由启动 ctx 决定）**永不回收**：TTL 扫描与 `well_force_cleanup_oid` 均跳过该 oid。
+- 现在的回收路径：自动路径 `WELL_MODEL_TTL_MS` **默认开启**（默认 60 秒，设为 `0`/负数关闭）→ 对过期未使用 oid 组执行回收；装配期 oid（`well_static_owner_oid()`，当前 0，由启动 ctx 决定）**永不回收**：TTL 扫描直接跳过该 oid（2026-10-23 起内部强制回收入口 `well_force_cleanup_oid` 已删除）。
 - 约束：过期回收按 oid 整组释放，判据是 `exec_ref==0` + 调度器空闲；语言层引用由 ctx pin、event payload pin、oid/static 写检查覆盖（见 §3.3），正常 Well 代码不会悬空；C/FFI 裸指针需自行 `well_oid_pin`。
 
 ### 3.3 Model / Cache / Store
@@ -281,7 +281,7 @@ typedef struct WellStore {
 - **环与跨 oid 约束**（重要）：
   - 同一 oid 组内的环允许存在，由清理整组回收；
   - 清理**不按 rc 判断**，但 `exec_ref==0` + 调度器空闲保证语言层没有组外引用：handler/Model pin、在飞 event payload（Model 对象）都会阻止清理；普通字段/容器跨 oid 写被拒绝；static 值必须是装配期 oid（String 例外）；
-  - 例外：C/FFI 直接持有 `WellObj*` 而未 `well_oid_pin`，或直接调用内部 `well_force_cleanup_oid` 绕过条件；event payload pin 目前只对 `IN_MODEL` 对象加 pin（未 Model.set 的局部对象跨 oid 携带属边角情况）；
+  - 例外：C/FFI 直接持有 `WellObj*` 而未 `well_oid_pin`；event payload 对 event 字段中的全部引用加 pin（2026-10-23 起不再只限 `IN_MODEL` 对象）；
   - 只有 `exec_ref==0` 且调度器无该 oid 运行/排队任务的组才会被清；活跃对象不会被误清；
   - 需要长期保留的数据请保持 oid 活跃（Cache.get/set 刷新时间）或使用 Store 回读。
 - Cache 锁是自旋锁（Windows `Interlocked*` / GCC `__atomic_*`）；MemoryStore 是 fake backend，不做事务。

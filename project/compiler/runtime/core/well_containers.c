@@ -155,8 +155,9 @@ WellArray *well_array_concat(WellArray *a, WellArray *b, WellCtx *ctx) {
 /* Array<String> only (checked by the compiler). */
 WellString *well_array_join(WellArray *a, WellString *sep) {
     const char *sp = sep ? sep->data : "";
-    size_t spl = strlen(sp);
-    long long n = a ? a->len : 0, i;
+    size_t spl = sep ? (size_t)sep->len : 0; /* R-12: cached length, not strlen */
+    long long n = a ? a->len : 0;
+    long long i;
     size_t total = 0;
     char *buf, *p;
     WellString *out;
@@ -177,7 +178,9 @@ WellString *well_array_join(WellArray *a, WellString *sep) {
         p += l;
     }
     *p = 0;
-    out = well_string_new(buf);
+    /* R-12: the result may contain embedded NULs copied from the elements;
+     * well_string_new() would truncate it at the first one. */
+    out = well_string_new_n(buf, total);
     free(buf);
     return out;
 }
