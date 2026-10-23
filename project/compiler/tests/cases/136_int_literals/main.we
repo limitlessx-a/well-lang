@@ -1,0 +1,12 @@
+module demo.int_leading_zero;
+
+controller Main {
+    run() {
+        var x: int = 08;
+        print(x);
+        var y: int = 0x10;
+        print(y);
+    }
+}
+
+entry Main;

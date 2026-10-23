@@ -1,0 +1,10 @@
+module demo.lex_bad_hex;
+
+controller Main {
+    run() {
+        var x = 0x;
+        print(x);
+    }
+}
+
+entry Main;

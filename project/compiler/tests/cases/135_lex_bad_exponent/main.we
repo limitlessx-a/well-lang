@@ -1,0 +1,10 @@
+module demo.lex_bad_exponent;
+
+controller Main {
+    run() {
+        var x = 1e;
+        print(x);
+    }
+}
+
+entry Main;

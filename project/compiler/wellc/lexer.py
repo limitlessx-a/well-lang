@@ -79,8 +79,11 @@ def lex(src: str, filename: str = "<src>") -> list[Token]:
             is_float = False
             if src.startswith(("0x", "0X"), i):
                 i += 2
+                hex_start = i
                 while i < n and src[i] in "0123456789abcdefABCDEF":
                     i += 1
+                if i == hex_start:
+                    err("bad hex literal: expected hex digits after 0x")
             else:
                 while i < n and src[i].isdigit():
                     i += 1
@@ -94,8 +97,11 @@ def lex(src: str, filename: str = "<src>") -> list[Token]:
                     i += 1
                     if i < n and src[i] in "+-":
                         i += 1
+                    exp_start = i
                     while i < n and src[i].isdigit():
                         i += 1
+                    if i == exp_start:
+                        err("bad float literal: expected digits after exponent")
             text = src[start:i]
             toks.append(Token("float" if is_float else "int", text, line, col))
             col += i - start

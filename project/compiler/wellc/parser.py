@@ -1,4 +1,6 @@
 """Recursive-descent parser for the Well MVP."""
+import math
+
 from .lexer import Token
 from .ast_nodes import *
 
@@ -67,6 +69,28 @@ class Parser:
     def err(self, msg: str):
         t = self.peek()
         raise ParseError(f"{self.fn}:{t.line}:{t.col}: {msg}")
+
+    def int_literal(self, t: Token) -> int:
+        """Convert an int token; ``08`` must not raise a bare ValueError."""
+        text = t.value
+        try:
+            if text[:2].lower() == "0x":
+                return int(text, 16)
+            return int(text, 10)
+        except ValueError:
+            raise ParseError(
+                f"{self.fn}:{t.line}:{t.col}: bad integer literal {text!r}") from None
+
+    def float_literal(self, t: Token) -> float:
+        try:
+            v = float(t.value)
+        except ValueError:
+            raise ParseError(
+                f"{self.fn}:{t.line}:{t.col}: bad float literal {t.value!r}") from None
+        if not math.isfinite(v):
+            raise ParseError(
+                f"{self.fn}:{t.line}:{t.col}: float literal out of range: {t.value}")
+        return v
 
     # ---------- types ----------
     def parse_type(self) -> TypeRef:
@@ -170,7 +194,7 @@ class Parser:
                 self.eat("=")
                 t = self.peek()
                 if t.kind == "int":
-                    value = int(t.value, 0)
+                    value = self.int_literal(t)
                     self.i += 1
                 elif t.kind == "str":
                     value = t.value
@@ -316,7 +340,7 @@ class Parser:
             return Unary("-", self.parse_case_value())
         if t.kind == "int":
             self.i += 1
-            return IntLit(int(t.value, 0))
+            return IntLit(self.int_literal(t))
         if t.kind == "str":
             self.i += 1
             return StrLit(t.value)
@@ -587,10 +611,10 @@ class Parser:
         t = self.peek()
         if t.kind == "int":
             self.i += 1
-            return IntLit(int(t.value, 0))
+            return IntLit(self.int_literal(t))
         if t.kind == "float":
             self.i += 1
-            return FloatLit(float(t.value))
+            return FloatLit(self.float_literal(t))
         if t.kind == "str":
             self.i += 1
             return StrLit(t.value)
