@@ -1,0 +1,20 @@
+module demo.handler_param_name;
+
+event PingEvent extends Event {
+    n: int;
+}
+
+handler PingHandler {
+    onEvent(evt: PingEvent) {
+        print(evt.n);
+    }
+}
+
+controller Main {
+    run() {
+        on(PingEvent, PingHandler);
+        emit(new PingEvent() { n: 3 });
+    }
+}
+
+entry Main;

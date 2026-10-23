@@ -1683,13 +1683,14 @@ class CodeGen:
                 if mm.name == mname:
                     m = mm
                     break
+            pname = m.params[0][0]
             self.w(f"static void {name}_onEvent(WellCtx* ctx, void* evp) {{")
             self.ind += 1
-            self.w(f"{ev}* e = ({ev}*)evp;")
+            self.w(f"{ev}* {pname} = ({ev}*)evp;")
             self.w("long long oid = ctx->oid;")
-            self.w("(void)e;")
+            self.w(f"(void){pname};")
             self.w("(void)oid;")
-            self.env = {m.params[0][0]: ev, "oid": "long"}
+            self.env = {pname: ev, "oid": "long"}
             self.current_ret = "void"
             mmark = self.next_id()
             mk = f"_m{mmark}"
