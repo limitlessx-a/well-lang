@@ -101,8 +101,20 @@ def from_parse_error(exc: Exception, fallback_file: str) -> dict:
 
 
 def from_check_error(exc: Exception, file: str, src: str, tokens=None) -> dict:
-    """Turn a CheckError (``FILE: message``, no position) into a diagnostic."""
+    """Turn a CheckError into a positioned diagnostic.
+
+    Newer checker messages already carry ``FILE:LINE:COL:`` (the checker
+    tracks the statement being checked); older/declaration-level messages are
+    ``FILE: message`` and are mapped back onto the source on a best-effort
+    basis.
+    """
     text = str(exc)
+    m = _POS_RE.match(text)
+    if m:
+        line = int(m.group("line"))
+        col = int(m.group("col"))
+        return make(m.group("file") or file, line, col, line, col + 1,
+                    "error", m.group("msg"), "semantic")
     prefix = file + ": "
     msg = text[len(prefix):] if text.startswith(prefix) else text
     return locate_semantic(file, src, msg, tokens)

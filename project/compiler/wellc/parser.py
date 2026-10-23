@@ -411,6 +411,7 @@ class Parser:
         node = self._parse_stmt()
         if not hasattr(node, "line"):
             node.line = t.line
+            node.col = t.col
             node.file = self.fn
         return node
 

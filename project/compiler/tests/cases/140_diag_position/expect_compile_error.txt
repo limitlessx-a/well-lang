@@ -1,0 +1,1 @@
+main.we:6:9: cannot assign String to int

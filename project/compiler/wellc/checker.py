@@ -28,6 +28,7 @@ class Checker:
         self.cur_ret = "void"
         self.loop_depth = 0
         self.break_depth = 0
+        self.cur_pos = None   # (file, line, col) of the statement being checked
 
     # ---------- public ----------
     def run(self):
@@ -101,6 +102,9 @@ class Checker:
         return self.p
 
     def err(self, msg):
+        if self.cur_pos is not None:
+            f, line, col = self.cur_pos
+            raise CheckError(f"{f}:{line}:{col}: {msg}")
         raise CheckError(f"{self.fn}: {msg}")
 
     # ---------- declarations ----------
@@ -396,6 +400,16 @@ class Checker:
 
     # ---------- statements ----------
     def check_stmt(self, s, env):
+        old = self.cur_pos
+        line = getattr(s, "line", None)
+        if line is not None:
+            self.cur_pos = (getattr(s, "file", self.fn), line, getattr(s, "col", 1))
+        try:
+            self._check_stmt(s, env)
+        finally:
+            self.cur_pos = old
+
+    def _check_stmt(self, s, env):
         if isinstance(s, VarDecl):
             ty = None
             if s.type:
@@ -1877,4 +1891,4 @@ class Checker:
         if target in ("bool", "int") and value in ("bool", "int"):
             return
         # String is strict; refs strict
-        raise CheckError(f"cannot assign {value} to {target}")
+        self.err(f"cannot assign {value} to {target}")

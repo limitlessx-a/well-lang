@@ -1,0 +1,11 @@
+module demo.diag_position;
+
+controller Main {
+    run() {
+        var x: int = 1;
+        x = "s";
+        print(x);
+    }
+}
+
+entry Main;
