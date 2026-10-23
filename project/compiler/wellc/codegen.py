@@ -663,8 +663,8 @@ class CodeGen:
         for s in b.stmts:
             self.gen_stmt(s)
 
-    def push_scope(self, mark: str, is_loop: bool = False):
-        self.scope_stack.append((mark, is_loop))
+    def push_scope(self, mark: str, is_loop: bool = False, kind: str = None):
+        self.scope_stack.append((mark, kind or ("loop" if is_loop else "block")))
 
     def pop_scope(self, mark: str):
         if self.scope_stack and self.scope_stack[-1][0] == mark:
@@ -676,13 +676,13 @@ class CodeGen:
     def emit_return_cleanup(self):
         if self.temp_mark:
             self.w(f"well_temp_release_to({self.temp_mark});")
-        for mark, _ in reversed(self.scope_stack):
+        for mark, _kind in reversed(self.scope_stack):
             self.emit_scope_release(mark)
 
     def emit_break_cleanup(self):
-        for mark, is_loop in reversed(self.scope_stack):
+        for mark, kind in reversed(self.scope_stack):
             self.emit_scope_release(mark)
-            if is_loop:
+            if kind in ("loop", "switch"):
                 break
 
     def gen_stmt(self, s: Stmt):
@@ -715,8 +715,13 @@ class CodeGen:
             expr = self.gen_expr(s.expr)
             if ct == "String":
                 owned = self.is_owned(s.expr)
-                self.w("{")
+                # `do { ... } while (0)` makes `break` inside a case leave the
+                # switch (not the enclosing loop); mirrors the int-switch codegen.
+                self.w("do {")
                 self.ind += 1
+                swm = f"_m{self.next_id()}"
+                self.w(f"int {swm} = well_ctx_mark(ctx);")
+                self.push_scope(swm, kind="switch")
                 if owned:
                     self.w(f"WellString *_sw = {expr};")
                     self.w("well_track_owned(ctx, _sw);")
@@ -745,9 +750,14 @@ class CodeGen:
                     self.w("}")
                 else:
                     self.w(f"(void)({expr});")
+                self.emit_scope_release(swm)
+                self.pop_scope(swm)
                 self.ind -= 1
-                self.w("}")
+                self.w("} while (0);")
             else:
+                swm = f"_m{self.next_id()}"
+                self.w(f"int {swm} = well_ctx_mark(ctx);")
+                self.push_scope(swm, kind="switch")
                 self.w(f"switch ((long long)({expr})) {{")
                 self.ind += 1
                 for val, body in s.cases:
@@ -764,6 +774,8 @@ class CodeGen:
                     self.w("} break;")
                 self.ind -= 1
                 self.w("}")
+                self.emit_scope_release(swm)
+                self.pop_scope(swm)
         elif isinstance(s, While):
             self.w(f"while ({self.gen_expr(s.cond)}) {{")
             self.ind += 1

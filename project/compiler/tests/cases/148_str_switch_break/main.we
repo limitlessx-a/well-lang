@@ -1,0 +1,38 @@
+module demo.str_switch_break;
+
+controller Main {
+    run() {
+        var a: Array<String> = ["a", "b", "c"];
+        var out: String = "";
+        for (var s of a) {
+            switch (s) {
+                case "a":
+                    out = out + "A";
+                    break;
+                case "b":
+                    out = out + "B";
+                    break;
+                default:
+                    out = out + "?";
+                    break;
+            }
+            out = out + "-";
+        }
+        print(out);
+        var n: int = 2;
+        switch (n) {
+            case 1:
+                print("one");
+                break;
+            case 2:
+                print("two");
+                break;
+            default:
+                print("other");
+                break;
+        }
+        print("done");
+    }
+}
+
+entry Main;
