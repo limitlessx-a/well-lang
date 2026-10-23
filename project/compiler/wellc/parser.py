@@ -14,6 +14,7 @@ class Parser:
         self.toks = tokens
         self.i = 0
         self.fn = filename
+        self.depth = 0
 
     # ---------- token helpers ----------
     def peek(self, k=0) -> Token:
@@ -407,13 +408,21 @@ class Parser:
         return VarDecl(name, ty, init)
 
     def parse_stmt(self) -> Stmt:
-        t = self.peek()
-        node = self._parse_stmt()
-        if not hasattr(node, "line"):
-            node.line = t.line
-            node.col = t.col
-            node.file = self.fn
-        return node
+        # Recursive descent guard: deeply nested blocks used to raise
+        # RecursionError instead of a language error.
+        self.depth += 1
+        if self.depth > 64:
+            self.err("statement nesting too deep (max 64)")
+        try:
+            t = self.peek()
+            node = self._parse_stmt()
+            if not hasattr(node, "line"):
+                node.line = t.line
+                node.col = t.col
+                node.file = self.fn
+            return node
+        finally:
+            self.depth -= 1
 
     def _parse_stmt(self) -> Stmt:
         t = self.peek()
@@ -503,7 +512,14 @@ class Parser:
 
     # ---------- expressions ----------
     def parse_expr(self) -> Expr:
-        return self.parse_ternary()
+        # Same guard for expression nesting (deep parenthesis / call chains).
+        self.depth += 1
+        if self.depth > 64:
+            self.err("expression nesting too deep (max 64)")
+        try:
+            return self.parse_ternary()
+        finally:
+            self.depth -= 1
 
     def parse_ternary(self) -> Expr:
         cond = self.parse_coalesce()

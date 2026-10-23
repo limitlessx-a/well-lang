@@ -29,6 +29,8 @@ class Checker:
         self.loop_depth = 0
         self.break_depth = 0
         self.cur_pos = None   # (file, line, col) of the statement being checked
+        self.expr_depth = 0
+        self.stmt_depth = 0
 
     # ---------- public ----------
     def run(self):
@@ -404,9 +406,13 @@ class Checker:
         line = getattr(s, "line", None)
         if line is not None:
             self.cur_pos = (getattr(s, "file", self.fn), line, getattr(s, "col", 1))
+        self.stmt_depth += 1
+        if self.stmt_depth > 150:
+            self.err("statement nesting too deep (max 150)")
         try:
             self._check_stmt(s, env)
         finally:
+            self.stmt_depth -= 1
             self.cur_pos = old
 
     def _check_stmt(self, s, env):
@@ -592,6 +598,15 @@ class Checker:
 
     # ---------- expressions ----------
     def check_expr(self, e, env):
+        self.expr_depth += 1
+        if self.expr_depth > 200:
+            self.err("expression nesting too deep (max 200)")
+        try:
+            return self._check_expr(e, env)
+        finally:
+            self.expr_depth -= 1
+
+    def _check_expr(self, e, env):
         if isinstance(e, IntLit):
             if e.value > 9223372036854775807 or e.value < -9223372036854775808:
                 self.err("integer literal out of 64-bit range")
@@ -843,16 +858,18 @@ class Checker:
         else:
             e.ty = lt
 
-    def fold_int(self, e):
+    def fold_int(self, e, depth=0):
         """Fold integer-literal-only expressions (used for compile-time range checks)."""
+        if depth > 200:
+            return None
         if isinstance(e, IntLit):
             return e.value
         if isinstance(e, Unary) and e.op == "-":
-            v = self.fold_int(e.expr)
+            v = self.fold_int(e.expr, depth + 1)
             return -v if v is not None else None
         if isinstance(e, Binary) and e.op in ("+", "-", "*", "/", "%"):
-            a = self.fold_int(e.left)
-            b = self.fold_int(e.right)
+            a = self.fold_int(e.left, depth + 1)
+            b = self.fold_int(e.right, depth + 1)
             if a is None or b is None:
                 return None
             if e.op in ("/", "%") and b == 0:

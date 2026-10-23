@@ -10,7 +10,7 @@ from .parser import Parser, ParseError
 from .checker import Checker, CheckError
 from .codegen import CodeGen
 from .ast_nodes import Program
-from .diagnostics import from_check_error, from_parse_error, locate_import
+from .diagnostics import from_check_error, from_parse_error, locate_import, make
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMPILER_DIR = os.path.dirname(HERE)
@@ -194,8 +194,12 @@ def compile_source(src: str, filename: str = "<src>") -> str:
         prog = Parser(toks, filename).parse_program()
         prog = Checker(prog, filename).run()
         return CodeGen(prog).gen()
+    except BuildError:
+        raise
     except (LexError, ParseError, CheckError) as e:
         raise BuildError(str(e))
+    except Exception as e:  # noqa: BLE001 - never leak a traceback to users
+        raise BuildError(f"internal compiler error: {type(e).__name__}: {e}")
 
 
 def build(path: str, out: str | None = None, keep_c: bool = False) -> tuple[str, str]:
@@ -209,8 +213,12 @@ def build(path: str, out: str | None = None, keep_c: bool = False) -> tuple[str,
         prog = load_program(path)
         prog = Checker(prog, path).run()
         code = CodeGen(prog).gen()
+    except BuildError:
+        raise
     except (LexError, ParseError, CheckError) as e:
         raise BuildError(str(e))
+    except Exception as e:  # noqa: BLE001 - never leak a traceback to users
+        raise BuildError(f"internal compiler error: {type(e).__name__}: {e}")
     with open(c_path, "w", encoding="utf-8") as f:
         f.write(code)
     if out is None:
@@ -253,8 +261,12 @@ def emit_c(path: str, out: str | None = None) -> str:
         prog = load_program(path)
         prog = Checker(prog, path).run()
         code = CodeGen(prog).gen()
+    except BuildError:
+        raise
     except (LexError, ParseError, CheckError) as e:
         raise BuildError(str(e))
+    except Exception as e:  # noqa: BLE001 - never leak a traceback to users
+        raise BuildError(f"internal compiler error: {type(e).__name__}: {e}")
     if out:
         with open(out, "w", encoding="utf-8") as f:
             f.write(code)
@@ -335,7 +347,11 @@ def check_file(path: str) -> tuple[dict, int]:
     diags: list = []
     cache: dict = {}
     order: list = []
-    _scan_for_check(path, cache, order, diags)
+    try:
+        _scan_for_check(path, cache, order, diags)
+    except Exception as e:  # noqa: BLE001 - --json must stay machine-readable
+        diags.append(make(path, 1, 1, 1, 2, "error",
+                          f"internal compiler error: {type(e).__name__}: {e}", "internal"))
 
     # Unresolved imports are warnings: the program still parses, it just
     # cannot be merged completely, so report them even when other errors exist.
@@ -357,6 +373,9 @@ def check_file(path: str) -> tuple[dict, int]:
             diags.append(from_parse_error(e, path))
         except CheckError as e:
             diags.append(from_check_error(e, path, cache[path]["src"], cache[path]["toks"]))
+        except Exception as e:  # noqa: BLE001 - --json must stay machine-readable
+            diags.append(make(path, 1, 1, 1, 2, "error",
+                              f"internal compiler error: {type(e).__name__}: {e}", "internal"))
 
     diags = _dedupe_diags(diags)
     rank = {p: i for i, p in enumerate(order)}

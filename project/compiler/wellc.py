@@ -57,6 +57,15 @@ def main(argv=None) -> int:
             except CheckIOError as ex:
                 print(f"wellc: error: {ex}", file=sys.stderr)
                 return 2
+            except Exception as ex:  # noqa: BLE001 - --json must stay machine-readable
+                result = {"ok": False, "file": os.path.abspath(args.file),
+                          "diagnostics": [{
+                              "file": os.path.abspath(args.file),
+                              "line": 1, "col": 1, "endLine": 1, "endCol": 2,
+                              "severity": "error",
+                              "message": f"internal compiler error: {type(ex).__name__}: {ex}",
+                              "code": "internal"}]}
+                code = 1
             if args.json:
                 # ensure_ascii keeps Windows console encodings (cp936/cp1252)
                 # from mangling paths/messages; exactly one JSON object.
