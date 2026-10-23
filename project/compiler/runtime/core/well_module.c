@@ -60,25 +60,34 @@ void well_module_register(const WellModule *module) {
 
 void well_module_init_all(void) {
     WellModule snapshot[WELL_MAX_MODULES];
-    int count, i;
+    int i;
     module_lock_init();
-    well_mutex_lock(&g_module_mutex);
-    if (g_modules_inited) {
+    for (;;) {
+        int count;
+        well_mutex_lock(&g_module_mutex);
+        if (g_modules_inited) {
+            well_mutex_unlock(&g_module_mutex);
+            return;
+        }
+        count = g_module_count;
+        memcpy(snapshot, g_modules, sizeof(WellModule) * (size_t)count);
         well_mutex_unlock(&g_module_mutex);
-        return;
+        /* Call init() outside the module lock: an init callback is allowed to
+         * register further modules, and a panic must not leave the lock held. */
+        for (i = 0; i < count; i++) {
+            if (snapshot[i].init && snapshot[i].init() != 0)
+                well_panic("module init failed");
+        }
+        well_mutex_lock(&g_module_mutex);
+        /* Modules registered by another module's init (nested registration) are
+         * picked up by a follow-up iteration instead of being left uninited. */
+        if (g_module_count == count) {
+            g_modules_inited = 1;
+            well_mutex_unlock(&g_module_mutex);
+            return;
+        }
+        well_mutex_unlock(&g_module_mutex);
     }
-    count = g_module_count;
-    memcpy(snapshot, g_modules, sizeof(WellModule) * (size_t)count);
-    well_mutex_unlock(&g_module_mutex);
-    /* Call init() outside the module lock: an init callback is allowed to
-     * register further modules, and a panic must not leave the lock held. */
-    for (i = 0; i < count; i++) {
-        if (snapshot[i].init && snapshot[i].init() != 0)
-            well_panic("module init failed");
-    }
-    well_mutex_lock(&g_module_mutex);
-    g_modules_inited = 1;
-    well_mutex_unlock(&g_module_mutex);
 }
 
 void well_module_shutdown_all(void) {

@@ -37,11 +37,12 @@ static const WellModule parent = {
 int main(void) {
     well_init();
     well_module_register(&parent);
-    well_module_init_all();   /* must not deadlock */
+    /* init_all() snapshots the table, runs callbacks outside the lock, then
+     * repeats if a callback registered another module (nested registration). */
+    well_module_init_all();   /* used to deadlock on the module mutex */
     assert(g_sibling_inited == 1);
-    well_module_shutdown_all();
+    well_shutdown();          /* runs module shutdown_all() */
     assert(g_sibling_stopped == 1);
-    well_shutdown();
     printf("module init nested register ok\n");
     return 0;
 }
