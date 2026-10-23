@@ -20,14 +20,27 @@ typedef struct {
     int cap;
 } MemStore;
 
-typedef struct {
+typedef struct MemResolveCtx {
     MemStore *store;
     void **temps;
     int n;
     int cap;
+    /* Object currently being decoded; the parent chain is used to detect
+     * cyclic references (allowed by the language) before recursing. */
+    unsigned int otype;
+    long long ooid;
+    struct MemResolveCtx *parent;
+    int depth;
 } MemResolveCtx;
 
-static void *mem_select(void *self, unsigned int type_id, long long oid);
+#define MEM_MAX_DECODE_DEPTH 128
+
+static void *mem_select_inner(MemStore *s, unsigned int type_id, long long oid,
+                              MemResolveCtx *parent);
+
+static void *mem_select(void *self, unsigned int type_id, long long oid) {
+    return mem_select_inner((MemStore *)self, type_id, oid, NULL);
+}
 
 static void mem_track(MemResolveCtx *ctx, void *obj) {
     if (!obj) return;
@@ -43,13 +56,22 @@ static void mem_track(MemResolveCtx *ctx, void *obj) {
 
 static void *mem_resolve(unsigned int type_id, long long oid, void *user) {
     MemResolveCtx *ctx = (MemResolveCtx *)user;
-    void *obj = mem_select(ctx->store, type_id, oid);
+    MemResolveCtx *p;
+    void *obj;
+    /* Re-entering an object that is still being decoded means the reference
+     * graph has a cycle. The language allows cycles, so break the back
+     * reference (write NULL) instead of recursing forever. */
+    for (p = ctx; p; p = p->parent) {
+        if (p->otype == type_id && p->ooid == oid) return NULL;
+    }
+    if (ctx->depth >= MEM_MAX_DECODE_DEPTH) return NULL;
+    obj = mem_select_inner(ctx->store, type_id, oid, ctx);
     if (obj) mem_track(ctx, obj);
     return obj;
 }
 
-static void *mem_select(void *self, unsigned int type_id, long long oid) {
-    MemStore *s = (MemStore *)self;
+static void *mem_select_inner(MemStore *s, unsigned int type_id, long long oid,
+                              MemResolveCtx *parent) {
     unsigned char *copy = NULL;
     size_t len = 0;
     int i;
@@ -74,6 +96,10 @@ static void *mem_select(void *self, unsigned int type_id, long long oid) {
         int k;
         memset(&ctx, 0, sizeof(ctx));
         ctx.store = s;
+        ctx.parent = parent;
+        ctx.otype = type_id;
+        ctx.ooid = oid;
+        ctx.depth = parent ? parent->depth + 1 : 1;
         obj = well_decode(type_id, oid, copy, len, mem_resolve, &ctx);
         free(copy);
         for (k = 0; k < ctx.n; k++) well_release(ctx.temps[k]);

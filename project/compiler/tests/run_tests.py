@@ -582,6 +582,7 @@ def run_c_tests() -> bool:
         ("store_pure_test", "pure memory store ok"),
         ("work_stealing_test", "work stealing ok"),
         ("json_deep_test", "json deep nesting rejected"),
+        ("store_cycle_test", "store cycle reload ok"),
     ]
     ok = True
     os.makedirs(BUILD, exist_ok=True)
