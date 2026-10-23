@@ -132,13 +132,16 @@ static void timer_ensure_thread(void) {
 
 static long long timer_add(long long ms, long long interval, WellTimerFn fn) {
     WellTimer *t;
-    int hold = 0;
+    long long id;
     if (!fn) well_panic("Timer: null handler");
     if (ms < 0) ms = 0;
     timer_ensure_thread();
     t = (WellTimer *)calloc(1, sizeof(WellTimer));
     if (!t) well_panic("out of memory (timer)");
-    t->id = well_id_util_get_id();
+    id = well_id_util_get_id(); /* return the id by value: the node may be freed
+                                 * by the timer thread as soon as the list lock
+                                 * is dropped (R-06) */
+    t->id = id;
     t->interval = interval;
     t->deadline = well_host_now_ms() + (ms > 0 ? ms : 1);
     t->fires = 0;
@@ -147,14 +150,16 @@ static long long timer_add(long long ms, long long interval, WellTimerFn fn) {
     well_mutex_lock(&g_timer_lock);
     if (!g_timer_service) {
         g_timer_service = 1;
-        hold = 1;
+        /* Hold the service reference while the list lock is held and before
+         * the node becomes visible, so the timer thread cannot drain the list
+         * and release the service count in between. */
+        well_service_hold();
     }
     t->next = g_timers;
     g_timers = t;
     well_cond_signal(&g_timer_cond);
     well_mutex_unlock(&g_timer_lock);
-    if (hold) well_service_hold();
-    return t->id;
+    return id;
 }
 
 long long well_timer_once(long long ms, WellTimerFn fn) {
