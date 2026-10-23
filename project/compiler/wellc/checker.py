@@ -1898,9 +1898,19 @@ class Checker:
                     return f.type.name
         return None
 
+    def is_ref_type(self, ty) -> bool:
+        if ty in ("String", "Bytes"):
+            return True
+        kind, _ = self.container_info(ty)
+        if kind:
+            return True
+        return ty in self.structs
+
     def check_assignable(self, target, value):
         if value == "null":
-            return
+            if self.is_ref_type(target):
+                return
+            self.err(f"cannot assign null to {target}")
         if target == value:
             return
         if target in NUMERIC and value in NUMERIC:

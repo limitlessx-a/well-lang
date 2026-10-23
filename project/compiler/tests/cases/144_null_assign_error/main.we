@@ -1,0 +1,11 @@
+module demo.null_assign_error;
+
+controller Main {
+    run() {
+        var x: int = 1;
+        x = null;
+        print(x);
+    }
+}
+
+entry Main;
