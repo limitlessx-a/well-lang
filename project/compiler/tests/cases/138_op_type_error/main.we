@@ -1,0 +1,10 @@
+module demo.op_type_error;
+
+controller Main {
+    run() {
+        var b: bool = "a" < 1;
+        print(b);
+    }
+}
+
+entry Main;

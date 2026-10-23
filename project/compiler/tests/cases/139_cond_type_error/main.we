@@ -1,0 +1,11 @@
+module demo.cond_type_error;
+
+controller Main {
+    run() {
+        if ("abc") {
+            print(1);
+        }
+    }
+}
+
+entry Main;

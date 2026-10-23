@@ -522,9 +522,8 @@ class Checker:
 
     def check_cond(self, e, env):
         t = self.check_expr(e, env)
-        if t not in ("bool", "int", "long", "null"):
-            # allow truthy-ish but warn/err
-            pass
+        if t not in ("bool", "int", "long"):
+            self.err(f"condition must be bool/int/long, got {t}")
 
     def target_type(self, tgt, env):
         if isinstance(tgt, Ident):
@@ -710,7 +709,18 @@ class Checker:
                 e.ty = ft
         elif isinstance(e, Unary):
             t = self.check_expr(e.expr, env)
-            e.ty = "bool" if e.op == "!" else t
+            if e.op == "!":
+                if t not in ("bool", "int", "long"):
+                    self.err(f"operator ! requires a bool operand, got {t}")
+                e.ty = "bool"
+            elif e.op in ("-", "+", "~"):
+                if t not in NUMERIC:
+                    self.err(f"operator {e.op} requires a numeric operand, got {t}")
+                if e.op == "~" and t in ("double", "float"):
+                    self.err("operator ~ requires an integer operand")
+                e.ty = t
+            else:
+                self.err(f"unknown unary operator {e.op}")
         elif isinstance(e, Binary):
             self.check_binary(e, env)
         elif isinstance(e, New):
@@ -779,14 +789,30 @@ class Checker:
             if lt != "String" or rt != "String":
                 self.err("String concatenation requires both operands to be String")
             e.ty = "String"
-        elif e.op in ("==", "!=", "<", "<=", ">", ">=", "&&", "||"):
+        elif e.op in ("==", "!="):
+            if lt != rt and not (lt in NUMERIC and rt in NUMERIC) and "null" not in (lt, rt):
+                self.err(f"cannot compare {lt} with {rt}")
+            e.ty = "bool"
+        elif e.op in ("<", "<=", ">", ">="):
+            if lt not in NUMERIC or rt not in NUMERIC:
+                self.err(f"operator {e.op} requires numeric operands, got {lt} and {rt}")
+            e.ty = "bool"
+        elif e.op in ("&&", "||"):
+            if lt not in ("bool", "int", "long") or rt not in ("bool", "int", "long"):
+                self.err(f"operator {e.op} requires bool operands, got {lt} and {rt}")
             e.ty = "bool"
         elif e.op == "??":
             e.ty = lt if lt != "null" else rt
         elif e.op == "[]":
             e.ty = "int"
-        elif e.op in ("+", "-", "*", "/", "%"):
-            if lt in ("double", "float") or rt in ("double", "float"):
+        elif e.op in ("+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"):
+            if lt not in NUMERIC or rt not in NUMERIC:
+                self.err(f"operator {e.op} requires numeric operands, got {lt} and {rt}")
+            if e.op == "%" and (lt in ("double", "float") or rt in ("double", "float")):
+                self.err("operator % requires integer operands")
+            if e.op in ("&", "|", "^", "<<", ">>"):
+                e.ty = "int"
+            elif lt in ("double", "float") or rt in ("double", "float"):
                 e.ty = "double"
             elif lt == "long" or rt == "long":
                 e.ty = "long"
@@ -800,8 +826,6 @@ class Checker:
                     lo, hi = (-2147483648, 2147483647) if e.ty == "int" else (-9223372036854775808, 9223372036854775807)
                     if v < lo or v > hi:
                         self.err(f"integer constant overflow ({e.ty})")
-        elif e.op in ("&", "|", "^", "<<", ">>"):
-            e.ty = "int"
         else:
             e.ty = lt
 
