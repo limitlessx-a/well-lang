@@ -22,9 +22,10 @@ BUILD = os.path.join(COMPILER_DIR, "build", "tests")
 CASES = os.path.join(HERE, "cases")
 
 # Hard timeouts so a hung compiler/test binary fails its case instead of
-# stalling the whole regression run (audit T3).
+# stalling the whole regression run (audit T3). The C race tests sleep for
+# ~30s by design, so the run budget is generous.
 BUILD_TIMEOUT = 120
-RUN_TIMEOUT = 30
+RUN_TIMEOUT = 120
 
 # Cases reported SKIP because an external dependency (requires.txt) is missing.
 SKIPPED = []
