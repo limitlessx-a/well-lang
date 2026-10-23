@@ -39,6 +39,9 @@ Notes:
 - Baselines are environment specific; regenerate with `--save-baseline` after
   intentional performance changes and commit the JSON if desired.
 - Build artifacts stay in `build/bench/` (gitignored).
+- A run whose HTTP throughput scenario reports client errors (`errors > 0`)
+  exits non-zero; `verify.py --full` therefore fails its bench smoke instead of
+  accepting a run with failed requests.
 - Worker count defaults to `max(1, cores*3/4)`; set `WELL_WORKERS` explicitly
   when comparing baselines across machines/settings.
 - Compiler comparison: set `WELL_CC=gcc` (driver adds `-O2` by default) or
@@ -50,7 +53,12 @@ Notes:
 
 ## POSIX CI
 
-`.github/workflows/verify.yml` runs `verify.py --quick` on Ubuntu with tcc.
-It is provisional: the project has been developed on Windows/TCC, so the first
-Linux runs are expected to expose platform assumptions (paths, HTTP/WS timing,
-`.exe` suffixes) rather than to be green immediately.
+The repository-root `.github/workflows/verify.yml` runs the **full**
+`tools/verify.py` on Ubuntu with gcc: all `.we` cases + all C tests + the
+`check-cli` self-test, on every push/PR that touches `project/compiler/**`.
+POSIX builds use gcc because TinyCC 0.9.27's Linux port lacks the `__atomic_*`
+builtins the runtime needs; the driver adds `-O2 -fwrapv` there automatically.
+Cases that need a local MySQL (`52_mysql`/`53_mysql_pool`, `mysql_conn_test`)
+print `SKIP` when `127.0.0.1:3306` is unreachable. Benchmarks are **not** part
+of the push gate: the `bench` job only runs for manual `workflow_dispatch` with
+`run_bench=true`, to avoid timing noise on shared runners.

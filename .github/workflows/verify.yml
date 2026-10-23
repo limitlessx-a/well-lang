@@ -8,7 +8,7 @@ name: verify
 # runtime path uses Interlocked and keeps TCC as the default there.
 #
 # Jobs:
-#   linux - 115 .we cases + 12 C tests + check-cli (every compiler push/PR)
+#   linux - all .we cases + all C tests + check-cli (every compiler push/PR)
 #   bench - optional HTTP bench smoke (workflow_dispatch with run_bench=true)
 on:
   push:

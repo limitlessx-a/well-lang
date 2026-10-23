@@ -104,7 +104,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 
 ### 2.3 语句
 
-`var`（可带类型）、赋值、`if/else`、`while`、`for(init;cond;step)`、`for (x of array)`、`for (k in map)`、`switch/case/default`、`return`、`break`、`continue`、块。
+`var`（可带类型）、赋值、`if/else`、`while`、`for(init;cond;step)`、`for (var x of array)`、`for (var k in map)`、`switch/case/default`、`return`、`break`、`continue`、块。
 
 - `switch (expr) { case <常量>: 语句...; default: 语句...; }`：expr 支持 `int/long/String`；**无 fallthrough**（每个 case 自动 break）；case 值必须是字面量/const/枚举成员；`break` 在 switch 内表示退出 switch（switch 也计入 breakable 结构）；String switch 生成 `well_string_eq` 的 if/else 链。
 
@@ -187,7 +187,7 @@ Bytes（可变字节缓冲）：
 | `m["k"]` / `m["k"] = v` | Map 读写；缺失返回值类型默认值（引用 `null`） |
 | `m.get(k)` / `m.set(k, v)` | 显式读写，语义同下标 |
 | `m.size` / `m.has(k)` / `m.delete(k)` | 大小、键判断、删除 |
-| `for (x of a)` / `for (k in m)` | Array 值迭代 / Map 键迭代 |
+| `for (var x of a)` / `for (var k in m)` | Array 值迭代 / Map 键迭代 |
 
 ---
 
@@ -416,12 +416,13 @@ typedef struct WellStore {
 - 超时清扫线程：`WELL_HTTP_TIMEOUT_MS`（5s）内无人响应则返回 504 并关闭该连接；
 - 路由按 method + path 精确匹配，未命中返回 404；连接级缓存上一次的 `method+path -> route`，keep-alive 下命中即跳过模块锁；
 - 自写 parser：request line、headers、Content-Length、body；
-- 限制：header 16KB、body 1MB；
+- 头部自首字节起总时限 `WELL_HTTP_HEADER_TIMEOUT_MS`（5s）；在线连接数硬上限 `WELL_HTTP_MAX_CONNECTIONS`（默认 1024），超出时直接回 503 并关闭，避免线程/内存耗尽；
+- 限制：header 若在一次 `recv` 内完整到达，可接受至连接 scratch 上限（65536 字节，约 64KB）；跨多次 `recv` 且长度超过 16KB 仍未读到 `\r\n\r\n` 则拒绝；body 1MB；
 - Handler 通过 `HttpRequestEvent` 接收 `reqId/method/path/query/body`；
 - codegen 为每个 route 生成 wrapper，构造事件并直接调用 handler；
 - handler panic 在 worker 线程用 setjmp 捕获隔离；
-- 写响应：`TCP_NODELAY` 关闭 Nagle；小响应（头+体 ≤4KB）合并成一次 send，减少系统调用与分段；
-- 当前限制：每连接同一时刻一个在飞请求（不支持 pipelining 并发）；无 chunked/TLS；每连接一个线程，高并发连接数受线程数限制；
+- 写响应：`TCP_NODELAY` 关闭 Nagle；响应体 ≤3800 字节且响应头 ≤320 字节时，头+体合并成一次 send（总长 <4096），减少系统调用与分段；
+- 当前限制：每连接同一时刻一个在飞请求（不支持 pipelining 并发）；无 chunked/TLS；每连接一个线程，连接总数受 `WELL_HTTP_MAX_CONNECTIONS`（默认 1024）限制；
 - Windows：动态加载 `ws2_32.dll`（TCC 无 winsock 头）；Linux：POSIX socket。
 
 ### 3.13 WebSocket
@@ -506,7 +507,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（122 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（全部 .we 用例 + C serialize/store/cleanup/ttl/pool/json/rtfix 等测试）
 python tests\run_tests.py
 
 # 一键回归（推荐）：全部用例 + C 测试；--quick 只跑 .we；--full 加 bench smoke
@@ -516,12 +517,12 @@ python tools\verify.py [--quick|--full]
 python tools\bench.py --scenario all --json build\bench\result.json
 python tools\bench.py --compare build\bench\baseline.json --threshold 30
 # 基线文件与场景说明见 tools/README.md
-# POSIX CI：.github/workflows/verify.yml，Linux + gcc -O2 跑 verify.py --quick（2026-10-22 已通过；C 测试/bench 未纳入）
+# POSIX CI：仓库根 .github/workflows/verify.yml，Linux + gcc -O2 跑完整 verify.py（全部 .we 用例 + C 测试 + check-cli）；bench 仅 workflow_dispatch 手动触发
 ```
 
 C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang，见 §3.2 的 TinyCC 原子内建函数限制）。使用 gcc：`WELL_CC=gcc`（自动 `-O2 -fwrapv`）。
 额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`，并**始终**追加 `-fwrapv`（语言溢出语义，`WELL_CFLAGS` 不能关闭）；TCC 使用默认参数（不追加 `-O2`）。切换优化级别后先跑 `tools/verify.py`。
-本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2 -fwrapv`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 115 用例串行编译过慢（~25s/case），未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 115 个 `.we` 用例已通过（2 个 MySQL 用例跳过）。
+本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2 -fwrapv`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 C 测试，全量 `.we` 用例串行编译过慢（~25s/case），本机未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）跑全部 `.we` 用例（2 个 MySQL 用例跳过）。
 需要本机 MySQL 的 `52_mysql`/`53_mysql_pool` 用 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时测试打印 `SKIP`（CI runner 无 MySQL 时不会误报）。
 
 ---
@@ -532,9 +533,8 @@ C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe
 |---|---|
 | 线程池 | 已实现每 oid 队列 + N worker + work stealing；仍无 reduction / 抢占，长 handler 会占一个 worker |
 | 容器字面量上下文受限 | `[]`/`{}` 目前只在 `var` 初始化与下标赋值中生成；函数实参、struct/event 初始化里的容器字面量尚未支持 |
-| 容器方法不完整 | 只实现 `push/pop/length`、`has/delete/size`、下标、`for-of/in`；缺 `shift/unshift/slice/concat/join/indexOf/includes`、Map `keys/values/entries`、回调方法 |
+| 容器回调方法 | Array/Map/Linked 的常用方法（`push/pop/shift/unshift/slice/concat/join/indexOf/includes/clear/sort/reverse`、Map `keys/values/entries`、下标、`for-of/in`）已实现；缺 `map/filter/forEach` 等回调方法（需要 lambda） |
 | 无泛型/接口/异常 | 仅内置 `Array<T>`/`Map<T>`；用户自定义泛型 v2 |
-| 无 `switch` | 可后续补 parser/codegen；`for-of`/`for-in` 已有（Array 值 / Map 键） |
 | 无 `invoke` | D-21 已从语言删除；计算用 `func`，跨 handler 用 `emit` |
 | DAG 检查开销 | 每次引用写入做 DFS，O(V+E)；图锁串行化，后续可优化/分级 |
 | controller oid=0 | 设计语义：controller `run` 中 `new` + `Model.set` 是系统级只读数据（oid=0，可读不可写、不参与 TTL 回收）；需要运行期修改的数据在事件 handler 中创建 |

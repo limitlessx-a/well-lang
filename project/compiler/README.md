@@ -17,10 +17,10 @@
   - 整数 `/`、`%` 除数为 0 会 panic（带源码行号）；编译期字面量除零/常量溢出直接报错；运行期溢出明确为二补码 wrap（gcc/clang 默认追加 `-fwrapv`，TCC 实现即 wrap）
   - `String +` 单次拼接正常，但循环 `s = s + x` 是 O(n²)；大量拼接用 `Bytes`（20k 次实测约 0.6s vs Bytes ≈1–2ms）
 - 容器：`Array<T>`（`[]`）、`Map<T>`（`{}`，String 键、值同质）、`Linked<T>`（双向链表）
-  - `a.push/pop/shift/unshift`、`a.get/set`、`a[i]`、`a.length`、`a.sort()`（int/long/double/String）、`a.reverse()`、`for (x of a)`
+  - `a.push/pop/shift/unshift`、`a.get/set`、`a[i]`、`a.length`、`a.sort()`（int/long/double/String）、`a.reverse()`、`for (var x of a)`
   - `a.slice(起,止)`、`a.concat(other)`、`a.join(sep)`（仅 `Array<String>`）、`a.indexOf(v)`、`a.includes(v)`、`a.clear()`
-  - `m.get/set`、`m.has/delete`、`m["k"]`、`m.size`、`m.keys()`、`m.values()`、`m.clear()`、`for (k in m)`
-  - `l.pushHead/pushTail/popHead/popTail`、`l.head/tail/get`、`l.length`、`for (x of l)`
+  - `m.get/set`、`m.has/delete`、`m["k"]`、`m.size`、`m.keys()`、`m.values()`、`m.clear()`、`for (var k in m)`
+  - `l.pushHead/pushTail/popHead/popTail`、`l.head/tail/get`、`l.length`、`for (var x of l)`
   - 越界/缺失：值类型返回默认值，引用类型返回 `null`
   - 写容器要求 `container.oid == ctx.oid`，插入引用元素要求 `element.oid == container.oid`
   - `Map` 使用 FNV-1a 64 位字符串 hash + 开放寻址（保留插入序）；`Linked` 首尾 O(1)、get O(n)
@@ -60,7 +60,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（122 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（全部 .we 用例 + C serialize/store/cleanup/ttl/pool/json/rtfix 等测试）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```
@@ -95,7 +95,7 @@ python wellc.py check examples\hello.we --json
 运行测试 / 一键回归：
 
 ```powershell
-python tools\verify.py            # 全量：122 个 .we 用例 + C 测试（含 check-cli 自测）
+python tools\verify.py            # 全量：全部 .we 用例 + 全部 C 测试（含 check-cli 自测）
 python tools\verify.py --quick    # 只跑 .we 用例 + check-cli 自测
 python tools\verify.py --full     # 全量 + HTTP bench smoke
 ```
@@ -132,13 +132,13 @@ $env:WELL_CFLAGS = "-O2 -g"
 $env:WELL_CFLAGS = ""
 ```
 
-验证状态（2026-10-22）：GCC 16.2 -O2 -fwrapv 下定向 HTTP/WS/JSON/TTL 用例与全部 12 个 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 115 用例串行编译约 25s/case，未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 115 个 `.we` 用例已跑通（2 个 MySQL 用例跳过）。
+验证状态（2026-10-22）：GCC 16.2 -O2 -fwrapv 下定向 HTTP/WS/JSON/TTL 用例与全部 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 `.we` 用例串行编译约 25s/case，未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 `.we` 用例已跑通（2 个 MySQL 用例跳过）。
 
 ### CI（Linux）
 
-`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑完整 `tools/verify.py`（**122 个 `.we` 用例 + 12 个 C 测试 + check-cli**；POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2 -fwrapv`）。2026-10-23 起 **CI 已转正**：C 测试纳入每次 push/PR 的 Linux 门禁；`52_mysql`/`53_mysql_pool` 因 runner 无 MySQL 自动 SKIP。bench（HTTP 压测/解析器基线）不进入 push 门禁，通过 `workflow_dispatch` 勾选 `run_bench=true` 手动触发，避免共享 runner 的计时噪声。需要本机 MySQL 的用例通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
+仓库根 `.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑完整 `tools/verify.py`（**全部 `.we` 用例 + 全部 C 测试 + check-cli**；POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2 -fwrapv`）。2026-10-23 起 **CI 已转正**：C 测试纳入每次 push/PR 的 Linux 门禁；`52_mysql`/`53_mysql_pool` 因 runner 无 MySQL 自动 SKIP。bench（HTTP 压测/解析器基线）不进入 push 门禁，通过 `workflow_dispatch` 勾选 `run_bench=true` 手动触发，避免共享 runner 的计时噪声。需要本机 MySQL 的用例通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
 
-插件 CI 在 `.github/workflows/extension.yml`：`project/vscode_extension/**` 变化时跑 `npm test`（TypeScript 编译 + 格式化/import/语法/激活冒烟 4 组测试）。
+插件 CI 在仓库根 `.github/workflows/extension.yml`：`project/vscode_extension/**` 变化时跑 `npm test`（TypeScript 编译 + 格式化/import/语法/激活冒烟 4 组测试）。
 
 
 调试引用计数：
@@ -153,7 +153,7 @@ $env:WELL_RC_DEBUG = "1"
 - 线程池 + 每 oid 队列：`WELL_WORKERS` 未设置时按 CPU 自动取 `max(1, cores*3/4)`（8 核 → 6），可显式设 1..64 或 `auto`；per-worker local deque + work stealing；同 oid 严格 FIFO，异 oid 可并行；测试 runner 默认 `WELL_WORKERS=1` 保证确定性。
 - handler panic 会隔离并继续调度；panic 输出带 `file:line`；controller/装配期未捕获 panic 以退出码 **70** 退出。
 - `print` 语句通过 runtime 锁串行化，避免多线程输出交错。
-- 没有实现 Array/Map 的完整 JS 方法（`shift/unshift/slice/concat/join/indexOf/includes`、Map `keys/values/entries`），也没有 `map/filter/forEach`（需要 lambda）。
+- 没有 `map/filter/forEach` 等回调式容器方法（需要 lambda）；`shift/unshift/slice/concat/join/indexOf/includes`、Map `keys/values/entries` 已实现（见上）。
 - 没有实现泛型（除内置 Array/Map）、接口、异常、通用 `for-in`（只支持 Map 键迭代）、持久化、热更新；`switch/case` 与 enum `fromInt/toString` 已支持；`invoke` 已从语言中删除（D-21），不是遗漏。
 - 允许成环：不立即释放，随 oid 过期整组回收；长寿命/热点 oid 的环需要显式回收或子 oid 拆分。
 - 字段引用写入同时校验 `target.oid == ctx.oid` 与 `value.oid == target.oid`；event 构造豁免。
@@ -162,5 +162,6 @@ $env:WELL_RC_DEBUG = "1"
 - 生成 C 使用 C99（兼容 TinyCC）；线程/调度已实现（Windows CreateThread / POSIX pthread）。
 - HTTP/1.1 仍是受限实现：支持 keep-alive（每连接一个 reader 线程、15s 空闲超时），但不支持 pipelining 并发、chunked、TLS/HTTP2；`Http.respond` 可在任意 handler 中首个生效，5s 未响应返回 504 并关闭连接。
 - Model 已拆为 Cache + Store（默认 MemoryStore，字节行）；MySQL/FileStore 尚未接入。
+- 历史修复记录（A1–A9 等旧审计条目的复核结论）见 [`../document/核心代码审计.md`](../document/核心代码审计.md) §4；本 README 不再逐条宣称“已修复”，以该审计文档为准。
 
 详细实现、运行时设计、扩展指引见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)。

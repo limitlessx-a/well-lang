@@ -1,7 +1,7 @@
 # Well 语言与运行时（AI 参考）
 
 > 面向需要生成/修改 Well 代码的 AI。只覆盖三部分：**语法规则**、**实现方式**、**注意事项**。
-> 以当前实现为准（2026-10-23，122 个 `.we` 用例 + 12 个 C 测试通过）。冲突时以源码/测试为准。
+> 以当前实现为准（2026-10-23，全部 `.we` 用例（当前 151 个）+ 全部 C 测试通过）。冲突时以源码/测试为准。
 
 ---
 
@@ -206,8 +206,8 @@ x = x + 1;
 if (x > 0) { ... } else { ... }
 while (x < 10) { x = x + 1; }
 for (var i: int = 0; i < 3; i = i + 1) { ... }
-for (v of arr) { ... }   // Array/Linked 值
-for (k in map) { ... }   // Map 键（String）
+for (var v of arr) { ... }   // Array/Linked 值
+for (var k in map) { ... }   // Map 键（String）
 
 switch (x) {
     case 1: print("one");
@@ -315,9 +315,9 @@ Mysql.connect/exec/queryJson/close / Mysql.pool/execPool/queryJsonPool/closePool
 
 ```text
 Array<T>: push/pop/shift/unshift/get/set/slice/concat/join/indexOf/includes/clear/sort/reverse
-           下标 a[i]、a.length、for (x of a)
-Map<T>:   get/set/has/delete/keys/values/clear、m["k"]、m.size、for (k in m)
-Linked<T>:pushHead/pushTail/popHead/popTail/head/tail/get/length、for (x of l)
+           下标 a[i]、a.length、for (var x of a)
+Map<T>:   get/set/has/delete/keys/values/clear、m["k"]、m.size、for (var k in m)
+Linked<T>:pushHead/pushTail/popHead/popTail/head/tail/get/length、for (var x of l)
 String:   s[i]/byteAt/charCodeAt/codePointAt、substring/slice、indexOf、contains/
           startsWith/endsWith、trim、toLower/toUpper、split、replace、
           String.fromByte/fromInt/fromCodePoint
@@ -422,7 +422,7 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 
 ### 2.8 HTTP / WebSocket / Timer / MySQL（实现要点）
 
-- HTTP：listener + 每连接 reader 线程；keep-alive（空闲 15s 关闭）；每请求 task 在 worker 上执行；`Http.respond` 首个响应生效，5s 无响应 504；header 16KB/body 1MB；无 TLS/chunked/pipelining/连接数上限；
+- HTTP：listener + 每连接 reader 线程；keep-alive（空闲 15s 关闭）；每请求 task 在 worker 上执行；`Http.respond` 首个响应生效，5s 无响应 504；header 单次 recv 内最多约 64KB，跨 recv 超 16KB 拒绝，头部总时限 5s；body 1MB；连接数上限 `WELL_HTTP_MAX_CONNECTIONS`（默认 1024，超出回 503）；无 TLS/chunked/pipelining；
 - WS：listener + 每连接 reader 线程；每连接一个 oid，open/message/close task 串行；text/ping/pong/close；无 TLS/分片/二进制/背压；
 - Timer：独立线程约 5ms 轮询；到期以 timer id 为 oid 投递 task；有 timer 时进程保持运行；
 - MySQL：自实现 wire protocol，native auth + COM_QUERY；连接池；同步调用。
@@ -489,8 +489,8 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 
 ```powershell
 python wellc.py build app.we -o build\app.exe
-python tools\verify.py --quick    # 122 个 .we 用例
-python tools\verify.py            # + 12 个 C 测试
+python tools\verify.py --quick    # 全部 .we 用例
+python tools\verify.py            # + 全部 C 测试
 ```
 
 - `WELL_WORKERS` 未设置时按 CPU 自动；测试 runner 固定 1；
