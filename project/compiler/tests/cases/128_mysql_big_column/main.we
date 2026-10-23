@@ -1,0 +1,14 @@
+module demo.mysql_big_column;
+
+controller MysqlController {
+    run() {
+        Mysql.connect("127.0.0.1", 3306, "root", "db@root", "mysql");
+        var one: String = Mysql.queryJson("SELECT REPEAT('a', 2000) AS big");
+        print(one.length);
+        var two: String = Mysql.queryJson("SELECT REPEAT('x', 600) AS a, REPEAT('y', 600) AS b");
+        print(two.length);
+        Mysql.close();
+    }
+}
+
+entry MysqlController;

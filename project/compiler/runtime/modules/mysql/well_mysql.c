@@ -287,6 +287,24 @@ int well_mysql_conn_exec(WellMysqlConn *c, const char *sql) {
     free(pkt); return (int)affected;
 }
 
+/* Grow the JSON result buffer so that at least ``need`` bytes are usable
+ * (including the terminating NUL). Growth happens before writing, never
+ * after: a field longer than the current capacity used to write past the
+ * end of the 1KB initial buffer. */
+static char *mysql_json_reserve(char *buf, size_t *cap, size_t need) {
+    size_t nc = *cap;
+    char *nb;
+    if (need <= nc) return buf;
+    while (nc < need) {
+        if (nc > ((size_t)-1) / 2) well_panic("out of memory (MySQL json)");
+        nc *= 2;
+    }
+    nb = (char *)realloc(buf, nc);
+    if (!nb) well_panic("out of memory (MySQL json)");
+    *cap = nc;
+    return nb;
+}
+
 WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
     unsigned char *pkt = NULL; size_t plen = 0, pos;
     unsigned long long cols = 0;
@@ -294,12 +312,14 @@ WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
     WellString *out;
     size_t cap = 1024, len = 0; char *buf = (char *)malloc(cap);
     unsigned long long col;
+    if (!buf) well_panic("out of memory (MySQL json)");
     if (!c->connected) well_panic("MySQL: not connected");    { size_t n = strlen(sql); unsigned char *q = (unsigned char *)malloc(n + 1); q[0]=0x03; memcpy(q+1,sql,n); c->seq=0; my_write_packet(c, q,n+1); free(q); }
     if (my_read_packet(c, &pkt, &plen) != 0) well_panic("MySQL: read failed");
-    if (pkt[0] == 0xFF) { char msg[512]; size_t n=plen>3?plen-3:0; if(n>sizeof(msg)-1)n=sizeof(msg)-1; memcpy(msg,pkt+3,n); msg[n]='\0'; free(pkt); well_panic(msg); }
+    if (plen > 0 && pkt[0] == 0xFF) { char msg[512]; size_t n=plen>3?plen-3:0; if(n>sizeof(msg)-1)n=sizeof(msg)-1; memcpy(msg,pkt+3,n); msg[n]='\0'; free(pkt); well_panic(msg); }
     pos = 0;
     if (my_read_lenenc(pkt, plen, &pos, &cols) != 0) { free(pkt); well_panic("MySQL: bad column count"); }
     free(pkt);
+    if (cols > 4096) well_panic("MySQL: too many columns");
     names = (char **)calloc((size_t)cols, sizeof(char *));
     if (!names) well_panic("out of memory (MySQL columns)");
     for (col = 0; col < cols; col++) {
@@ -311,44 +331,63 @@ WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
     }
     if (my_read_packet(c, &pkt, &plen) != 0) well_panic("MySQL: read EOF");
     free(pkt);
+    buf = mysql_json_reserve(buf, &cap, len + 2);
     buf[len++] = '['; buf[len] = '\0';
     {
         int first = 1;
         for (;;) {
-            size_t pp = 0;
+            size_t pp = 0, j;
             if (my_read_packet(c, &pkt, &plen) != 0) well_panic("MySQL: read row");
             if (plen > 0 && pkt[0] == 0xFE && plen < 9) { free(pkt); break; }
-            if (!first) { buf[len++] = ','; buf[len] = '\0'; }
+            if (!first) {
+                buf = mysql_json_reserve(buf, &cap, len + 2);
+                buf[len++] = ',';
+            }
             first = 0;
-            buf[len++] = '{'; buf[len] = '\0';
+            buf = mysql_json_reserve(buf, &cap, len + 2);
+            buf[len++] = '{';
             for (col = 0; col < cols; col++) {
                 int isnull = 0; char *val = my_read_lenenc_str(pkt, plen, &pp, &isnull);
-                size_t j;
-                if (col) { buf[len++] = ','; }
+                if (col) {
+                    buf = mysql_json_reserve(buf, &cap, len + 2);
+                    buf[len++] = ',';
+                }
+                buf = mysql_json_reserve(buf, &cap, len + 2);
                 buf[len++] = '"';
-                for (j = 0; names[col] && names[col][j]; j++) { char ch = names[col][j]; if (ch == '"' || ch == '\\') buf[len++] = '\\'; buf[len++] = ch; }
+                for (j = 0; names[col] && names[col][j]; j++) {
+                    char ch = names[col][j];
+                    buf = mysql_json_reserve(buf, &cap, len + 3);
+                    if (ch == '"' || ch == '\\') buf[len++] = '\\';
+                    buf[len++] = ch;
+                }
+                buf = mysql_json_reserve(buf, &cap, len + 3);
                 buf[len++] = '"'; buf[len++] = ':';
-                if (isnull) { memcpy(buf + len, "null", 4); len += 4; }
-                else {
+                if (isnull) {
+                    buf = mysql_json_reserve(buf, &cap, len + 5);
+                    memcpy(buf + len, "null", 4); len += 4;
+                } else {
+                    buf = mysql_json_reserve(buf, &cap, len + 2);
                     buf[len++] = '"';
                     for (j = 0; val && val[j]; j++) {
                         char ch = val[j];
+                        buf = mysql_json_reserve(buf, &cap, len + 3);
                         if (ch == '"' || ch == '\\') buf[len++] = '\\';
                         if (ch == '\n') { buf[len++] = '\\'; ch = 'n'; }
                         else if (ch == '\r') { buf[len++] = '\\'; ch = 'r'; }
                         else if (ch == '\t') { buf[len++] = '\\'; ch = 't'; }
                         buf[len++] = ch;
                     }
+                    buf = mysql_json_reserve(buf, &cap, len + 2);
                     buf[len++] = '"';
                 }
                 free(val);
-                if (len + 64 >= cap) { cap *= 2; buf = (char *)realloc(buf, cap); if (!buf) well_panic("out of memory (MySQL json)"); }
             }
+            buf = mysql_json_reserve(buf, &cap, len + 2);
             buf[len++] = '}'; buf[len] = '\0';
             free(pkt);
-            if (len + 64 >= cap) { cap *= 2; buf = (char *)realloc(buf, cap); if (!buf) well_panic("out of memory (MySQL json)"); }
         }
     }
+    buf = mysql_json_reserve(buf, &cap, len + 2);
     buf[len++] = ']'; buf[len] = '\0';
     out = well_string_new(buf);
     free(buf);
