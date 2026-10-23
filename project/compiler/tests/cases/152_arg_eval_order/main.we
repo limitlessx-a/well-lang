@@ -1,0 +1,23 @@
+module demo.arg_eval_order;
+
+func tag(name: String): String {
+    print("eval", name);
+    return name;
+}
+
+func num(n: int): int {
+    print("eval", n);
+    return n;
+}
+
+func combine(a: String, b: int, c: String): String {
+    return a + c;
+}
+
+controller Main {
+    run() {
+        print(combine(tag("A"), num(1), tag("C")));
+    }
+}
+
+entry Main;

@@ -1,0 +1,33 @@
+module demo.member_chain_leak;
+
+struct UserVo extends Vo {
+    id: int;
+    name: String;
+}
+
+event SeedEvent extends Event {
+    id: int;
+}
+
+controller Main {
+    run() {
+        on(SeedEvent, SeedHandler);
+        emit(new SeedEvent() { id: 1 });
+    }
+}
+
+handler SeedHandler {
+    onEvent(e: SeedEvent) {
+        var i: int = 0;
+        while (i < 2000) {
+            var n: String = new UserVo().name;
+            if (n.length != 0) {
+                print("unexpected");
+            }
+            i = i + 1;
+        }
+        print("done");
+    }
+}
+
+entry Main;

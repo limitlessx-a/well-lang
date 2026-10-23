@@ -198,6 +198,17 @@ class CodeGen:
             return True
         if isinstance(e, Binary) and e.op == "??":
             return self.is_owned(e.left) or self.is_owned(e.right)
+        if isinstance(e, Member):
+            if isinstance(e.obj, Ident) and e.obj.name in getattr(self.p, "statics", {}):
+                return False
+            if getattr(e, "is_enum", False):
+                return False
+            if not self.is_owned(e.obj):
+                # Borrowed base: `x.field` is still borrowed (no retain emitted).
+                return False
+            oty = getattr(e.obj, "ty", None)
+            fty = self.field_type(oty, e.name) if oty else None
+            return fty is not None and self.is_ref(fty)
         return False
 
     def enum_macro(self, enum: str, member: str) -> str:
@@ -295,6 +306,20 @@ class CodeGen:
                 if self.is_owned(e.obj):
                     return f"well_bytes_len_take({self.gen_expr(e.obj)})"
                 return f"well_bytes_len({self.gen_expr(e.obj)})"
+            if self.is_owned(e.obj):
+                # `new X().field` / `Model.get(...).field` used to leak the base
+                # object: hold it in a temporary, copy/retain the field, release it.
+                oty = getattr(e.obj, "ty", None)
+                fty = self.field_type(oty, e.name) if oty else "int"
+                ct = self.ctype(oty) if oty else "void*"
+                tmp = f"_mo{self.next_id()}"
+                if self.is_ref(fty):
+                    return (f"({{ {ct} {tmp} = {self.gen_expr(e.obj)}; "
+                            f"{self.ctype(fty)} _mv = {tmp}->{e.name}; "
+                            f"well_retain((void*)_mv); well_release((void*){tmp}); _mv; }})")
+                return (f"({{ {ct} {tmp} = {self.gen_expr(e.obj)}; "
+                        f"{self.ctype(fty)} _mv = {tmp}->{e.name}; "
+                        f"well_release((void*){tmp}); _mv; }})")
             return f"({self.gen_expr(e.obj)})->{e.name}"
         if isinstance(e, Index):
             ot = getattr(e.obj, "ty", None)
@@ -632,17 +657,40 @@ class CodeGen:
             raise Exception("print/Host.log is only supported as a statement")
         if getattr(e, "call_ns", None):
             ns, fname = e.call_ns
-            args = ", ".join(["ctx"] + [self.gen_expr(a) for a in e.args])
-            return f"{ns}__{fname}({args})"
+            return self.gen_call_ordered(e, f"{ns}__{fname}")
         if getattr(e, "call_user", None):
-            args = ["ctx"]
-            for a in e.args:
-                code = self.gen_expr(a)
-                if self.is_owned(a) and self.is_ref(getattr(a, "ty", "void")):
-                    code = f"well_temp_hold((void*)({code}))"
-                args.append(code)
-            return f"{e.call_user}({', '.join(args)})"
+            return self.gen_call_ordered(e, e.call_user)
         raise Exception("unsupported call")
+
+    def gen_call_ordered(self, e, fn_name: str) -> str:
+        """Call ``fn_name`` with arguments evaluated left-to-right.
+
+        C does not specify argument evaluation order (TCC evaluates left-to-right,
+        GCC right-to-left), so the same Well program could observe different side
+        effects depending on WELL_CC. Lifting each argument into a temporary
+        inside a statement expression makes the order explicit and portable.
+        """
+        if not e.args:
+            return f"{fn_name}(ctx)"
+        decls, parts, owned = [], [], []
+        for a in e.args:
+            ty = getattr(a, "ty", None) or "int"
+            if ty == "void":
+                ty = "int"
+            cty = self.ctype(ty)
+            tmp = f"_ag{self.next_id()}"
+            decls.append(f"{cty} {tmp} = ({cty})({self.gen_expr(a)});")
+            parts.append(tmp)
+            if self.is_owned(a) and self.is_ref(getattr(a, "ty", "")):
+                owned.append(tmp)
+        call = f"{fn_name}({', '.join(['ctx'] + parts)})"
+        rt = getattr(e, "ty", None) or "void"
+        rel = " ".join(f"well_release((void*){t});" for t in owned)
+        if rt == "void":
+            return f"({{ {' '.join(decls)} {call}; {rel} }})"
+        ct = self.ctype(rt)
+        tmp = f"_rs{self.next_id()}"
+        return f"({{ {' '.join(decls)} {ct} {tmp} = ({ct})({call}); {rel} {tmp}; }})"
 
     # ---------- statements ----------
     def gen_scoped(self, fn):
@@ -1113,6 +1161,8 @@ class CodeGen:
                 self.w(f"well_set_ref((void*)_t, (void**)&_t->{tgt.name}, (void*)_v);")
                 if owned:
                     self.w("well_release((void*)_v);")
+                if self.is_owned(tgt.obj):
+                    self.w("well_release((void*)_t);")
                 self.ind -= 1
                 self.w("}")
             else:
@@ -1122,6 +1172,8 @@ class CodeGen:
                 self.w(f"{self.ctype(oty)} _t = {obj};")
                 self.w('well_check_oid((void*)_t, ctx, "field write");')
                 self.w(f"_t->{tgt.name} = {self.gen_expr(s.value)};")
+                if self.is_owned(tgt.obj):
+                    self.w("well_release((void*)_t);")
                 self.ind -= 1
                 self.w("}")
             return
