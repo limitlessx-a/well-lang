@@ -1,0 +1,1 @@
+container literal is only allowed as a var/assignment initializer

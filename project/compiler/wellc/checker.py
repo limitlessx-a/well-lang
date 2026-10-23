@@ -31,6 +31,8 @@ class Checker:
         self.cur_pos = None   # (file, line, col) of the statement being checked
         self.expr_depth = 0
         self.stmt_depth = 0
+        # Set while checking a type-inferred `var x = [...]` initializer.
+        self.allow_container_literal = False
 
     # ---------- public ----------
     def run(self):
@@ -425,7 +427,15 @@ class Checker:
                 self.check_container_literal(s.init, ty, env)
                 et = ty
             else:
-                et = self.check_expr(s.init, env)
+                if ty is None and isinstance(s.init, (ArrayLit, ObjectLit)):
+                    # `var xs = [1, 2];` infers Array<int> from the elements.
+                    self.allow_container_literal = True
+                    try:
+                        et = self.check_expr(s.init, env)
+                    finally:
+                        self.allow_container_literal = False
+                else:
+                    et = self.check_expr(s.init, env)
                 if ty:
                     # An annotated declaration must agree with its initializer
                     # (the annotation used to be silently discarded).
@@ -607,6 +617,13 @@ class Checker:
             self.expr_depth -= 1
 
     def _check_expr(self, e, env):
+        if isinstance(e, (ArrayLit, ObjectLit)) and not self.allow_container_literal:
+            # Only var declarations / assignments / static defaults materialize
+            # container literals (they need an owned container); every other
+            # context (return, ternary, operand, print, ...) is rejected here
+            # instead of crashing codegen later.
+            self.err("container literal is only allowed as a var/assignment initializer; "
+                     "assign it to a variable first")
         if isinstance(e, IntLit):
             if e.value > 9223372036854775807 or e.value < -9223372036854775808:
                 self.err("integer literal out of 64-bit range")

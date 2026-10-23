@@ -1,0 +1,14 @@
+module demo.retlit_error;
+
+func make(): Array<int> {
+    return [1, 2, 3];
+}
+
+controller Main {
+    run() {
+        var a: Array<int> = make();
+        print(a.length);
+    }
+}
+
+entry Main;
