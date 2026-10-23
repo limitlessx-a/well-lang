@@ -1,0 +1,27 @@
+module demo.forof_break;
+
+controller Main {
+    run() {
+        var a: Array<int> = [1, 2, 3, 4];
+        var sum: int = 0;
+        for (var x of a) {
+            if (x == 3) {
+                break;
+            }
+            if (x == 2) {
+                continue;
+            }
+            sum = sum + x;
+        }
+        print(sum);
+        var m: Map<int> = {"a": 1, "b": 2};
+        for (var k in m) {
+            if (k == "a") {
+                continue;
+            }
+            print(k);
+        }
+    }
+}
+
+entry Main;

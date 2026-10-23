@@ -117,8 +117,28 @@ class Checker:
                 self.funcs[d.name] = d
             elif isinstance(d, ControllerDecl):
                 self.controllers[d.name] = d
+                seen_m = set()
+                runs = 0
+                for m in d.methods:
+                    if m.name in seen_m:
+                        self.err(f"controller {d.name}: duplicate method {m.name}")
+                    seen_m.add(m.name)
+                    if m.name != "run":
+                        self.err(f"controller {d.name}: unsupported method {m.name} "
+                                 f"(a controller only supports run())")
+                    runs += 1
+                if runs == 0:
+                    self.err(f"controller {d.name} must define run()")
             elif isinstance(d, HandlerDecl):
                 self.handlers[d.name] = d
+                seen_m = set()
+                for m in d.methods:
+                    if m.name in seen_m:
+                        self.err(f"handler {d.name}: duplicate method {m.name}")
+                    seen_m.add(m.name)
+                    if m.name not in ("onEvent", "handle", "on", "handler"):
+                        self.err(f"handler {d.name}: unsupported method {m.name} "
+                                 f"(a handler only supports its event method)")
             elif isinstance(d, NamespaceDecl):
                 if d.name in self.namespaces:
                     self.err(f"duplicate namespace {d.name}")
@@ -444,7 +464,11 @@ class Checker:
                 fenv[s.var] = "String"
             else:
                 self.err(f"unknown for-each kind {s.kind}")
+            self.loop_depth += 1
+            self.break_depth += 1
             self.check_stmt(s.body, fenv)
+            self.break_depth -= 1
+            self.loop_depth -= 1
         elif isinstance(s, Return):
             if s.value is None:
                 if self.cur_ret != "void":

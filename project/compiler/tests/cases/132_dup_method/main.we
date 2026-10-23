@@ -1,0 +1,13 @@
+module demo.dup_method;
+
+controller Main {
+    run() {
+        print(1);
+    }
+
+    run() {
+        print(2);
+    }
+}
+
+entry Main;
