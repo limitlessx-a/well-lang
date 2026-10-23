@@ -1,0 +1,9 @@
+﻿module demo.bom;
+
+controller BomController {
+    run() {
+        print("bom ok");
+    }
+}
+
+entry BomController;

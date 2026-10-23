@@ -38,7 +38,7 @@ def lex(src: str, filename: str = "<src>") -> list[Token]:
 
     while i < n:
         c = src[i]
-        if c in " \t\r\n":
+        if c in " \t\r\n﻿":
             if c == "\n":
                 line += 1
                 col = 1
