@@ -581,6 +581,7 @@ def run_c_tests() -> bool:
         ("cleanup_batch_test", "cleanup batch ok"),
         ("store_pure_test", "pure memory store ok"),
         ("work_stealing_test", "work stealing ok"),
+        ("json_deep_test", "json deep nesting rejected"),
     ]
     ok = True
     os.makedirs(BUILD, exist_ok=True)

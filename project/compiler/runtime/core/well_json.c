@@ -231,9 +231,16 @@ static void jskip_array(JsonParser *p) {
 
 static void jskip_value(JsonParser *p) {
     int c = jpeek(p);
-    if (c == '{') jskip_object(p);
-    else if (c == '[') jskip_array(p);
-    else if (c == '"') { free(jparse_string_alloc(p)); }
+    if (c == '{' || c == '[') {
+        /* Unknown-field skipping must obey the same nesting limit as known
+         * objects: 30000 nested arrays used to overflow the C stack. */
+        if (++p->depth > 128) { p->depth--; jerr(p, "nesting too deep"); }
+        if (c == '{') jskip_object(p);
+        else jskip_array(p);
+        p->depth--;
+        return;
+    }
+    if (c == '"') { free(jparse_string_alloc(p)); }
     else if (c == 't') { if (!jmatch_lit(p, "true")) jerr(p, "bad true"); }
     else if (c == 'f') { if (!jmatch_lit(p, "false")) jerr(p, "bad false"); }
     else if (c == 'n') { if (!jmatch_lit(p, "null")) jerr(p, "bad null"); }
