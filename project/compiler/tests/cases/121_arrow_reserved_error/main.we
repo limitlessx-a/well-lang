@@ -1,4 +1,4 @@
-module demo.arrow;
+module demo.arrow_err;
 
 struct ArrowVo {
     value: int;
@@ -7,8 +7,8 @@ struct ArrowVo {
 controller ArrowController {
     run() {
         var v: ArrowVo = new ArrowVo();
-        v->value = 7;
-        print(v->value);
+        var x: int = v->value;
+        print(x);
     }
 }
 

@@ -58,14 +58,14 @@ const CONTROL_PAREN_KEYWORDS: ReadonlySet<string> = new Set<string>(["if", "whil
 /** 两侧加空格的二元/赋值运算符。 */
 const BINARY_OPS: ReadonlySet<string> = new Set<string>([
   "=", "+=", "-=", "==", "!=", "<=", ">=", "&&", "||", "??",
-  "+", "-", "*", "/", "%", "<", ">", "&", "|", "^",
+  "+", "-", "*", "/", "%", "<", ">", "->", "&", "|", "^",
 ]);
 
 /** 若 `-`/`+` 的前一个 token 在下表中，则它是（前缀）一元运算符。 */
 const UNARY_PREV_OPS: ReadonlySet<string> = new Set<string>([
   "(", "[", "{", ",", ";", ":", "?", "=", "+=", "-=",
   "&&", "||", "??", "==", "!=", "<=", ">=", "<", ">",
-  "+", "-", "*", "/", "%", "!", "~", "&", "|", "^",
+  "+", "-", "*", "/", "%", "!", "~", "->", "&", "|", "^",
 ]);
 
 function normalizeNewlines(source: string): string {
@@ -521,7 +521,7 @@ export function formatWell(source: string, options?: FormatOptions): string {
     }
     return (
       token.value === "else" || token.value === ";" || token.value === ")" ||
-      token.value === "," || token.value === "." || token.value === "->" || token.value === "]" ||
+      token.value === "," || token.value === "." || token.value === "]" ||
       token.value === "}"
     );
   }
@@ -735,9 +735,9 @@ export function formatWell(source: string, options?: FormatOptions): string {
         prevCode = token;
         continue;
       }
-      if (value === "." || value === "->") {
+      if (value === ".") {
         pendingSpace = false;
-        write(token.value);
+        write(".");
         pendingSpace = false;
         mark(token);
         prevCode = token;

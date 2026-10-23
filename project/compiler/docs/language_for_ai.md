@@ -231,7 +231,7 @@ a == b, a != b, a < b, a <= b, a > b, a >= b
 a && b, a || b, !a
 cond ? x : y
 "a" + "b"              // 单次拼接 O(len(a)+len(b))；循环累积才 O(n²)，用 Bytes
-arr[i], map["k"], obj.field, obj->field   // `->` 是 `.` 的等价成员访问
+arr[i], map["k"], obj.field
 new UserVo(), new PingEvent(oid) { n: 1 }, new Bytes()
 [1, 2, 3], {"k": 1}    // 容器字面量（受限，见下）
 ```
@@ -240,7 +240,7 @@ new UserVo(), new PingEvent(oid) { n: 1 }, new Bytes()
 - 字面量常量除零/常量溢出 → 编译错误；运行期整数溢出语义为二补码 **wrap**（gcc/clang 构建始终追加 `-fwrapv`，TCC 实现即 wrap，见 §3.4.4）；
 - 容器字面量 `[]`/`{}` 支持：`var` 初始化、下标赋值、static 字段默认值/启动期 static 赋值；
 - **不能**把容器字面量直接当函数实参/普通 struct 初始化字段，先赋给变量；
-- 没有闭包/lambda/用户泛型/接口/元组。
+- 没有闭包/lambda/用户泛型/接口/元组；`->` 保留给 lambda/管道（未实现，使用会编译错误）。
 
 ### 1.6 事件与订阅
 
