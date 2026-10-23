@@ -60,7 +60,7 @@ compiler/
   wellc/            # lexer / parser / checker / codegen / driver
   runtime/          # wellrt / well_model / well_containers / well_event（C99）
   examples/         # 示例 .we
-  tests/            # 端到端测试（115 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+  tests/            # 端到端测试（122 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
   docs/             # 实现说明
   build/            # 生成的 C / 可执行文件（构建产物）
 ```
@@ -95,7 +95,7 @@ python wellc.py check examples\hello.we --json
 运行测试 / 一键回归：
 
 ```powershell
-python tools\verify.py            # 全量：115 个 .we 用例 + C 测试（含 check-cli 自测）
+python tools\verify.py            # 全量：122 个 .we 用例 + C 测试（含 check-cli 自测）
 python tools\verify.py --quick    # 只跑 .we 用例 + check-cli 自测
 python tools\verify.py --full     # 全量 + HTTP bench smoke
 ```
@@ -136,7 +136,7 @@ $env:WELL_CFLAGS = ""
 
 ### CI（Linux）
 
-`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑完整 `tools/verify.py`（**115 个 `.we` 用例 + 12 个 C 测试 + check-cli**；POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2 -fwrapv`）。2026-10-23 起 **CI 已转正**：C 测试纳入每次 push/PR 的 Linux 门禁；`52_mysql`/`53_mysql_pool` 因 runner 无 MySQL 自动 SKIP。bench（HTTP 压测/解析器基线）不进入 push 门禁，通过 `workflow_dispatch` 勾选 `run_bench=true` 手动触发，避免共享 runner 的计时噪声。需要本机 MySQL 的用例通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
+`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑完整 `tools/verify.py`（**122 个 `.we` 用例 + 12 个 C 测试 + check-cli**；POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2 -fwrapv`）。2026-10-23 起 **CI 已转正**：C 测试纳入每次 push/PR 的 Linux 门禁；`52_mysql`/`53_mysql_pool` 因 runner 无 MySQL 自动 SKIP。bench（HTTP 压测/解析器基线）不进入 push 门禁，通过 `workflow_dispatch` 勾选 `run_bench=true` 手动触发，避免共享 runner 的计时噪声。需要本机 MySQL 的用例通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
 
 插件 CI 在 `.github/workflows/extension.yml`：`project/vscode_extension/**` 变化时跑 `npm test`（TypeScript 编译 + 格式化/import/语法/激活冒烟 4 组测试）。
 

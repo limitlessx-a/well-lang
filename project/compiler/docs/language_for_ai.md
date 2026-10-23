@@ -1,7 +1,7 @@
 # Well 语言与运行时（AI 参考）
 
 > 面向需要生成/修改 Well 代码的 AI。只覆盖三部分：**语法规则**、**实现方式**、**注意事项**。
-> 以当前实现为准（2026-10-22，115 个 `.we` 用例 + 12 个 C 测试通过）。冲突时以源码/测试为准。
+> 以当前实现为准（2026-10-23，122 个 `.we` 用例 + 12 个 C 测试通过）。冲突时以源码/测试为准。
 
 ---
 
@@ -488,7 +488,7 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 
 ```powershell
 python wellc.py build app.we -o build\app.exe
-python tools\verify.py --quick    # 115 个 .we 用例
+python tools\verify.py --quick    # 122 个 .we 用例
 python tools\verify.py            # + 12 个 C 测试
 ```
 

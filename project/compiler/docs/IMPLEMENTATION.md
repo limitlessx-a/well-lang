@@ -506,7 +506,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（115 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
+# 端到端测试（122 个 case + C serialize/store/cleanup/cleanup_batch/mysql/force/ttl/pool/reload/race/pure/work-stealing tests）
 python tests\run_tests.py
 
 # 一键回归（推荐）：全部用例 + C 测试；--quick 只跑 .we；--full 加 bench smoke
