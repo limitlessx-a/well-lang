@@ -14,7 +14,7 @@
   │  checker.py      符号表 + 类型检查 + 事件绑定校验
   │  codegen.py      C99
   ▼
-build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
+build/<name>_<hash8>.c  ──(TCC / gcc / clang)──►  <name>_<hash8>.exe
                          │
                   runtime/core/wellrt.c
                   runtime/core/well_model.c
@@ -491,7 +491,7 @@ typedef struct WellStore {
 - controller 生成 `static void C_ensure(WellCtx*)` + `static void C_run(WellCtx*)`；`start(C)` 调 `C_ensure`，重复启动只执行一次。
 - `func` 生成 `static <ret> f(WellCtx* ctx, ...)`，调用时自动补 `ctx`。
 - 每个函数入口 `(void)ctx;` 避免未使用告警。
-- 生成 C 保留在 `build/<name>.c`，便于调试。
+- 生成 C 保留在 `build/<name>_<hash8>.c`（`<hash8>` 是源码路径的 sha1 前 8 位，避免不同目录同名 `main.we` 互相覆盖），便于调试；显式 `-o` 时输出到指定路径。
 
 ---
 

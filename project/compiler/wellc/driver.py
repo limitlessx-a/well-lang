@@ -1,4 +1,5 @@
 """wellc driver: parse -> check -> C -> native."""
+import hashlib
 import os
 import shutil
 import shlex
@@ -101,6 +102,35 @@ def _parse_file(path: str) -> Program:
     return Parser(toks, path).parse_program()
 
 
+def _artifact_stem(path: str) -> str:
+    """Stable build-artifact stem for a source path.
+
+    ``build/`` is shared by every source compiled by this checkout, so using the
+    bare file name made ``a/main.we`` and ``b/main.we`` overwrite each other's
+    generated C/exe.  Mix a short digest of the absolute path into the stem so
+    identical names in different directories cannot collide.
+    """
+    stem = os.path.splitext(os.path.basename(path))[0]
+    digest = hashlib.sha1(os.path.abspath(path).encode("utf-8")).hexdigest()[:8]
+    return f"{stem}_{digest}"
+
+
+def _ensure_parent(path: str, what: str) -> str:
+    """Create the parent directory of an output path; raise BuildError on failure."""
+    target = os.path.abspath(path)
+    parent = os.path.dirname(target)
+    if parent:
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as e:
+            raise BuildError(f"cannot create output directory for {what}: {e}") from e
+    return target
+
+
+def _warn_unresolved_import(path: str, spec: str) -> None:
+    print(f"wellc: warning: {path}: unresolved import '{spec}'", file=sys.stderr)
+
+
 def _resolve_import(spec: str, base_dir: str) -> str | None:
     candidates = []
     if spec.startswith(".") or "/" in spec or "\\" in spec or spec.endswith(".we"):
@@ -144,10 +174,11 @@ def _check_duplicate_decls(prog: Program, path: str) -> None:
         seen[name] = label
 
 
-def load_program(path: str) -> Program:
+def load_program(path: str, on_warning=None) -> Program:
     """Parse a .we file and merge imported local modules (declarations only)."""
     seen: set[str] = set()
     order: list[str] = []
+    parsed: dict[str, Program] = {}
 
     def visit(p: str):
         p = os.path.abspath(p)
@@ -156,31 +187,48 @@ def load_program(path: str) -> Program:
         seen.add(p)
         order.append(p)
         prog = _parse_file(p)
+        parsed[p] = prog
         _check_duplicate_decls(prog, p)
         base = os.path.dirname(p)
         for imp in prog.imports:
             ip = _resolve_import(imp.path, base)
-            if ip and ip not in seen:
+            if ip is None:
+                # `check` reports unresolved imports as warnings; `build` used to
+                # silently ignore them.  Surface the same warning so a typo is not
+                # swallowed (the file still builds: a missing module is legal when
+                # the program does not reference its declarations).
+                if on_warning is not None:
+                    on_warning(p, imp.path)
+            elif ip not in seen:
                 visit(ip)
 
     visit(path)
     merged: list = []
-    owners: dict[tuple[str, str], str] = {}
+    # Declarations share one global namespace: two files declaring the same
+    # name are an error even when the declaration kinds differ (e.g. a
+    # ``func S`` in one file plus a ``struct S`` in another would otherwise
+    # only fail later in the C compiler).
+    owners: dict[str, str] = {}
     for p in order:
-        prog = _parse_file(p)
+        # Reuse the parse from the discovery pass instead of reading + lexing +
+        # parsing every file a second time.
+        prog = parsed[p]
         for d in prog.decls:
-            key = (type(d).__name__, getattr(d, "name", ""))
-            if key in owners:
-                first = owners[key]
+            name = getattr(d, "name", None)
+            if not name:
+                merged.append(d)
+                continue
+            if name in owners:
+                first = owners[name]
                 # Same-file duplicates are reported by _check_duplicate_decls;
                 # reach here only for a name declared in two different files.
                 if os.path.abspath(first) != os.path.abspath(p):
                     raise CheckError(
-                        f"{p}: duplicate declaration '{getattr(d, 'name', '')}' "
+                        f"{p}: duplicate declaration '{name}' "
                         f"(already defined in {first})"
                     )
                 continue
-            owners[key] = p
+            owners[name] = p
             merged.append(d)
         if os.path.abspath(p) == os.path.abspath(path):
             main = prog
@@ -202,15 +250,14 @@ def compile_source(src: str, filename: str = "<src>") -> str:
         raise BuildError(f"internal compiler error: {type(e).__name__}: {e}")
 
 
-def build(path: str, out: str | None = None, keep_c: bool = False) -> tuple[str, str]:
+def build(path: str, out: str | None = None) -> tuple[str, str]:
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         raise BuildError(f"file not found: {path}")
     os.makedirs(BUILD_DIR, exist_ok=True)
-    stem = os.path.splitext(os.path.basename(path))[0]
-    c_path = os.path.join(BUILD_DIR, stem + ".c")
+    c_path = os.path.join(BUILD_DIR, _artifact_stem(path) + ".c")
     try:
-        prog = load_program(path)
+        prog = load_program(path, on_warning=_warn_unresolved_import)
         prog = Checker(prog, path).run()
         code = CodeGen(prog).gen()
     except BuildError:
@@ -219,11 +266,15 @@ def build(path: str, out: str | None = None, keep_c: bool = False) -> tuple[str,
         raise BuildError(str(e))
     except Exception as e:  # noqa: BLE001 - never leak a traceback to users
         raise BuildError(f"internal compiler error: {type(e).__name__}: {e}")
-    with open(c_path, "w", encoding="utf-8") as f:
-        f.write(code)
+    _ensure_parent(c_path, "generated C")
+    try:
+        with open(c_path, "w", encoding="utf-8") as f:
+            f.write(code)
+    except OSError as e:
+        raise BuildError(f"cannot write {c_path}: {e}") from e
     if out is None:
-        out = os.path.join(BUILD_DIR, stem + (".exe" if os.name == "nt" else ""))
-    out = os.path.abspath(out)
+        out = os.path.join(BUILD_DIR, _artifact_stem(path) + (".exe" if os.name == "nt" else ""))
+    out = _ensure_parent(out, "executable")
     cc = find_cc()
     cmd = [cc, "-I", os.path.join(RUNTIME_DIR, "core"),
            "-I", os.path.join(RUNTIME_DIR, "modules", "http"),
@@ -241,11 +292,12 @@ def build(path: str, out: str | None = None, keep_c: bool = False) -> tuple[str,
     if prog.uses_mysql:
         sources.append(MODULE_SOURCES["mysql"])
     cmd += [os.path.join(RUNTIME_DIR, name) for name in sources]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError as e:
+        raise BuildError(f"cannot run C compiler {cc}: {e}") from e
     if r.returncode != 0:
         raise BuildError("C compile failed:\n" + (r.stdout or "") + (r.stderr or ""))
-    if not keep_c:
-        pass  # keep generated C for debugging; harmless
     return c_path, out
 
 
@@ -258,7 +310,7 @@ def run(path: str, out: str | None = None) -> int:
 def emit_c(path: str, out: str | None = None) -> str:
     path = os.path.abspath(path)
     try:
-        prog = load_program(path)
+        prog = load_program(path, on_warning=_warn_unresolved_import)
         prog = Checker(prog, path).run()
         code = CodeGen(prog).gen()
     except BuildError:
@@ -268,8 +320,12 @@ def emit_c(path: str, out: str | None = None) -> str:
     except Exception as e:  # noqa: BLE001 - never leak a traceback to users
         raise BuildError(f"internal compiler error: {type(e).__name__}: {e}")
     if out:
-        with open(out, "w", encoding="utf-8") as f:
-            f.write(code)
+        target = _ensure_parent(out, "generated C")
+        try:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(code)
+        except OSError as e:
+            raise BuildError(f"cannot write {target}: {e}") from e
     return code
 
 
@@ -372,7 +428,16 @@ def check_file(path: str) -> tuple[dict, int]:
         except (LexError, ParseError) as e:  # pragma: no cover - already parsed above
             diags.append(from_parse_error(e, path))
         except CheckError as e:
-            diags.append(from_check_error(e, path, cache[path]["src"], cache[path]["toks"]))
+            src = cache[path]["src"]
+            toks = cache[path]["toks"]
+            msgs = getattr(e, "errors", None) or [str(e)]
+            if len(msgs) <= 1:
+                diags.append(from_check_error(e, path, src, toks))
+            else:
+                # The checker collected several independent semantic errors;
+                # report each one with its own best-effort position.
+                for msg in msgs:
+                    diags.append(from_check_error(CheckError(msg), path, src, toks))
         except Exception as e:  # noqa: BLE001 - --json must stay machine-readable
             diags.append(make(path, 1, 1, 1, 2, "error",
                               f"internal compiler error: {type(e).__name__}: {e}", "internal"))
