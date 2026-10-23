@@ -538,7 +538,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（184 个 .we 用例 + 18 个 C 测试；runner 默认 WELL_WORKERS=1）
+# 端到端测试（188 个 .we 用例 + 18 个 C 测试；runner 默认 WELL_WORKERS=1）
 python tests\run_tests.py
 
 # 一键回归（推荐）：默认全部 .we 用例 + C 测试 + check-cli；
@@ -557,7 +557,7 @@ python tools\bench.py --compare build\bench\baseline.json --threshold 30
 C 编译器查找顺序：`WELL_CC` → 仓库内 `project/tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang，见 §3.2 的 TinyCC 原子内建函数限制）。使用 gcc：`WELL_CC=gcc`（自动 `-O2 -fwrapv`）。
 额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`，并**始终**追加 `-fwrapv`（语言溢出语义，`WELL_CFLAGS` 不能关闭）；TCC 使用默认参数（不追加 `-O2`）。切换优化级别后先跑 `tools/verify.py`。
 本机验证环境：TinyCC 0.9.27 x86_64（仓库 `project/tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2 -fwrapv`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 C 测试，全量 `.we` 用例串行编译过慢（~25s/case），本机未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）跑全部 `.we` 用例（无 MySQL 的依赖用例 SKIP）。
-测试规模（2026-10-23）：**184 个 `.we` 用例 + 18 个 C 测试**；runner 默认 `WELL_WORKERS=1` 保证确定性。需要本机 MySQL 的 `52_mysql`/`53_mysql_pool`/`128_mysql_big_column`/`140_mysql_exec_resultset`/`141_mysql_pool_panic`/`169_mysql_json_escapes` 与 C `mysql_conn_test` 用 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP`（CI runner 无 MySQL 时不会误报）。
+测试规模（2026-10-23）：**188 个 `.we` 用例 + 18 个 C 测试**；runner 默认 `WELL_WORKERS=1` 保证确定性。需要本机 MySQL 的 `52_mysql`/`53_mysql_pool`/`128_mysql_big_column`/`140_mysql_exec_resultset`/`141_mysql_pool_panic`/`169_mysql_json_escapes` 与 C `mysql_conn_test` 用 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP`（CI runner 无 MySQL 时不会误报）。
 诊断契约：`check` 人类可读模式每行 `FILE:LINE:COL: severity: message`；`--json` 只输出一个 JSON 对象，`diagnostics` 可含多条（同一方法体内仍首错即停），`code` 取值为 `lex`/`parse`/`semantic`/`import`/`internal`；退出码无 error=0（仅 warning 也算 0）、有 error=1、参数/IO 错误=2。
 
 ---

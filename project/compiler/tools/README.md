@@ -3,7 +3,7 @@
 ## `verify.py` — one-command correctness regression
 
 ```bash
-python tools/verify.py            # 184 .we cases + 18 C tests + check-cli
+python tools/verify.py            # all .we cases + all C tests + check-cli
 python tools/verify.py --quick    # .we cases + check-cli (fast, no C tests)
 python tools/verify.py --full     # all tests + short HTTP bench smoke
 ```

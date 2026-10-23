@@ -144,7 +144,7 @@ npm run package        # 生成 vsix（需要 @vscode/vsce）
 ```
 
 - `npm test` 会先 `tsc -p .`，再编译 3 个纯 node 模块到 `build/ts/`，最后跑 `test/`：
-  - `format.test.js`：自动扫描 `project/compiler` 下全部真实 `.we` 文件（含全部 184 个用例；数量由扫描决定，不硬编码），断言 token 守恒 + 幂等 + 无行尾空白，另有 22 个手写边界用例；
+  - `format.test.js`：自动扫描 `project/compiler` 下全部真实 `.we` 文件（含全部测试用例；数量由扫描决定，不硬编码），断言 token 守恒 + 幂等 + 无行尾空白，另有 22 个手写边界用例；
   - `imports.test.js`：`wellParse`/`imports` 单测（import 解析、整理/排序/去重/移除未使用、CRLF/BOM、与 `driver.py::_resolve_import` 对拍）；
   - `grammar.test.js`：TextMate/language-configuration/snippets 的 JSON 结构与关键 scope 校验；
   - `activation.test.js`：不需要 Electron，用 mock 的 `vscode` 模块加载 `out/`，验证激活注册、格式化 Provider、真实 `wellc check` 诊断链路、整理导入、自动导入命令与 Ctrl+Click 转到定义（8 个场景）。

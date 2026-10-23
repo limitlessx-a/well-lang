@@ -140,7 +140,7 @@ $env:WELL_CFLAGS = "-O2 -g"
 $env:WELL_CFLAGS = ""
 ```
 
-测试规模（2026-10-23）：`.we` 用例 **184** 个 + C 测试 **18** 个；runner 默认 `WELL_WORKERS=1` 保证确定性；`52_mysql`/`53_mysql_pool`/`128_mysql_big_column`/`140_mysql_exec_resultset`/`141_mysql_pool_panic`/`169_mysql_json_escapes` 与 `mysql_conn_test` 通过 `requires.txt` 声明依赖，`127.0.0.1:3306` 不可达时打印 `SKIP`。
+测试规模（2026-10-23）：`.we` 用例 **188** 个 + C 测试 **18** 个；runner 默认 `WELL_WORKERS=1` 保证确定性；`52_mysql`/`53_mysql_pool`/`128_mysql_big_column`/`140_mysql_exec_resultset`/`141_mysql_pool_panic`/`169_mysql_json_escapes` 与 `mysql_conn_test` 通过 `requires.txt` 声明依赖，`127.0.0.1:3306` 不可达时打印 `SKIP`。
 验证状态（2026-10-22）：GCC 16.2 -O2 -fwrapv 下定向 HTTP/WS/JSON/TTL 用例与全部 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 `.we` 用例串行编译约 25s/case，未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 `.we` 用例已跑通（MySQL 依赖用例跳过）。
 
 ### CI（Linux）
