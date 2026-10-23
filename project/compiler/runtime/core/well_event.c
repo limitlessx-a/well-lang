@@ -22,20 +22,61 @@ static WellSub *g_subs = NULL;
 static WellLock g_subs_lock = 0;
 
 #define WELL_OWNER_MAX 64
-static int g_owner_stack[WELL_OWNER_MAX];
-static int g_owner_depth = 0;
+typedef struct WellOwnerStack {
+    int depth;
+    int stack[WELL_OWNER_MAX];
+} WellOwnerStack;
+
+/* start()/stop() may run inside a handler on a scheduler worker, so the
+ * controller owner stack must be per-thread: a process-global stack lets
+ * concurrent workers overwrite each other's owner, misattributing subscriptions
+ * (R-05). Uses the explicit TLS mechanism, same as the panic env / source
+ * position in wellrt.c (compiler TLS is unusable under TinyCC). */
+static WellTlsKey g_owner_key = WELL_TLS_KEY_INVALID;
+
+static void owner_key_ensure(void) {
+    if (g_owner_key == WELL_TLS_KEY_INVALID)
+        g_owner_key = well_tls_key_create(free);
+}
+
+static WellOwnerStack *owner_stack_peek(void) {
+    if (g_owner_key == WELL_TLS_KEY_INVALID) return NULL;
+    return (WellOwnerStack *)well_tls_get(g_owner_key);
+}
+
+static WellOwnerStack *owner_stack_get(void) {
+    WellOwnerStack *st = owner_stack_peek();
+    if (st) return st;
+    if (g_owner_key == WELL_TLS_KEY_INVALID) return NULL;
+    st = (WellOwnerStack *)calloc(1, sizeof(WellOwnerStack));
+    if (!st) return NULL;
+    well_tls_set(g_owner_key, st);
+    return st;
+}
 
 void well_owner_push(int owner) {
-    if (g_owner_depth < WELL_OWNER_MAX)
-        g_owner_stack[g_owner_depth++] = owner;
+    WellOwnerStack *st = owner_stack_get();
+    if (st && st->depth < WELL_OWNER_MAX) st->stack[st->depth++] = owner;
 }
 
 void well_owner_pop(void) {
-    if (g_owner_depth > 0) g_owner_depth--;
+    WellOwnerStack *st = owner_stack_peek();
+    if (st && st->depth > 0) st->depth--;
 }
 
 int well_owner_current(void) {
-    return g_owner_depth > 0 ? g_owner_stack[g_owner_depth - 1] : 0;
+    WellOwnerStack *st = owner_stack_peek();
+    return (st && st->depth > 0) ? st->stack[st->depth - 1] : 0;
+}
+
+/* Windows TLS slots have no destructor, so the thread wrapper calls this after
+ * the thread body returns; POSIX frees the stack from the key destructor. */
+void well_owner_thread_cleanup(void) {
+    WellOwnerStack *st = owner_stack_peek();
+    if (st) {
+        free(st);
+        well_tls_set(g_owner_key, NULL);
+    }
 }
 
 static void sub_append(WellSub *s) {
@@ -193,6 +234,7 @@ static void queue_pool_put(WellOidQueue *q) {
 }
 
 void well_event_init(void) {
+    owner_key_ensure();
     if (g_sched_inited) return;
     well_mutex_init(&g_sched_mutex);
     well_cond_init(&g_sched_cond);

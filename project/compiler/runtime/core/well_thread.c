@@ -73,6 +73,7 @@ static DWORD WINAPI well_thread_proc(LPVOID p) {
     free(s);
     fn(arg);
     well_temp_thread_cleanup();
+    well_owner_thread_cleanup();
     return 0;
 }
 

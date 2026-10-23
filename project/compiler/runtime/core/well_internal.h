@@ -75,6 +75,8 @@ WellStore *well_memory_store_new(void);
 void well_owner_push(int owner);
 void well_owner_pop(void);
 int well_owner_current(void);
+/* Frees this thread's owner stack (Windows TLS slots have no destructor). */
+void well_owner_thread_cleanup(void);
 void well_off_owner(int owner);
 void well_graph_add_edge(WellObj *from, WellObj *to);
 void well_graph_remove_edge(WellObj *from, WellObj *to);
