@@ -1,0 +1,18 @@
+module demo.identkeywords;
+
+func calc(register: int, goto: int, ctx: int, e: int, oid: int): int {
+    var unsigned: int = register + goto;
+    var volatile: int = ctx + e + oid;
+    return unsigned + volatile;
+}
+
+controller Main {
+    run() {
+        var register: int = 1;
+        var goto: int = 2;
+        var ctx: int = 3;
+        print(calc(register, goto, ctx, 4, 5));
+    }
+}
+
+entry Main;

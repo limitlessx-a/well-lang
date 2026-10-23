@@ -1,0 +1,26 @@
+module demo.switchscope;
+
+controller Main {
+    run() {
+        var items: Array<int> = [1, 2, 3];
+        for (var i of items) {
+            switch (i) {
+                case 1:
+                    var s: String = "one" + "!";
+                    print(s);
+                    break;
+                default:
+                    var t: String = "other";
+                    print(t);
+                    break;
+            }
+            if (i == 2) {
+                continue;
+            }
+            print("tail", i);
+        }
+        print("done");
+    }
+}
+
+entry Main;

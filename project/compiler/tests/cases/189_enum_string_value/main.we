@@ -1,0 +1,31 @@
+module demo.enumstringvalue;
+
+// String enum members are values: the generated macro must yield a
+// WellString*, not a bare char* (which crashed when used as a String).
+enum Color {
+    RED = "red";
+    BLUE = "blue";
+}
+
+const DEFAULT_COLOR: String = Color.BLUE;
+
+func describe(c: String): String {
+    return "<" + c + ">";
+}
+
+controller Main {
+    run() {
+        var c: String = Color.RED;
+        print(c);
+        print(Color.BLUE);
+        print(describe(Color.RED));
+        print(Color.RED == "red");
+        print(Color.RED != "blue");
+        var all: Array<String> = [Color.RED, Color.BLUE];
+        print(all[1]);
+        print(Color.toString(Color.RED));
+        print(DEFAULT_COLOR);
+    }
+}
+
+entry Main;

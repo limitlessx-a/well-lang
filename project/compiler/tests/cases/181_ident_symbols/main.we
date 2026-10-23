@@ -1,0 +1,58 @@
+module demo.identsymbols;
+
+// These Well names collide with C keywords, libc names, runtime symbols or the
+// runtime's own struct names; codegen must mangle the C symbols only.
+struct WellCtx extends Vo {
+    x: int;
+}
+
+struct WellObj extends Vo {
+    y: int;
+}
+
+event WellString extends Event {
+    n: int;
+}
+
+func main(): int {
+    return 1;
+}
+
+func printf(): int {
+    return 2;
+}
+
+func well_new(): int {
+    return 3;
+}
+
+namespace wellrt {
+    add(a: int, b: int): int {
+        return a + b;
+    }
+}
+
+static malloc {
+    value: int = 7;
+}
+
+controller Main {
+    run() {
+        on(WellString, well_init);
+        var c: WellCtx = new WellCtx();
+        c.x = main() + printf() + well_new() + wellrt.add(4, 5) + malloc.value;
+        print(c.x);
+        var o: WellObj = new WellObj();
+        o.y = 11;
+        print(o.y);
+        emit(new WellString(1) { n: 2 });
+    }
+}
+
+handler well_init {
+    onEvent(e: WellString) {
+        print("event", e.n);
+    }
+}
+
+entry Main;

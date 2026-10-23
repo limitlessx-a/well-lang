@@ -23,12 +23,56 @@ def c_escape(s: str) -> str:
     return "".join(out)
 
 
+# ---------- C identifier mangling ----------
+# Every Well identifier that becomes a C symbol gets a category prefix so that
+# Well names such as `register`, `goto`, `ctx`, `main`, `printf`, `well_new` or
+# `WellCtx` cannot collide with C keywords, libc or the runtime.  The names
+# visible to Well code (type descriptor strings, serialized/JSON field names,
+# diagnostics) always keep the original Well spelling.
+def c_var(name: str) -> str:
+    return "v_" + name
+
+
+def c_field(name: str) -> str:
+    return "f_" + name
+
+
+def c_func(name: str) -> str:
+    return "wf_" + name
+
+
+def c_type(name: str) -> str:
+    return "wt_" + name
+
+
+def c_ctl(name: str) -> str:
+    return "ctl_" + name
+
+
+def c_handler(name: str) -> str:
+    return "hd_" + name
+
+
+def c_enum(name: str) -> str:
+    return "E_" + name
+
+
+def c_const(name: str) -> str:
+    return "C_" + name
+
+
+def c_static_field(owner: str, name: str) -> str:
+    return "wst_" + owner + "__" + name
+
+
+
 class CodeGen:
     def __init__(self, prog: Program):
         self.p = prog
         self.lines: list[str] = []
         self.ind = 0
         self.env: dict[str, str] = {}
+        self.c_names: dict[str, str] = {}
         self.current_ret = "void"
         self.type_ids: dict[str, int] = {}
         self.type_kind: dict[str, str] = {}
@@ -83,7 +127,7 @@ class CodeGen:
         if ty == "null":
             return "void*"
         if ty in self.type_ids:
-            return f"{ty}*"
+            return f"{c_type(ty)}*"
         return ty
 
     def is_ref(self, ty: str) -> bool:
@@ -117,6 +161,51 @@ class CodeGen:
             return f"well_temp_hold((void*)({code}))"
         return code
 
+    def gen_str_arg(self, e) -> str:
+        """Generate a String argument, journaling owned temporaries.
+
+        Most runtime entry points only borrow a ``WellString*`` for the duration
+        of the call.  Passing a freshly built string (``a + b``, ``f()`` …)
+        directly leaked it once per call; journaling it releases at the end of
+        the enclosing scope instead.
+        """
+        if getattr(e, "ty", None) == "String":
+            return self.gen_arg_temp(e)
+        return self.gen_expr(e)
+
+    def source_stmt(self, s) -> str | None:
+        """`well_source_set` call for a statement, or None when unknown."""
+        line = getattr(s, "line", None)
+        src = getattr(s, "file", None)
+        if line and src:
+            return f'well_source_set("{c_escape(str(src))}", {line})'
+        return None
+
+    def is_const_init(self, e) -> bool:
+        """True when `e` is usable as a compile-time default value.
+
+        Field defaults are emitted inside the generated constructor, so a call or
+        container literal there would need its own allocation/cleanup path.  We
+        require literals/consts/enum members (the checker already enforces the
+        same rule for static fields) and otherwise report an internal error
+        instead of emitting invalid C.
+        """
+        if isinstance(e, (IntLit, FloatLit, StrLit, BoolLit, NullLit)):
+            return True
+        if isinstance(e, Unary) and e.op in ("-", "+", "~"):
+            return self.is_const_init(e.expr)
+        if isinstance(e, Binary) and e.op in ("+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"):
+            return self.is_const_init(e.left) and self.is_const_init(e.right)
+        if isinstance(e, Ident) and e.name in getattr(self.p, "consts", {}):
+            return True
+        if isinstance(e, Member) and getattr(e, "is_enum", False):
+            return True
+        return False
+
+    def require_const_default(self, e, where: str):
+        if not self.is_const_init(e):
+            raise Exception(f"{where}: default value must be a compile-time literal (got {type(e).__name__})")
+
     def container_ref_flag(self, et: str) -> str:
         return "1" if self.is_ref(et) else "0"
 
@@ -143,7 +232,7 @@ class CodeGen:
         return "WELL_FIELD_REF"
 
     def json_elem_type_id(self, et: str) -> str:
-        return f"T_{et}" if et in self.type_ids else "0"
+        return f"T_{c_type(et)}" if et in self.type_ids else "0"
 
     def elem_kind_code(self, et: str) -> str:
         """Runtime element compare kind for Array.indexOf/includes."""
@@ -212,13 +301,14 @@ class CodeGen:
         return False
 
     def enum_macro(self, enum: str, member: str) -> str:
-        return f"{enum}_{member}"
+        return f"{c_enum(enum)}_{member}"
 
     def gen_enum_helpers(self):
         for name, en in getattr(self.p, "enums", {}).items():
             members = en["members"]
+            helper = c_enum(name)
             if en["type"] == "String":
-                self.w(f"static WellString *{name}__toString(WellString *v) {{")
+                self.w(f"static WellString *{helper}__toString(WellString *v) {{")
                 self.ind += 1
                 self.w('if (!v) return well_string_lit("");')
                 for mn, val in members:
@@ -227,7 +317,7 @@ class CodeGen:
                 self.ind -= 1
                 self.w("}")
             else:
-                self.w(f"static int {name}__fromInt(long long v) {{")
+                self.w(f"static int {helper}__fromInt(long long v) {{")
                 self.ind += 1
                 self.w("switch (v) {")
                 self.ind += 1
@@ -238,7 +328,7 @@ class CodeGen:
                 self.w("}")
                 self.ind -= 1
                 self.w("}")
-                self.w(f"static WellString *{name}__toString(long long v) {{")
+                self.w(f"static WellString *{helper}__toString(long long v) {{")
                 self.ind += 1
                 self.w("switch (v) {")
                 self.ind += 1
@@ -270,6 +360,12 @@ class CodeGen:
 
     def var_decl(self, name: str, ty: str):
         self.env[name] = ty
+        self.c_names[name] = c_var(name)
+
+    def set_params_env(self, params):
+        """Bind a function's parameters in the type and C-name environments."""
+        self.env = {n: t.name for n, t in params}
+        self.c_names = {n: c_var(n) for n, _t in params}
 
     # ---------- expression ----------
     def gen_expr(self, e: Expr) -> str:
@@ -284,10 +380,15 @@ class CodeGen:
         if isinstance(e, NullLit):
             return "((void*)0)"
         if isinstance(e, Ident):
-            return e.name
+            if getattr(e, "raw_c", None):
+                # Internal synthetic node: code is already a C expression.
+                return e.raw_c
+            if e.name in getattr(self.p, "consts", {}):
+                return c_const(e.name)
+            return self.c_names.get(e.name) or c_var(e.name)
         if isinstance(e, Member):
             if isinstance(e.obj, Ident) and e.obj.name in getattr(self.p, "statics", {}):
-                return f"{e.obj.name}__{e.name}"
+                return c_static_field(e.obj.name, e.name)
             if getattr(e, "is_enum", False) and isinstance(e.obj, Ident):
                 return self.enum_macro(e.obj.name, e.name)
             if getattr(e, "str_len", False):
@@ -315,12 +416,12 @@ class CodeGen:
                 tmp = f"_mo{self.next_id()}"
                 if self.is_ref(fty):
                     return (f"({{ {ct} {tmp} = {self.gen_expr(e.obj)}; "
-                            f"{self.ctype(fty)} _mv = {tmp}->{e.name}; "
+                            f"{self.ctype(fty)} _mv = {tmp}->{c_field(e.name)}; "
                             f"well_retain((void*)_mv); well_release((void*){tmp}); _mv; }})")
                 return (f"({{ {ct} {tmp} = {self.gen_expr(e.obj)}; "
-                        f"{self.ctype(fty)} _mv = {tmp}->{e.name}; "
+                        f"{self.ctype(fty)} _mv = {tmp}->{c_field(e.name)}; "
                         f"well_release((void*){tmp}); _mv; }})")
-            return f"({self.gen_expr(e.obj)})->{e.name}"
+            return f"({self.gen_expr(e.obj)})->{c_field(e.name)}"
         if isinstance(e, Index):
             ot = getattr(e.obj, "ty", None)
             if getattr(e, "str_index", False):
@@ -335,7 +436,7 @@ class CodeGen:
                 return f"well_bytes_get({self.gen_expr(e.obj)}, (long long)({self.gen_expr(e.index)}))"
             kind, et = self.container_info(ot)
             obj = self.gen_expr(e.obj)
-            idx = self.gen_expr(e.index)
+            idx = self.gen_str_arg(e.index) if kind == "map" else self.gen_expr(e.index)
             if kind == "array":
                 if self.is_owned(e.obj):
                     val = f"well_array_get_take({obj}, (long long)({idx}))"
@@ -361,7 +462,7 @@ class CodeGen:
             oid = "ctx->oid"
             if self.type_kind.get(e.type.name) == "event" and e.args:
                 oid = f"(long long)({self.gen_expr(e.args[0])})"
-            return f"new_{e.type.name}(ctx, {oid})"
+            return f"new_{c_type(e.type.name)}(ctx, {oid})"
         if isinstance(e, (ArrayLit, ObjectLit)):
             raise Exception("container literal only supported in var/assignment context")
         if isinstance(e, Call):
@@ -402,29 +503,29 @@ class CodeGen:
 
     def gen_call_expr(self, e: Call) -> str:
         if getattr(e, "builtin", None) == "mysql_connect":
-            a = [self.gen_expr(x) for x in e.args]
+            a = [self.gen_str_arg(x) for x in e.args]
             return (f"well_mysql_connect(well_string_cstr({a[0]}), (int)({a[1]}), "
                     f"well_string_cstr({a[2]}), well_string_cstr({a[3]}), well_string_cstr({a[4]}))")
         if getattr(e, "builtin", None) == "mysql_exec":
-            return f"well_mysql_exec(well_string_cstr({self.gen_expr(e.args[0])}))"
+            return f"well_mysql_exec(well_string_cstr({self.gen_str_arg(e.args[0])}))"
         if getattr(e, "builtin", None) == "mysql_query_json":
-            return f"well_mysql_query_json(well_string_cstr({self.gen_expr(e.args[0])}))"
+            return f"well_mysql_query_json(well_string_cstr({self.gen_str_arg(e.args[0])}))"
         if getattr(e, "builtin", None) == "mysql_close":
             return "well_mysql_close()"
         if getattr(e, "builtin", None) == "mysql_pool":
-            a = [self.gen_expr(x) for x in e.args]
+            a = [self.gen_str_arg(x) for x in e.args]
             return (f"well_mysql_pool_configure(well_string_cstr({a[0]}), (int)({a[1]}), "
                     f"well_string_cstr({a[2]}), well_string_cstr({a[3]}), well_string_cstr({a[4]}), "
                     f"(int)({a[5]}), (int)({a[6]}))")
         if getattr(e, "builtin", None) == "mysql_exec_pool":
-            return f"well_mysql_pool_exec_global(well_string_cstr({self.gen_expr(e.args[0])}))"
+            return f"well_mysql_pool_exec_global(well_string_cstr({self.gen_str_arg(e.args[0])}))"
         if getattr(e, "builtin", None) == "mysql_query_json_pool":
-            return f"well_mysql_pool_query_json_global(well_string_cstr({self.gen_expr(e.args[0])}))"
+            return f"well_mysql_pool_query_json_global(well_string_cstr({self.gen_str_arg(e.args[0])}))"
         if getattr(e, "builtin", None) == "mysql_close_pool":
             return "well_mysql_pool_close_global()"
         if getattr(e, "builtin", None) == "ws_route":
             n = e.route_index
-            return ("well_ws_route(well_string_cstr(" + self.gen_expr(e.args[0]) + "), "
+            return ("well_ws_route(well_string_cstr(" + self.gen_str_arg(e.args[0]) + "), "
                     f"ws_open_{n}, ws_msg_{n}, ws_close_{n})")
         if getattr(e, "builtin", None) == "ws_listen":
             return f"well_ws_listen((int)({self.gen_expr(e.args[0])}))"
@@ -432,14 +533,14 @@ class CodeGen:
             return "well_ws_stop()"
         if getattr(e, "builtin", None) == "ws_send":
             return (f"well_ws_send((long long)({self.gen_expr(e.args[0])}), "
-                    f"well_string_cstr({self.gen_arg_temp(e.args[1])}))")
+                    f"well_string_cstr({self.gen_str_arg(e.args[1])}))")
         if getattr(e, "builtin", None) == "ws_close":
             return (f"well_ws_close((long long)({self.gen_expr(e.args[0])}), "
                     f"(int)({self.gen_expr(e.args[1])}), "
-                    f"well_string_cstr({self.gen_expr(e.args[2])}))")
+                    f"well_string_cstr({self.gen_str_arg(e.args[2])}))")
         if getattr(e, "builtin", None) == "http_route":
-            return (f"well_http_route(well_string_cstr({self.gen_expr(e.args[0])}), "
-                    f"well_string_cstr({self.gen_expr(e.args[1])}), http_route_{e.route_index})")
+            return (f"well_http_route(well_string_cstr({self.gen_str_arg(e.args[0])}), "
+                    f"well_string_cstr({self.gen_str_arg(e.args[1])}), http_route_{e.route_index})")
         if getattr(e, "builtin", None) == "http_listen":
             return f"well_http_listen((int)({self.gen_expr(e.args[0])}))"
         if getattr(e, "builtin", None) == "http_stop":
@@ -448,26 +549,26 @@ class CodeGen:
             return (f"well_http_respond((long long)({self.gen_expr(e.args[0])}), "
                     f"(int)({self.gen_expr(e.args[1])}), well_string_cstr({self.gen_arg_temp(e.args[2])}))")
         if getattr(e, "builtin", None) == "file_read":
-            return f"well_file_read(well_string_cstr({self.gen_expr(e.args[0])}))"
+            return f"well_file_read(well_string_cstr({self.gen_str_arg(e.args[0])}))"
         if getattr(e, "builtin", None) == "file_write":
             return (f"well_file_write(well_string_cstr({self.gen_arg_temp(e.args[0])}), "
                     f"well_string_cstr({self.gen_arg_temp(e.args[1])}))")
         if getattr(e, "builtin", None) == "file_exists":
-            return f"well_file_exists(well_string_cstr({self.gen_expr(e.args[0])}))"
+            return f"well_file_exists(well_string_cstr({self.gen_str_arg(e.args[0])}))"
         if getattr(e, "builtin", None) == "file_remove":
-            return f"well_file_remove(well_string_cstr({self.gen_expr(e.args[0])}))"
+            return f"well_file_remove(well_string_cstr({self.gen_str_arg(e.args[0])}))"
         if getattr(e, "builtin", None) == "host_now":
             return "well_host_now_ms()"
         if getattr(e, "builtin", None) == "host_env":
-            return f"well_host_env(well_string_cstr({self.gen_expr(e.args[0])}))"
+            return f"well_host_env(well_string_cstr({self.gen_str_arg(e.args[0])}))"
         if getattr(e, "enum_op", None) == "from_int":
-            return f"{e.enum_name}__fromInt((long long)({self.gen_expr(e.args[0])}))"
+            return f"{c_enum(e.enum_name)}__fromInt((long long)({self.gen_expr(e.args[0])}))"
         if getattr(e, "enum_op", None) == "to_string":
-            return f"{e.enum_name}__toString({self.gen_expr(e.args[0])})"
+            return f"{c_enum(e.enum_name)}__toString({self.gen_expr(e.args[0])})"
         if getattr(e, "builtin", None) == "json_parse":
             ty = e.json_type
-            arg = self.gen_expr(e.args[1])
-            return f"(({ty}*)well_json_parse(T_{ty}, well_string_cstr({arg}), ctx->oid))"
+            arg = self.gen_str_arg(e.args[1])
+            return f"(({c_type(ty)}*)well_json_parse(T_{c_type(ty)}, well_string_cstr({arg}), ctx->oid))"
         if getattr(e, "builtin", None) == "json_stringify":
             ind = (f"(int)({self.gen_expr(e.json_indent)})"
                    if getattr(e, "json_indent", None) is not None else "0")
@@ -497,7 +598,7 @@ class CodeGen:
         if getattr(e, "builtin", None) == "json_try_parse":
             ty = e.json_type
             arg = self.gen_arg_temp(e.args[1])
-            return f"(({ty}*)well_json_try_parse(T_{ty}, well_string_cstr({arg}), ctx->oid))"
+            return f"(({c_type(ty)}*)well_json_try_parse(T_{c_type(ty)}, well_string_cstr({arg}), ctx->oid))"
         if getattr(e, "builtin", None) == "idutil_get":
             return "well_id_util_get_id()"
         if getattr(e, "builtin", None) in ("timer_once", "timer_loop"):
@@ -529,14 +630,14 @@ class CodeGen:
             if op == "array_concat":
                 return f"well_array_concat{take}({obj}, {self.gen_expr(e.args[0])}, ctx)"
             if op == "array_join":
-                return f"well_array_join{take}({obj}, {self.gen_expr(e.args[0])})"
+                return f"well_array_join{take}({obj}, {self.gen_str_arg(e.args[0])})"
             if op == "array_index_of":
                 return (f"well_array_index_of{take}({obj}, "
-                        f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}, "
+                        f"{self.box_value(self.gen_str_arg(e.args[0]), e.elem_ty)}, "
                         f"{self.elem_kind_code(e.elem_ty)})")
             if op == "array_includes":
                 return (f"well_array_includes{take}({obj}, "
-                        f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}, "
+                        f"{self.box_value(self.gen_str_arg(e.args[0]), e.elem_ty)}, "
                         f"{self.elem_kind_code(e.elem_ty)})")
             if op == "array_sort":
                 return f"well_array_sort({obj}, {self.sort_kind_code(e.elem_ty)}, ctx)"
@@ -556,13 +657,13 @@ class CodeGen:
             if op == "map_clear":
                 return f"well_map_clear({obj}, ctx)"
             if op == "map_has":
-                return f"well_map_has({obj}, {self.gen_expr(e.args[0])})"
+                return f"well_map_has({obj}, {self.gen_str_arg(e.args[0])})"
             if op == "map_get":
-                return self.unbox_value(f"well_map_get({obj}, {self.gen_expr(e.args[0])})", e.elem_ty)
+                return self.unbox_value(f"well_map_get({obj}, {self.gen_str_arg(e.args[0])})", e.elem_ty)
             if op == "map_set":
-                return f"well_map_set({obj}, {self.gen_expr(e.args[0])}, {self.box_value(self.gen_expr(e.args[1]), e.elem_ty)}, ctx)"
+                return f"well_map_set({obj}, {self.gen_str_arg(e.args[0])}, {self.box_value(self.gen_expr(e.args[1]), e.elem_ty)}, ctx)"
             if op == "map_delete":
-                return f"well_map_delete({obj}, {self.gen_expr(e.args[0])}, ctx)"
+                return f"well_map_delete({obj}, {self.gen_str_arg(e.args[0])}, ctx)"
             if op == "str_code_point_at":
                 if self.is_owned(e.method_obj):
                     return (f"well_str_code_point_at_take({obj}, "
@@ -574,16 +675,16 @@ class CodeGen:
                 return (f"well_str_substring{take}({obj}, (long long)({self.gen_expr(e.args[0])}), "
                         f"(long long)({self.gen_expr(e.args[1])}))")
             if op == "str_index_of":
-                return f"well_str_index_of{take}({obj}, {self.gen_expr(e.args[0])})"
+                return f"well_str_index_of{take}({obj}, {self.gen_str_arg(e.args[0])})"
             if op == "str_index_of_from":
-                return (f"well_str_index_of_from{take}({obj}, {self.gen_expr(e.args[0])}, "
+                return (f"well_str_index_of_from{take}({obj}, {self.gen_str_arg(e.args[0])}, "
                         f"(long long)({self.gen_expr(e.args[1])}))")
             if op == "str_contains":
-                return f"well_str_contains{take}({obj}, {self.gen_expr(e.args[0])})"
+                return f"well_str_contains{take}({obj}, {self.gen_str_arg(e.args[0])})"
             if op == "str_starts_with":
-                return f"well_str_starts_with{take}({obj}, {self.gen_expr(e.args[0])})"
+                return f"well_str_starts_with{take}({obj}, {self.gen_str_arg(e.args[0])})"
             if op == "str_ends_with":
-                return f"well_str_ends_with{take}({obj}, {self.gen_expr(e.args[0])})"
+                return f"well_str_ends_with{take}({obj}, {self.gen_str_arg(e.args[0])})"
             if op == "str_replace":
                 return (f"well_str_replace{take}({obj}, {self.gen_arg_temp(e.args[0])}, "
                         f"{self.gen_arg_temp(e.args[1])})")
@@ -594,7 +695,7 @@ class CodeGen:
             if op == "str_to_upper":
                 return f"well_str_to_upper{take}({obj})"
             if op == "str_split":
-                return f"well_str_split{take}({obj}, {self.gen_expr(e.args[0])}, ctx)"
+                return f"well_str_split{take}({obj}, {self.gen_str_arg(e.args[0])}, ctx)"
             if op == "bytes_push":
                 return f"well_bytes_push({obj}, (int)({self.gen_expr(e.args[0])}), ctx)"
             if op == "bytes_get":
@@ -623,36 +724,36 @@ class CodeGen:
                 return self.unbox_value(f"well_linked_get({obj}, (long long)({self.gen_expr(e.args[0])}))", e.elem_ty)
             raise Exception(f"unsupported method {op}")
         if getattr(e, "cache_op", None) == "get":
-            return f"(({self.ctype(e.cache_type)})well_cache_get_ctx(T_{e.cache_type}, (long long)({self.gen_expr(e.args[1])}), ctx))"
+            return f"(({self.ctype(e.cache_type)})well_cache_get_ctx(T_{c_type(e.cache_type)}, (long long)({self.gen_expr(e.args[1])}), ctx))"
         if getattr(e, "cache_op", None) == "set":
-            return f"well_cache_set_ctx((void*)({self.gen_expr(e.args[0])}), ctx)"
+            return f"well_cache_set_ctx((void*)({self.gen_arg_temp(e.args[0])}), ctx)"
         if getattr(e, "cache_op", None) == "remove_all":
             return "well_cache_remove_ctx(ctx)"
         if getattr(e, "model_op", None) == "get":
-            return f"(({self.ctype(e.model_type)})well_model_get_ctx(T_{e.model_type}, (long long)({self.gen_expr(e.args[1])}), ctx))"
+            return f"(({self.ctype(e.model_type)})well_model_get_ctx(T_{c_type(e.model_type)}, (long long)({self.gen_expr(e.args[1])}), ctx))"
         if getattr(e, "model_op", None) == "peek":
-            return f"(({self.ctype(e.model_type)})well_model_peek_ctx(T_{e.model_type}, (long long)({self.gen_expr(e.args[1])}), ctx))"
+            return f"(({self.ctype(e.model_type)})well_model_peek_ctx(T_{c_type(e.model_type)}, (long long)({self.gen_expr(e.args[1])}), ctx))"
         if getattr(e, "model_op", None) == "findByOid":
-            return f"(({self.ctype(e.model_type)})well_model_get_ctx(T_{e.model_type}, (long long)({self.gen_expr(e.args[1])}), ctx))"
+            return f"(({self.ctype(e.model_type)})well_model_get_ctx(T_{c_type(e.model_type)}, (long long)({self.gen_expr(e.args[1])}), ctx))"
         if getattr(e, "model_op", None) == "remove":
-            return f"well_model_remove(T_{e.model_type}, (long long)({self.gen_expr(e.args[1])}), ctx)"
+            return f"well_model_remove(T_{c_type(e.model_type)}, (long long)({self.gen_expr(e.args[1])}), ctx)"
         if getattr(e, "model_op", None) == "set":
-            return f"well_model_set((void*)({self.gen_expr(e.args[0])}), ctx)"
+            return f"well_model_set((void*)({self.gen_arg_temp(e.args[0])}), ctx)"
         if getattr(e, "builtin", None) == "emit":
             channel = self.gen_channel(getattr(e, "channel_arg", None))
-            return f"well_emit_event((void*)({self.gen_expr(e.event_arg)}), (long long)({channel}))"
+            return f"well_emit_event((void*)({self.gen_arg_temp(e.event_arg)}), (long long)({channel}))"
         if getattr(e, "builtin", None) in ("on", "once", "off"):
             h = e.handler_name
-            fn = f"{h}_onEvent"
+            fn = f"{c_handler(h)}_onEvent"
             channel = self.gen_channel(getattr(e, "channel_arg", None))
             if e.builtin == "off":
-                return f"well_off_type(T_{e.event_type}, {fn}, (long long)({channel}))"
+                return f"well_off_type(T_{c_type(e.event_type)}, {fn}, (long long)({channel}))"
             once = "1" if e.builtin == "once" else "0"
-            return f"well_on_type(T_{e.event_type}, {fn}, {once}, (long long)({channel}))"
+            return f"well_on_type(T_{c_type(e.event_type)}, {fn}, {once}, (long long)({channel}))"
         if getattr(e, "builtin", None) == "start":
-            return f"{e.controller_name}_ensure(ctx)"
+            return f"{c_ctl(e.controller_name)}_ensure(ctx)"
         if getattr(e, "builtin", None) == "stop":
-            return f"{e.controller_name}_stop(ctx)"
+            return f"{c_ctl(e.controller_name)}_stop(ctx)"
         if getattr(e, "builtin", None) in ("print", "host_log"):
             raise Exception("print/Host.log is only supported as a statement")
         if getattr(e, "call_ns", None):
@@ -662,10 +763,10 @@ class CodeGen:
                 params = self.p.namespaces[ns][fname].params
             elif ns in getattr(self.p, "statics", {}) and fname in self.p.statics[ns]["funcs"]:
                 params = self.p.statics[ns]["funcs"][fname].params
-            return self.gen_call_ordered(e, f"{ns}__{fname}", params)
+            return self.gen_call_ordered(e, c_func(f"{ns}__{fname}"), params)
         if getattr(e, "call_user", None):
             f = self.p.funcs.get(e.call_user)
-            return self.gen_call_ordered(e, e.call_user, f.params if f else None)
+            return self.gen_call_ordered(e, c_func(e.call_user), f.params if f else None)
         raise Exception("unsupported call")
 
     def assert_codegen_type(self, target: str, e, where: str):
@@ -728,10 +829,12 @@ class CodeGen:
         the outer variable is generated with the inner shadow's type.
         """
         saved = dict(self.env)
+        saved_names = dict(self.c_names)
         try:
             fn()
         finally:
             self.env = saved
+            self.c_names = saved_names
 
     def gen_block(self, b: Block):
         for s in b.stmts:
@@ -759,12 +862,33 @@ class CodeGen:
         for mark, _kind, _tmark in reversed(self.scope_stack):
             self.emit_scope_release(mark)
 
-    def emit_break_cleanup(self):
+    def emit_break_cleanup(self, is_continue: bool = False):
+        """Release scopes on the way out of break/continue.
+
+        `break` leaves the nearest breakable scope (loop *or* switch); `continue`
+        additionally leaves a switch and unwinds to the nearest loop.
+        """
         for mark, kind, tmark in reversed(self.scope_stack):
             self.emit_scope_release(mark)
             self.w(f"well_temp_release_to({tmark});")
-            if kind in ("loop", "switch"):
+            if is_continue and kind == "loop":
                 break
+            if not is_continue and kind in ("loop", "switch"):
+                break
+
+    def gen_case_body(self, body: Block):
+        """Generate one switch-case body inside its own release scope.
+
+        Without a per-case mark a reference declared in one case lived until the
+        whole switch/function ended; the C braces already isolate storage, so the
+        journal mark is the missing half.
+        """
+        cm = f"_m{self.next_id()}"
+        self.w(f"int {cm} = well_ctx_mark(ctx);")
+        self.push_scope(cm, kind="block")
+        self.gen_scoped(lambda: self.gen_block(body))
+        self.emit_scope_release(cm)
+        self.pop_scope(cm)
 
     def gen_stmt(self, s: Stmt):
         line = getattr(s, "line", None)
@@ -826,7 +950,7 @@ class CodeGen:
                     else:
                         self.w(f"}} else if ({cond}) {{")
                     self.ind += 1
-                    self.gen_scoped(lambda b=body: self.gen_block(b))
+                    self.gen_case_body(body)
                     self.ind -= 1
                 if s.default:
                     if first:
@@ -835,7 +959,7 @@ class CodeGen:
                     else:
                         self.w("} else {")
                     self.ind += 1
-                    self.gen_scoped(lambda: self.gen_block(s.default))
+                    self.gen_case_body(s.default)
                     self.ind -= 1
                 if not first:
                     self.w("}")
@@ -854,13 +978,13 @@ class CodeGen:
                 for val, body in s.cases:
                     self.w(f"case (long long)({self.gen_expr(val)}): {{")
                     self.ind += 1
-                    self.gen_scoped(lambda b=body: self.gen_block(b))
+                    self.gen_case_body(body)
                     self.ind -= 1
                     self.w("} break;")
                 if s.default:
                     self.w("default: {")
                     self.ind += 1
-                    self.gen_scoped(lambda: self.gen_block(s.default))
+                    self.gen_case_body(s.default)
                     self.ind -= 1
                     self.w("} break;")
                 self.ind -= 1
@@ -868,7 +992,15 @@ class CodeGen:
                 self.emit_scope_release(swm)
                 self.pop_scope(swm)
         elif isinstance(s, While):
-            self.w(f"while ({self.gen_expr(s.cond)}) {{")
+            cond = self.gen_expr(s.cond)
+            sc = self.source_stmt(s)
+            if sc:
+                # Re-set the source location before *every* condition evaluation:
+                # otherwise a panic in the condition of iteration 2+ reports the
+                # line of the last executed body statement instead of the loop.
+                self.w(f"while (({sc}, ({cond}))) {{")
+            else:
+                self.w(f"while ({cond}) {{")
             self.ind += 1
             m = self.next_id()
             mk = f"_m{m}"
@@ -899,17 +1031,17 @@ class CodeGen:
             if kind == "array":
                 self.w(f"for (long long _i{n} = 0; _i{n} < well_array_len({it}); _i{n}++) {{")
                 self.ind += 1
-                self.w(f"{self.ctype(et)} {s.var} = {self.unbox_value(f'well_array_get({it}, _i{n})', et)};")
+                self.w(f"{self.ctype(et)} {c_var(s.var)} = {self.unbox_value(f'well_array_get({it}, _i{n})', et)};")
                 self.var_decl(s.var, et)
             elif kind == "linked":
                 self.w(f"for (WellLinkedNode* _n{n} = well_linked_first({it}); _n{n}; _n{n} = well_linked_next(_n{n})) {{")
                 self.ind += 1
-                self.w(f"{self.ctype(et)} {s.var} = {self.unbox_value(f'well_linked_value(_n{n})', et)};")
+                self.w(f"{self.ctype(et)} {c_var(s.var)} = {self.unbox_value(f'well_linked_value(_n{n})', et)};")
                 self.var_decl(s.var, et)
             else:
                 self.w(f"for (long long _i{n} = 0; _i{n} < well_map_len({it}); _i{n}++) {{")
                 self.ind += 1
-                self.w(f"WellString* {s.var} = well_map_key_at({it}, _i{n});")
+                self.w(f"WellString* {c_var(s.var)} = well_map_key_at({it}, _i{n});")
                 self.var_decl(s.var, "String")
             m = self.next_id()
             mk = f"_m{m}"
@@ -929,7 +1061,9 @@ class CodeGen:
             self.ind += 1
             if s.init:
                 self.gen_stmt(s.init)
-            cond = self.gen_expr(s.cond) if s.cond else "1"
+            raw_cond = self.gen_expr(s.cond) if s.cond else "1"
+            sc = self.source_stmt(s)
+            cond = f"({sc}, ({raw_cond}))" if sc else raw_cond
             self.w(f"while ({cond}) {{")
             self.ind += 1
             m = self.next_id()
@@ -956,7 +1090,7 @@ class CodeGen:
             self.emit_break_cleanup()
             self.w("break;")
         elif isinstance(s, Continue):
-            self.emit_break_cleanup()
+            self.emit_break_cleanup(is_continue=True)
             if self.continue_stack and self.continue_stack[-1]:
                 self.w(f"goto {self.continue_stack[-1]};")
             else:
@@ -980,41 +1114,41 @@ class CodeGen:
         ty = getattr(s, "ty", None) or (s.type.name if s.type else None)
         if not ty:
             raise Exception(f"cannot determine type for {s.name}")
+        cname = c_var(s.name)
         self.assert_codegen_type(ty, s.init, f"var {s.name}")
         if isinstance(s.init, (ArrayLit, ObjectLit)):
             kind, et = self.container_info(ty)
             if not kind:
                 raise Exception(f"container literal with non-container type {ty}")
             if kind == "array":
-                self.w(f"WellArray* {s.name} = well_array_new(ctx, {self.container_ref_flag(et)});")
+                self.w(f"WellArray* {cname} = well_array_new(ctx, {self.container_ref_flag(et)});")
                 for it in s.init.items:
-                    self.emit_container_push(s.name, it, et)
+                    self.emit_container_push(cname, it, et)
             else:
-                self.w(f"WellMap* {s.name} = well_map_new(ctx, {self.container_ref_flag(et)});")
+                self.w(f"WellMap* {cname} = well_map_new(ctx, {self.container_ref_flag(et)});")
                 for k, v in s.init.pairs:
-                    self.emit_map_set(s.name, f'well_string_lit("{c_escape(k)}")', v, et)
-            self.w(f"well_track_owned(ctx, {s.name});")
+                    self.emit_map_set(cname, f'well_string_lit("{c_escape(k)}")', v, et)
+            self.w(f"well_track_owned(ctx, {cname});")
             self.var_decl(s.name, ty)
             return
         if isinstance(s.init, New) and (self.container_info(s.init.type.name)[0] or getattr(s.init, "bytes_new", False)):
-            self.w(f"{self.ctype(ty)} {s.name} = {self.gen_expr(s.init)};")
-            self.w(f"well_track_owned(ctx, {s.name});")
+            self.w(f"{self.ctype(ty)} {cname} = {self.gen_expr(s.init)};")
+            self.w(f"well_track_owned(ctx, {cname});")
             self.var_decl(s.name, ty)
             return
         if self.is_ref(ty):
             if isinstance(s.init, New):
-                var = s.name
-                self.emit_new_into(var, ty, s.init)
-                self.w(f"well_track_owned(ctx, {var});")
+                self.emit_new_into(cname, ty, s.init)
+                self.w(f"well_track_owned(ctx, {cname});")
             else:
-                self.w(f"{self.ctype(ty)} {s.name} = {self.gen_expr(s.init)};")
+                self.w(f"{self.ctype(ty)} {cname} = {self.gen_expr(s.init)};")
                 if self.is_owned(s.init):
-                    self.w(f"well_track_owned(ctx, {s.name});")
+                    self.w(f"well_track_owned(ctx, {cname});")
                 else:
-                    self.w(f"well_track(ctx, {s.name});")
+                    self.w(f"well_track(ctx, {cname});")
             self.var_decl(s.name, ty)
         else:
-            self.w(f"{self.ctype(ty)} {s.name} = {self.gen_expr(s.init)};")
+            self.w(f"{self.ctype(ty)} {cname} = {self.gen_expr(s.init)};")
             self.var_decl(s.name, ty)
 
     def emit_container_push(self, arr: str, val: Expr, et: str):
@@ -1075,12 +1209,14 @@ class CodeGen:
         oid = "ctx->oid"
         if kind == "event" and e.args:
             oid = f"(long long)({self.gen_expr(e.args[0])})"
-        self.w(f"{self.ctype(ty)} {var} = new_{ty}(ctx, {oid});")
+        ct = c_type(ty)
+        self.w(f"{ct}* {var} = new_{ct}(ctx, {oid});")
         for fname, val in e.init:
             self.emit_field_assign(var, ty, fname, val, event=(kind == "event"))
 
     def emit_field_assign(self, obj: str, ty: str, fname: str, val: Expr, event=False):
         ft = self.field_type(ty, fname)
+        cf = c_field(fname)
         if self.is_ref(ft):
             code = self.gen_expr(val)
             owned = self.is_owned(val)
@@ -1089,15 +1225,83 @@ class CodeGen:
             self.w(f"{self.ctype(ft)} _fv = {code};")
             if not event and ft != "String":
                 self.w(f"well_check_value_oid((void*)({obj}), (void*)_fv, ctx);")
-            self.w(f"well_set_ref((void*)({obj}), (void**)&({obj})->{fname}, (void*)_fv);")
+            self.w(f"well_set_ref((void*)({obj}), (void**)&({obj})->{cf}, (void*)_fv);")
             if owned:
                 self.w("well_release((void*)_fv);")
             self.ind -= 1
             self.w("}")
         else:
-            self.w(f"({obj})->{fname} = {self.gen_expr(val)};")
+            self.w(f"({obj})->{cf} = {self.gen_expr(val)};")
 
-    def gen_assign(self, s: Assign):
+    def _raw_expr(self, code: str, ty: str):
+        """Synthetic Ident node that emits ``code`` verbatim (internal only)."""
+        node = Ident("_raw")
+        node.raw_c = code
+        node.ty = ty
+        return node
+
+    def _hoist_assign_target(self, tgt):
+        """Evaluate a Member/Index assignment target base (and index) exactly once.
+
+        Returns ``(kind, extra_decls, restore)`` where ``kind`` is the target
+        class, ``extra_decls`` is used for the index temp and ``restore`` undoes
+        the temporary AST rewrite.  The caller must release the base temp when
+        the base expression was owned.
+        """
+        oty = getattr(tgt.obj, "ty", None)
+        base = f"_cb{self.next_id()}"
+        self.w(f"{self.ctype(oty)} {base} = {self.gen_expr(tgt.obj)};")
+        saved_obj = tgt.obj
+        tgt.obj = self._raw_expr(base, oty)
+        saved_idx = None
+        if isinstance(tgt, Index):
+            # Keep the key's declared type so a String map key still goes
+            # through the string-arg journal helper on replay.
+            idx_ty = getattr(tgt.index, "ty", None) or "long"
+            idx = f"_ci{self.next_id()}"
+            self.w(f"{self.ctype(idx_ty)} {idx} = {self.gen_expr(tgt.index)};")
+            saved_idx = tgt.index
+            tgt.index = self._raw_expr(idx, idx_ty)
+
+        def restore():
+            tgt.obj = saved_obj
+            if saved_idx is not None:
+                tgt.index = saved_idx
+
+        return base, restore
+
+    def gen_compound_assign(self, s) -> bool:
+        """`x += y` / `x -= y` with Member/Index targets evaluated once.
+
+        The parser rewrites the compound forms to ``x = x + y``; for a target
+        like ``arr[idx()]`` that would evaluate ``idx()`` twice.  Hoist the base
+        and index, then replay the ordinary assignment against the hoisted
+        values so the read and the write share one evaluation.
+        """
+        tgt, val = s.target, s.value
+        if not (isinstance(val, Binary) and val.op in ("+", "-") and val.left is tgt):
+            return False
+        if not isinstance(tgt, (Index, Member)):
+            # Ident targets have no repeated side effect: the plain rewrite is
+            # already single-evaluation.
+            return False
+        owned_base = self.is_owned(tgt.obj)
+        self.w("{")
+        self.ind += 1
+        base, restore = self._hoist_assign_target(tgt)
+        try:
+            self.gen_assign(s, _replay=True)
+        finally:
+            restore()
+        if owned_base:
+            self.w(f"well_release((void*){base});")
+        self.ind -= 1
+        self.w("}")
+        return True
+
+    def gen_assign(self, s: Assign, _replay: bool = False):
+        if not _replay and self.gen_compound_assign(s):
+            return
         tgt = s.target
         if isinstance(tgt, Member) and isinstance(tgt.obj, Ident) and \
            tgt.obj.name in getattr(self.p, "statics", {}):
@@ -1105,6 +1309,7 @@ class CodeGen:
             st = self.p.statics[sname]
             ftype = st["fields"][tgt.name].type.name
             fname = f'"{sname}.{tgt.name}"'
+            cstat = c_static_field(sname, tgt.name)
             # read-only check first: RHS must not run (and allocate) when the
             # write is rejected
             self.w(f"well_static_check_write(ctx, {fname});")
@@ -1123,29 +1328,30 @@ class CodeGen:
                     self.w(f"WellMap* {tmp} = well_map_new(ctx, {self.container_ref_flag(et)});")
                     for k, v in s.value.pairs:
                         self.emit_map_set(tmp, f'well_string_lit("{c_escape(k)}")', v, et)
-                self.w(f"well_static_set_ref(ctx, (void**)&{sname}__{tgt.name}, (void*){tmp}, 1, {fname});")
+                self.w(f"well_static_set_ref(ctx, (void**)&{cstat}, (void*){tmp}, 1, {fname});")
                 self.ind -= 1
                 self.w("}")
                 return
             code = self.gen_expr(s.value)
             if self.is_ref(ftype):
                 owned = 1 if self.is_owned(s.value) else 0
-                self.w(f"well_static_set_ref(ctx, (void**)&{sname}__{tgt.name}, (void*)({code}), {owned}, {fname});")
+                self.w(f"well_static_set_ref(ctx, (void**)&{cstat}, (void*)({code}), {owned}, {fname});")
             else:
-                self.w(f"{sname}__{tgt.name} = {code};")
+                self.w(f"{cstat} = {code};")
             return
         if isinstance(tgt, Ident):
             ty = self.env.get(tgt.name)
             if ty is None:
                 raise Exception(f"unknown variable {tgt.name}")
             self.assert_codegen_type(ty, s.value, f"assignment to {tgt.name}")
+            cname = self.c_names.get(tgt.name) or c_var(tgt.name)
             if self.is_ref(ty):
                 if isinstance(s.value, New):
                     tmp = f"__new_{tgt.name}"
                     self.w("{")
                     self.ind += 1
                     self.emit_new_into(tmp, ty, s.value)
-                    self.w(f"well_ctx_replace(ctx, (void**)&{tgt.name}, (void*){tmp}, 1);")
+                    self.w(f"well_ctx_replace(ctx, (void**)&{cname}, (void*){tmp}, 1);")
                     self.ind -= 1
                     self.w("}")
                 else:
@@ -1154,17 +1360,17 @@ class CodeGen:
                     self.ind += 1
                     self.w(f"{self.ctype(ty)} _v = {code};")
                     owned = 1 if self.is_owned(s.value) else 0
-                    self.w(f"well_ctx_replace(ctx, (void**)&{tgt.name}, (void*)_v, {owned});")
+                    self.w(f"well_ctx_replace(ctx, (void**)&{cname}, (void*)_v, {owned});")
                     self.ind -= 1
                     self.w("}")
             else:
-                self.w(f"{tgt.name} = {self.gen_expr(s.value)};")
+                self.w(f"{cname} = {self.gen_expr(s.value)};")
             return
         if isinstance(tgt, Index):
             ot = getattr(tgt.obj, "ty", None)
             kind, et = self.container_info(ot)
             obj = self.gen_expr(tgt.obj)
-            idx = self.gen_expr(tgt.index)
+            idx = self.gen_str_arg(tgt.index) if kind == "map" else self.gen_expr(tgt.index)
             if kind == "array":
                 self.emit_array_set(obj, idx, s.value, et)
             elif kind == "map":
@@ -1187,7 +1393,7 @@ class CodeGen:
                 self.w(f"{self.ctype(ft)} _v = {code};")
                 if ft != "String":
                     self.w("well_check_value_oid((void*)_t, (void*)_v, ctx);")
-                self.w(f"well_set_ref((void*)_t, (void**)&_t->{tgt.name}, (void*)_v);")
+                self.w(f"well_set_ref((void*)_t, (void**)&_t->{c_field(tgt.name)}, (void*)_v);")
                 if owned:
                     self.w("well_release((void*)_v);")
                 if self.is_owned(tgt.obj):
@@ -1200,7 +1406,7 @@ class CodeGen:
                 self.ind += 1
                 self.w(f"{self.ctype(oty)} _t = {obj};")
                 self.w('well_check_oid((void*)_t, ctx, "field write");')
-                self.w(f"_t->{tgt.name} = {self.gen_expr(s.value)};")
+                self.w(f"_t->{c_field(tgt.name)} = {self.gen_expr(s.value)};")
                 if self.is_owned(tgt.obj):
                     self.w("well_release((void*)_t);")
                 self.ind -= 1
@@ -1372,7 +1578,9 @@ class CodeGen:
                 macro = self.enum_macro(name, mn)
                 if en["type"] == "String":
                     val = mv if isinstance(mv, str) else mn
-                    self.w(f'#define {macro} "{c_escape(val)}"')
+                    # Enum members are values, not C literals: a bare "red" is
+                    # a char* and crashes the moment it is used as a String.
+                    self.w(f'#define {macro} well_string_lit("{c_escape(val)}")')
                 else:
                     if mv is None:
                         val = auto
@@ -1382,52 +1590,58 @@ class CodeGen:
                     auto = val + 1
         for name, d in self.p.consts.items():
             ty = d.type.name
-            if ty == "String":
-                self.w(f'#define {name} well_string_lit("{c_escape(getattr(d.value, "value", ""))}")')
+            if ty == "String" and isinstance(d.value, StrLit):
+                self.w(f'#define {c_const(name)} well_string_lit("{c_escape(d.value.value)}")')
             else:
-                self.w(f"#define {name} ({self.gen_expr(d.value)})")
+                # String consts may also be another const or a String enum
+                # member; those must go through gen_expr (a plain `"..."` or
+                # `getattr(..., "value", "")` would emit an empty/native C
+                # string instead of a WellString*).
+                self.w(f"#define {c_const(name)} ({self.gen_expr(d.value)})")
         self.w("")
 
     def gen_type_defs(self):
         for name in self.type_ids:
-            self.w(f"typedef struct {name} {name};")
+            self.w(f"typedef struct {c_type(name)} {c_type(name)};")
         self.w("")
         for name, tid in self.type_ids.items():
             fields = self.p.structs[name]["fields"]
-            self.w(f"struct {name} {{")
+            self.w(f"struct {c_type(name)} {{")
             self.ind += 1
             self.w("WellObj hdr;")
             for f in fields:
-                self.w(f"{self.ctype(f.type.name)} {f.name};")
+                self.w(f"{self.ctype(f.type.name)} {c_field(f.name)};")
             self.ind -= 1
             self.w("};")
-            self.w(f"#define T_{name} {tid}")
+            self.w(f"#define T_{c_type(name)} {tid}")
         self.w("")
 
     def gen_constructors(self):
         for name in self.type_ids:
-            kind = self.type_kind[name]
-            self.w(f"static {name}* new_{name}(WellCtx* ctx, long long oid);")
+            ct = c_type(name)
+            self.w(f"static {ct}* new_{ct}(WellCtx* ctx, long long oid);")
         self.w("")
         for name in self.type_ids:
             kind = self.type_kind[name]
+            ct = c_type(name)
             fields = self.p.structs[name]["fields"]
-            self.w(f"static {name}* new_{name}(WellCtx* ctx, long long oid) {{")
+            self.w(f"static {ct}* new_{ct}(WellCtx* ctx, long long oid) {{")
             self.ind += 1
             self.w("(void)ctx;")
             if kind == "event":
                 self.w("if (oid == 0) oid = well_id_util_get_id();")
-            self.w(f"{name}* o = ({name}*)well_new(sizeof({name}), T_{name}, oid);")
+            self.w(f"{ct}* o = ({ct}*)well_new(sizeof({ct}), T_{ct}, oid);")
             for f in fields:
                 ty = f.type.name
                 if f.default is not None:
                     val = f.default
+                    self.require_const_default(val, f"field default {name}.{f.name}")
                     if self.is_ref(ty):
-                        self.w(f"well_set_ref((void*)o, (void**)&o->{f.name}, (void*)({self.gen_expr(val)}));")
+                        self.w(f"well_set_ref((void*)o, (void**)&o->{c_field(f.name)}, (void*)({self.gen_expr(val)}));")
                     else:
-                        self.w(f"o->{f.name} = {self.gen_expr(val)};")
+                        self.w(f"o->{c_field(f.name)} = {self.gen_expr(val)};")
                 elif ty == "String":
-                    self.w(f'o->{f.name} = well_string_lit("");')
+                    self.w(f'o->{c_field(f.name)} = well_string_lit("");')
             if kind == "event":
                 self.w("well_freeze((void*)o);")
             self.w("return o;")
@@ -1456,39 +1670,43 @@ class CodeGen:
             ek, etid, _, _ = self.meta_field_info(et)
             return fkind, cconst, ek, etid
         if ty in self.type_ids:
-            return "WELL_FIELD_REF", f"T_{ty}", "0", "0"
+            return "WELL_FIELD_REF", f"T_{c_type(ty)}", "0", "0"
         return "WELL_FIELD_INT", "0", "0", "0"
 
     def gen_type_meta(self):
         for name in self.type_ids:
+            ct = c_type(name)
             fields = self.p.structs[name]["fields"]
             if fields:
-                self.w(f"static const WellFieldDesc fields_{name}[] = {{")
+                self.w(f"static const WellFieldDesc fields_{ct}[] = {{")
                 self.ind += 1
                 for f in fields:
                     kind, tid, ek, etid = self.meta_field_info(f.type.name)
-                    self.w(f'{{"{f.name}", offsetof({name}, {f.name}), '
+                    # `f.name` stays the Well spelling: it is the serialized /
+                    # JSON field name and part of the public runtime metadata.
+                    self.w(f'{{"{f.name}", offsetof({ct}, {c_field(f.name)}), '
                            f'{kind}, {tid}, {ek}, {etid}}},')
                 self.ind -= 1
                 self.w("};")
-            self.w(f"static const WellTypeDesc desc_{name} = {{")
+            self.w(f"static const WellTypeDesc desc_{ct} = {{")
             self.ind += 1
-            self.w(f'"{name}", T_{name}, sizeof({name}), '
+            self.w(f'"{name}", T_{ct}, sizeof({ct}), '
                    f'{1 if self.type_kind[name] == "event" else 0},')
-            self.w(f'{len(fields)}, {"fields_" + name if fields else "NULL"}')
+            self.w(f'{len(fields)}, {"fields_" + ct if fields else "NULL"}')
             self.ind -= 1
             self.w("};")
             self.w("")
 
     def gen_destroyers(self):
         for name in self.type_ids:
+            ct = c_type(name)
             fields = self.p.structs[name]["fields"]
-            self.w(f"static void destroy_{name}(void* p) {{")
+            self.w(f"static void destroy_{ct}(void* p) {{")
             self.ind += 1
-            self.w(f"{name}* o = ({name}*)p;")
+            self.w(f"{ct}* o = ({ct}*)p;")
             for f in fields:
                 if self.is_ref(f.type.name):
-                    self.w(f"well_release((void*)o->{f.name});")
+                    self.w(f"well_release((void*)o->{c_field(f.name)});")
             self.w("well_obj_free(o);")
             self.ind -= 1
             self.w("}")
@@ -1497,25 +1715,24 @@ class CodeGen:
     def gen_prototypes(self):
         for name, f in self.p.funcs.items():
             ret = self.ctype(f.ret.name) if f.ret else "void"
-            params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
-            self.w(f"static {ret} {name}({params});")
+            params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {c_var(n)}" for n, t in f.params])
+            self.w(f"static {ret} {c_func(name)}({params});")
         for sname, st in getattr(self.p, "statics", {}).items():
             for fname, f in st["funcs"].items():
                 ret = self.ctype(f.ret.name) if f.ret else "void"
-                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
-                self.w(f"static {ret} {sname}__{fname}({params});")
+                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {c_var(n)}" for n, t in f.params])
+                self.w(f"static {ret} {c_func(sname + '__' + fname)}({params});")
         for ns, funcs in getattr(self.p, "namespaces", {}).items():
             for fname, f in funcs.items():
                 ret = self.ctype(f.ret.name) if f.ret else "void"
-                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
-                self.w(f"static {ret} {ns}__{fname}({params});")
+                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {c_var(n)}" for n, t in f.params])
+                self.w(f"static {ret} {c_func(ns + '__' + fname)}({params});")
         for name in self.p.controllers:
-            self.w(f"static void {name}_ensure(WellCtx* ctx);")
-            self.w(f"static void {name}_stop(WellCtx* ctx);")
-            self.w(f"static void {name}_run(WellCtx* ctx);")
+            self.w(f"static void {c_ctl(name)}_ensure(WellCtx* ctx);")
+            self.w(f"static void {c_ctl(name)}_stop(WellCtx* ctx);")
+            self.w(f"static void {c_ctl(name)}_run(WellCtx* ctx);")
         for name, h in self.p.handlers.items():
-            ev = self.p.handler_event[name].name
-            self.w(f"static void {name}_onEvent(WellCtx* ctx, void* evp);")
+            self.w(f"static void {c_handler(name)}_onEvent(WellCtx* ctx, void* evp);")
         self.w("")
 
     def gen_http_routes(self):
@@ -1523,13 +1740,14 @@ class CodeGen:
         for i, r in enumerate(routes):
             ev = r["event"]
             h = r["handler"]
+            ct = c_type(ev)
             self.w(f"static void http_route_{i}(WellCtx* ctx, WellHttpRequest* req) {{")
             self.ind += 1
-            self.w(f"{ev}* e = new_{ev}(ctx, req->id);")
-            self.w("e->reqId = req->id;")
+            self.w(f"{ct}* e = new_{ct}(ctx, req->id);")
+            self.w(f"e->{c_field('reqId')} = req->id;")
             for fn in ("method", "path", "query", "body"):
-                self.w(f"well_set_ref((void*)e, (void**)&e->{fn}, (void*)req->{fn});")
-            self.w(f"{h}_onEvent(ctx, (void*)e);")
+                self.w(f"well_set_ref((void*)e, (void**)&e->{c_field(fn)}, (void*)req->{fn});")
+            self.w(f"{c_handler(h)}_onEvent(ctx, (void*)e);")
             self.w("well_release((void*)e);")
             self.ind -= 1
             self.w("}")
@@ -1540,32 +1758,33 @@ class CodeGen:
         for i, r in enumerate(routes):
             oe, me, ce = r["open_ev"], r["msg_ev"], r["close_ev"]
             oh, mh, ch = r["open"], r["msg"], r["close"]
+            oct_, mct, cct = c_type(oe), c_type(me), c_type(ce)
             self.w(f"static void ws_open_{i}(WellCtx* ctx, WellWsClient* c) {{")
             self.ind += 1
-            self.w(f"{oe}* e = new_{oe}(ctx, c->id);")
-            self.w("e->clientId = c->id;")
-            self.w("well_set_ref((void*)e, (void**)&e->path, (void*)c->path);")
-            self.w("well_set_ref((void*)e, (void**)&e->query, (void*)c->query);")
-            self.w(f"{oh}_onEvent(ctx, (void*)e);")
+            self.w(f"{oct_}* e = new_{oct_}(ctx, c->id);")
+            self.w(f"e->{c_field('clientId')} = c->id;")
+            self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('path')}, (void*)c->path);")
+            self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('query')}, (void*)c->query);")
+            self.w(f"{c_handler(oh)}_onEvent(ctx, (void*)e);")
             self.w("well_release((void*)e);")
             self.ind -= 1
             self.w("}")
             self.w(f"static void ws_msg_{i}(WellCtx* ctx, WellWsClient* c, WellString* text) {{")
             self.ind += 1
-            self.w(f"{me}* e = new_{me}(ctx, c->id);")
-            self.w("e->clientId = c->id;")
-            self.w("well_set_ref((void*)e, (void**)&e->text, (void*)text);")
-            self.w(f"{mh}_onEvent(ctx, (void*)e);")
+            self.w(f"{mct}* e = new_{mct}(ctx, c->id);")
+            self.w(f"e->{c_field('clientId')} = c->id;")
+            self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('text')}, (void*)text);")
+            self.w(f"{c_handler(mh)}_onEvent(ctx, (void*)e);")
             self.w("well_release((void*)e);")
             self.ind -= 1
             self.w("}")
             self.w(f"static void ws_close_{i}(WellCtx* ctx, WellWsClient* c, int code, WellString* reason) {{")
             self.ind += 1
-            self.w(f"{ce}* e = new_{ce}(ctx, c->id);")
-            self.w("e->clientId = c->id;")
-            self.w("e->code = code;")
-            self.w("well_set_ref((void*)e, (void**)&e->reason, (void*)reason);")
-            self.w(f"{ch}_onEvent(ctx, (void*)e);")
+            self.w(f"{cct}* e = new_{cct}(ctx, c->id);")
+            self.w(f"e->{c_field('clientId')} = c->id;")
+            self.w(f"e->{c_field('code')} = code;")
+            self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('reason')}, (void*)reason);")
+            self.w(f"{c_handler(ch)}_onEvent(ctx, (void*)e);")
             self.w("well_release((void*)e);")
             self.ind -= 1
             self.w("}")
@@ -1587,20 +1806,21 @@ class CodeGen:
         for i, c in enumerate(getattr(self.p, "timer_calls", [])):
             ev = c["event"]
             h = c["handler"]
+            ct = c_type(ev)
             fields = set()
             if ev in self.p.structs:
                 fields = {f.name for f in self.p.structs[ev]["fields"]}
             self.w(f"static void timer_fire_{i}(WellCtx* ctx, void* arg) {{")
             self.ind += 1
             self.w("WellTimerInfo* ti = (WellTimerInfo*)arg;")
-            self.w(f"{ev}* e = new_{ev}(ctx, ti->id);")
+            self.w(f"{ct}* e = new_{ct}(ctx, ti->id);")
             if "id" in fields:
-                self.w("e->id = ti->id;")
+                self.w(f"e->{c_field('id')} = ti->id;")
             if "interval" in fields:
-                self.w("e->interval = ti->interval;")
+                self.w(f"e->{c_field('interval')} = ti->interval;")
             if "fires" in fields:
-                self.w("e->fires = ti->fires;")
-            self.w(f"{h}_onEvent(ctx, (void*)e);")
+                self.w(f"e->{c_field('fires')} = ti->fires;")
+            self.w(f"{c_handler(h)}_onEvent(ctx, (void*)e);")
             self.w("well_release((void*)e);")
             self.ind -= 1
             self.w("}")
@@ -1609,11 +1829,11 @@ class CodeGen:
     def gen_user_funcs(self):
         for name, f in self.p.funcs.items():
             ret = self.ctype(f.ret.name) if f.ret else "void"
-            params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
-            self.w(f"static {ret} {name}({params}) {{")
+            params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {c_var(n)}" for n, t in f.params])
+            self.w(f"static {ret} {c_func(name)}({params}) {{")
             self.ind += 1
             self.w("(void)ctx;")
-            self.env = {n: t.name for n, t in f.params}
+            self.set_params_env(f.params)
             self.current_ret = f.ret.name if f.ret else "void"
             m = self.next_id()
             mk = f"_m{m}"
@@ -1632,16 +1852,16 @@ class CodeGen:
         for sname, st in getattr(self.p, "statics", {}).items():
             for fname, f in st["funcs"].items():
                 ret = self.ctype(f.ret.name) if f.ret else "void"
-                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
-                self.w(f"static {ret} {sname}__{fname}({params});")
+                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {c_var(n)}" for n, t in f.params])
+                self.w(f"static {ret} {c_func(sname + '__' + fname)}({params});")
         for ns, funcs in getattr(self.p, "namespaces", {}).items():
             for fname, f in funcs.items():
                 ret = self.ctype(f.ret.name) if f.ret else "void"
-                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
-                self.w(f"static {ret} {ns}__{fname}({params}) {{")
+                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {c_var(n)}" for n, t in f.params])
+                self.w(f"static {ret} {c_func(ns + '__' + fname)}({params}) {{")
                 self.ind += 1
                 self.w("(void)ctx;")
-                self.env = {n: t.name for n, t in f.params}
+                self.set_params_env(f.params)
                 self.current_ret = f.ret.name if f.ret else "void"
                 m = self.next_id()
                 mk = f"_m{m}"
@@ -1660,11 +1880,11 @@ class CodeGen:
         for sname, st in getattr(self.p, "statics", {}).items():
             for fname, f in st["funcs"].items():
                 ret = self.ctype(f.ret.name) if f.ret else "void"
-                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {n}" for n, t in f.params])
-                self.w(f"static {ret} {sname}__{fname}({params}) {{")
+                params = ", ".join(["WellCtx* ctx"] + [f"{self.ctype(t.name)} {c_var(n)}" for n, t in f.params])
+                self.w(f"static {ret} {c_func(sname + '__' + fname)}({params}) {{")
                 self.ind += 1
                 self.w("(void)ctx;")
-                self.env = {n: t.name for n, t in f.params}
+                self.set_params_env(f.params)
                 self.current_ret = f.ret.name if f.ret else "void"
                 m = self.next_id()
                 mk = f"_m{m}"
@@ -1686,15 +1906,17 @@ class CodeGen:
         for sname, st in statics.items():
             for fname, f in st["fields"].items():
                 cty = self.ctype(f.type.name)
+                cstat = c_static_field(sname, fname)
                 if self.is_ref(f.type.name):
-                    self.w(f"static {cty} {sname}__{fname} = NULL;")
+                    self.w(f"static {cty} {cstat} = NULL;")
                 elif f.default is not None:
-                    self.w(f"static {cty} {sname}__{fname} = {self.gen_expr(f.default)};")
+                    self.require_const_default(f.default, f"static {sname}.{fname} default")
+                    self.w(f"static {cty} {cstat} = {self.gen_expr(f.default)};")
                 else:
                     zero = "0" if cty != "double" else "0.0"
                     if cty == "int" or cty == "long long":
                         zero = "0"
-                    self.w(f"static {cty} {sname}__{fname} = {zero};")
+                    self.w(f"static {cty} {cstat} = {zero};")
         self.w("")
         self.w("static void well_statics_init(void) {")
         self.ind += 1
@@ -1713,8 +1935,9 @@ class CodeGen:
                 d = f.default
                 if not self.is_ref(f.type.name) or d is None:
                     continue
+                cstat = c_static_field(sname, fname)
                 if isinstance(d, StrLit):
-                    self.w(f"{sname}__{fname} = well_string_lit(\"{c_escape(d.value)}\");")
+                    self.w(f"{cstat} = well_string_lit(\"{c_escape(d.value)}\");")
                 elif isinstance(d, NullLit):
                     continue
                 elif isinstance(d, ArrayLit):
@@ -1723,19 +1946,19 @@ class CodeGen:
                     self.w(f"WellArray* {tmp} = well_array_new(ctx, {self.container_ref_flag(et)});")
                     for it in d.items:
                         self.emit_container_push(tmp, it, et)
-                    self.w(f"{sname}__{fname} = {tmp};")
+                    self.w(f"{cstat} = {tmp};")
                 elif isinstance(d, ObjectLit):
                     kind, et = self.container_info(f.type.name)
                     tmp = f"_sf{self.next_id()}"
                     self.w(f"WellMap* {tmp} = well_map_new(ctx, {self.container_ref_flag(et)});")
                     for k, v in d.pairs:
                         self.emit_map_set(tmp, f'well_string_lit("{c_escape(k)}")', v, et)
-                    self.w(f"{sname}__{fname} = {tmp};")
+                    self.w(f"{cstat} = {tmp};")
                 else:
                     code = self.gen_expr(d)
-                    self.w(f"{sname}__{fname} = {code};")
+                    self.w(f"{cstat} = {code};")
                     if isinstance(d, Ident):
-                        self.w(f"if ({sname}__{fname}) well_retain((void*){sname}__{fname});")
+                        self.w(f"if ({cstat}) well_retain((void*){cstat});")
         if need_ctx:
             self.w("well_ctx_clear(ctx);")
         self.ind -= 1
@@ -1746,7 +1969,8 @@ class CodeGen:
         for sname, st in statics.items():
             for fname, f in st["fields"].items():
                 if self.is_ref(f.type.name):
-                    self.w(f"if ({sname}__{fname}) {{ well_release((void*){sname}__{fname}); {sname}__{fname} = NULL; }}")
+                    cstat = c_static_field(sname, fname)
+                    self.w(f"if ({cstat}) {{ well_release((void*){cstat}); {cstat} = NULL; }}")
         self.ind -= 1
         self.w("}")
         self.w("")
@@ -1758,27 +1982,29 @@ class CodeGen:
                 if m.name == "run":
                     run = m
                     break
-            self.w(f"static int {name}_started = 0;")
-            self.w(f"static void {name}_ensure(WellCtx* ctx) {{")
+            ctl = c_ctl(name)
+            self.w(f"static int {ctl}_started = 0;")
+            self.w(f"static void {ctl}_ensure(WellCtx* ctx) {{")
             self.ind += 1
-            self.w(f"if ({name}_started) return;")
-            self.w(f"{name}_started = 1;")
+            self.w(f"if ({ctl}_started) return;")
+            self.w(f"{ctl}_started = 1;")
             self.w(f"well_owner_push({self.controller_ids[name]});")
-            self.w(f"{name}_run(ctx);")
+            self.w(f"{ctl}_run(ctx);")
             self.w("well_owner_pop();")
             self.ind -= 1
             self.w("}")
-            self.w(f"static void {name}_stop(WellCtx* ctx) {{")
+            self.w(f"static void {ctl}_stop(WellCtx* ctx) {{")
             self.ind += 1
             self.w("(void)ctx;")
-            self.w(f"if (!{name}_started) return;")
-            self.w(f"{name}_started = 0;")
+            self.w(f"if (!{ctl}_started) return;")
+            self.w(f"{ctl}_started = 0;")
             self.w(f"well_off_owner({self.controller_ids[name]});")
             self.ind -= 1
             self.w("}")
-            self.w(f"static void {name}_run(WellCtx* ctx) {{")
+            self.w(f"static void {ctl}_run(WellCtx* ctx) {{")
             self.ind += 1
             self.env = {}
+            self.c_names = {}
             self.current_ret = "void"
             m = self.next_id()
             mk = f"_m{m}"
@@ -1804,13 +2030,16 @@ class CodeGen:
                     m = mm
                     break
             pname = m.params[0][0]
-            self.w(f"static void {name}_onEvent(WellCtx* ctx, void* evp) {{")
+            cpname = c_var(pname)
+            ct = c_type(ev)
+            self.w(f"static void {c_handler(name)}_onEvent(WellCtx* ctx, void* evp) {{")
             self.ind += 1
-            self.w(f"{ev}* {pname} = ({ev}*)evp;")
+            self.w(f"{ct}* {cpname} = ({ct}*)evp;")
             self.w("long long oid = ctx->oid;")
-            self.w(f"(void){pname};")
+            self.w(f"(void){cpname};")
             self.w("(void)oid;")
             self.env = {pname: ev, "oid": "long"}
+            self.c_names = {pname: cpname, "oid": "oid"}
             self.current_ret = "void"
             mmark = self.next_id()
             mk = f"_m{mmark}"
@@ -1838,8 +2067,9 @@ class CodeGen:
             self.w("well_module_register(&well_mysql_module);")
         self.w("well_module_init_all();")
         for name in self.type_ids:
-            self.w(f"well_register_type(T_{name}, destroy_{name});")
-            self.w(f"well_register_type_desc(&desc_{name});")
+            ct = c_type(name)
+            self.w(f"well_register_type(T_{ct}, destroy_{ct});")
+            self.w(f"well_register_type_desc(&desc_{ct});")
         if not self.entry:
             self.w('fprintf(stderr, "no entry controller\\n");')
             self.w("return 1;")
@@ -1851,7 +2081,7 @@ class CodeGen:
             self.w("well_static_owner_set(ctx.oid);")
             if getattr(self.p, "statics", {}):
                 self.w("well_statics_init();")
-            self.w(f"{self.entry}_ensure(&ctx);")
+            self.w(f"{c_ctl(self.entry)}_ensure(&ctx);")
             self.w("well_ctx_clear(&ctx);")
             self.ind -= 1
             self.w("}")

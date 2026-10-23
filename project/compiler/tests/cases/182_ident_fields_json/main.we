@@ -1,0 +1,40 @@
+module demo.identfields;
+
+// C keyword field names: the Well spelling must survive in the runtime type
+// metadata (Json stringify output), only the C struct member is prefixed.
+struct DataVo extends Vo {
+    register: int;
+    goto: String;
+    unsigned: int;
+    volatile: int;
+}
+
+event PayloadEvent extends Event {
+    volatile: int;
+}
+
+func show(d: DataVo): int {
+    return d.register + d.goto.length + d.unsigned + d.volatile;
+}
+
+controller Main {
+    run() {
+        var d: DataVo = new DataVo();
+        d.register = 5;
+        d.goto = "ab";
+        d.unsigned = 100;
+        d.volatile = 9;
+        print(show(d));
+        print(Json.stringify(d));
+        on(PayloadEvent, PayloadHandler);
+        emit(new PayloadEvent(1) { volatile: 42 });
+    }
+}
+
+handler PayloadHandler {
+    onEvent(e: PayloadEvent) {
+        print("payload", e.volatile);
+    }
+}
+
+entry Main;

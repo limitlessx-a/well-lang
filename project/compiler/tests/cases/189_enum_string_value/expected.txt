@@ -1,0 +1,8 @@
+red
+blue
+<red>
+true
+true
+blue
+RED
+blue

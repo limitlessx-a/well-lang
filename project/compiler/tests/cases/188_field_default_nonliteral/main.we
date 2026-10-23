@@ -1,0 +1,18 @@
+module demo.fielddefaultbad;
+
+struct B {
+    y: int = helper();
+}
+
+func helper(): int {
+    return 2;
+}
+
+controller Main {
+    run() {
+        var b: B = new B();
+        print(b.y);
+    }
+}
+
+entry Main;

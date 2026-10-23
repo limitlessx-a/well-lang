@@ -1,0 +1,21 @@
+module demo.builtinstringown;
+
+// Owned String temporaries passed to String-taking builtins used to leak one
+// object per call.  rc_debug.txt expects zero live objects at shutdown.
+controller Main {
+    run() {
+        var i: int = 0;
+        while (i < 2000) {
+            if (File.exists("no_such_dir/" + "file.txt")) {
+                print("unexpected");
+            }
+            if (File.exists("no_such_dir/" + "file2.txt")) {
+                print("unexpected");
+            }
+            i = i + 1;
+        }
+        print("done");
+    }
+}
+
+entry Main;
