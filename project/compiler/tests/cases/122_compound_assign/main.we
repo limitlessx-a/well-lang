@@ -1,0 +1,16 @@
+module demo.compound;
+
+controller CompoundController {
+    run() {
+        var x: int = 1;
+        x += 2;
+        x -= 1;
+        print(x);
+
+        var s: String = "a";
+        s += "b";
+        print(s);
+    }
+}
+
+entry CompoundController;

@@ -1,0 +1,15 @@
+module demo.arrow;
+
+struct ArrowVo {
+    value: int;
+}
+
+controller ArrowController {
+    run() {
+        var v: ArrowVo = new ArrowVo();
+        v->value = 7;
+        print(v->value);
+    }
+}
+
+entry ArrowController;

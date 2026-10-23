@@ -231,7 +231,7 @@ a == b, a != b, a < b, a <= b, a > b, a >= b
 a && b, a || b, !a
 cond ? x : y
 "a" + "b"              // 单次拼接 O(len(a)+len(b))；循环累积才 O(n²)，用 Bytes
-arr[i], map["k"], obj.field
+arr[i], map["k"], obj.field, obj->field   // `->` 是 `.` 的等价成员访问
 new UserVo(), new PingEvent(oid) { n: 1 }, new Bytes()
 [1, 2, 3], {"k": 1}    // 容器字面量（受限，见下）
 ```

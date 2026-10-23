@@ -554,8 +554,9 @@ class Parser:
     def parse_postfix(self) -> Expr:
         e = self.parse_primary()
         while True:
-            if self.at("."):
-                self.eat(".")
+            if self.at(".") or self.at("->"):
+                # `a->b` 是 `a.b` 的等价写法（成员访问）。
+                self.i += 1
                 e = Member(e, self.eat_id())
             elif self.at("("):
                 args = self.parse_args()
