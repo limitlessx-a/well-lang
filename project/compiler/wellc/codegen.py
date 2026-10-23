@@ -657,12 +657,35 @@ class CodeGen:
             raise Exception("print/Host.log is only supported as a statement")
         if getattr(e, "call_ns", None):
             ns, fname = e.call_ns
-            return self.gen_call_ordered(e, f"{ns}__{fname}")
+            params = None
+            if ns in self.p.namespaces and fname in self.p.namespaces[ns]:
+                params = self.p.namespaces[ns][fname].params
+            elif ns in getattr(self.p, "statics", {}) and fname in self.p.statics[ns]["funcs"]:
+                params = self.p.statics[ns]["funcs"][fname].params
+            return self.gen_call_ordered(e, f"{ns}__{fname}", params)
         if getattr(e, "call_user", None):
-            return self.gen_call_ordered(e, e.call_user)
+            f = self.p.funcs.get(e.call_user)
+            return self.gen_call_ordered(e, e.call_user, f.params if f else None)
         raise Exception("unsupported call")
 
-    def gen_call_ordered(self, e, fn_name: str) -> str:
+    def assert_codegen_type(self, target: str, e, where: str):
+        """Defense in depth: refuse to emit C for a checker-level type mismatch.
+
+        The checker is supposed to reject these; if a future checker regression
+        lets one through, this turns silent C type confusion (pointer-as-int,
+        int-as-pointer) into a clear internal error instead of UB.
+        """
+        vt = getattr(e, "ty", None)
+        if not vt or vt == "null" or target == vt:
+            return
+        scalar = ("int", "long", "double", "float", "bool")
+        if target in scalar and vt in scalar:
+            return
+        if self.is_ref(target) and self.is_ref(vt):
+            return
+        raise Exception(f"internal compiler type mismatch in {where}: {vt} -> {target}")
+
+    def gen_call_ordered(self, e, fn_name: str, params=None) -> str:
         """Call ``fn_name`` with arguments evaluated left-to-right.
 
         C does not specify argument evaluation order (TCC evaluates left-to-right,
@@ -673,7 +696,10 @@ class CodeGen:
         if not e.args:
             return f"{fn_name}(ctx)"
         decls, parts, owned = [], [], []
-        for a in e.args:
+        for i, a in enumerate(e.args):
+            if params is not None and i < len(params):
+                self.assert_codegen_type(params[i][1].name, a,
+                                        f"argument {i + 1} of {fn_name}")
             ty = getattr(a, "ty", None) or "int"
             if ty == "void":
                 ty = "int"
@@ -954,6 +980,7 @@ class CodeGen:
         ty = getattr(s, "ty", None) or (s.type.name if s.type else None)
         if not ty:
             raise Exception(f"cannot determine type for {s.name}")
+        self.assert_codegen_type(ty, s.init, f"var {s.name}")
         if isinstance(s.init, (ArrayLit, ObjectLit)):
             kind, et = self.container_info(ty)
             if not kind:
@@ -1111,6 +1138,7 @@ class CodeGen:
             ty = self.env.get(tgt.name)
             if ty is None:
                 raise Exception(f"unknown variable {tgt.name}")
+            self.assert_codegen_type(ty, s.value, f"assignment to {tgt.name}")
             if self.is_ref(ty):
                 if isinstance(s.value, New):
                     tmp = f"__new_{tgt.name}"
@@ -1147,6 +1175,7 @@ class CodeGen:
         if isinstance(tgt, Member):
             oty = getattr(tgt.obj, "ty", None)
             ft = self.field_type(oty, tgt.name) if oty else "int"
+            self.assert_codegen_type(ft, s.value, f"field write {tgt.name}")
             if self.is_ref(ft):
                 obj = self.gen_expr(tgt.obj)
                 code = self.gen_expr(s.value)
