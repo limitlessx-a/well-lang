@@ -634,6 +634,7 @@ def run_c_tests() -> bool:
         ("rtfix_string_lit_race", "rtfix string literal race: bad=0"),
         ("rtfix_json_cycle", "rtfix json cycle: len="),
         ("rtfix_owner_race", "rtfix owner stack tls: seen_by_a=1 main=0"),
+        ("rtfix_module_init", "module init nested register ok"),
     ]
     ok = True
     os.makedirs(BUILD, exist_ok=True)

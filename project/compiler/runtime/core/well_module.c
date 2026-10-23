@@ -59,35 +59,46 @@ void well_module_register(const WellModule *module) {
 }
 
 void well_module_init_all(void) {
-    int i;
+    WellModule snapshot[WELL_MAX_MODULES];
+    int count, i;
     module_lock_init();
     well_mutex_lock(&g_module_mutex);
     if (g_modules_inited) {
         well_mutex_unlock(&g_module_mutex);
         return;
     }
-    g_modules_inited = 1;
-    for (i = 0; i < g_module_count; i++) {
-        if (g_modules[i].init && g_modules[i].init() != 0)
+    count = g_module_count;
+    memcpy(snapshot, g_modules, sizeof(WellModule) * (size_t)count);
+    well_mutex_unlock(&g_module_mutex);
+    /* Call init() outside the module lock: an init callback is allowed to
+     * register further modules, and a panic must not leave the lock held. */
+    for (i = 0; i < count; i++) {
+        if (snapshot[i].init && snapshot[i].init() != 0)
             well_panic("module init failed");
     }
+    well_mutex_lock(&g_module_mutex);
+    g_modules_inited = 1;
     well_mutex_unlock(&g_module_mutex);
 }
 
 void well_module_shutdown_all(void) {
-    int i;
+    WellModule snapshot[WELL_MAX_MODULES];
+    int count, i;
     module_lock_init();
     well_mutex_lock(&g_module_mutex);
     if (!g_modules_inited) {
         well_mutex_unlock(&g_module_mutex);
         return;
     }
-    for (i = g_module_count - 1; i >= 0; i--) {
-        if (g_modules[i].stop) g_modules[i].stop();
-        if (g_modules[i].shutdown) g_modules[i].shutdown();
-    }
+    count = g_module_count;
+    memcpy(snapshot, g_modules, sizeof(WellModule) * (size_t)count);
     g_modules_inited = 0;
     well_mutex_unlock(&g_module_mutex);
+    /* Callbacks run outside the lock (same reasoning as init). */
+    for (i = count - 1; i >= 0; i--) {
+        if (snapshot[i].stop) snapshot[i].stop();
+        if (snapshot[i].shutdown) snapshot[i].shutdown();
+    }
 }
 
 void well_builtin_event_register(WellBuiltinEventKind kind,
