@@ -65,6 +65,7 @@ static int g_http_thread_started = 0;
 static int g_http_service_held = 0;
 static WellHttpRequest *g_requests = NULL;
 static WellHttpConn *g_conns = NULL;
+static int g_http_conn_count = 0; /* live connections, guarded by g_http_lock */
 /* Request whose handler is running on this thread: lets Http.respond skip the
  * global request-hash lock for the common synchronous-response case. */
 static WellTlsKey g_current_req_key = WELL_TLS_KEY_INVALID;
@@ -91,6 +92,15 @@ static int g_http_sweep_stop = 0;
 #define WELL_HTTP_SWEEP_BATCH 32
 /* An idle keep-alive connection is closed after this long without a request. */
 #define WELL_HTTP_IDLE_TIMEOUT_MS 15000
+/* Audit H1 (slowloris): the whole request head must arrive within this window
+ * of the first byte; a trickle of headers is answered with 400 and closed. */
+#define WELL_HTTP_HEADER_TIMEOUT_MS 5000
+/* Audit H1: hard cap on live connections (one reader thread + 64KB scratch
+ * each), so a peer cannot exhaust threads/memory by opening sockets. The
+ * #ifndef lets a test build lower the cap with -DWELL_HTTP_MAX_CONNECTIONS=N. */
+#ifndef WELL_HTTP_MAX_CONNECTIONS
+#define WELL_HTTP_MAX_CONNECTIONS 1024
+#endif
 
 static void http_lock_init(void) {
     if (g_http_inited) return;
@@ -304,6 +314,7 @@ static WellHttpConn *http_conn_unref_locked(WellHttpConn *c) {
     while (*pp) {
         if (*pp == c) {
             *pp = c->next;
+            g_http_conn_count--;
             break;
         }
         pp = &(*pp)->next;
@@ -547,6 +558,26 @@ static int http_has_ci(const char *s, const char *needle) {
     return 0;
 }
 
+/* Strict Content-Length parsing (audit H2): decimal digits only, optional
+ * surrounding OWS, no sign, no trailing garbage, and bounded by the 1MB body
+ * cap so an overflowing value can never wrap. Returns 0 on success, -1 when the
+ * value is malformed and the request must be answered with 400. */
+static int http_parse_content_length(const char *p, int *out) {
+    unsigned long v = 0;
+    int digits = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    while (*p >= '0' && *p <= '9') {
+        v = v * 10 + (unsigned long)(*p - '0');
+        if (v > 1048576UL) return -1;
+        digits++;
+        p++;
+    }
+    while (*p == ' ' || *p == '\t') p++;
+    if (digits == 0 || *p != '\0') return -1;
+    *out = (int)v;
+    return 0;
+}
+
 /* Reads one request from a keep-alive connection into `buf` (caller-owned
  * scratch, at least 65537 bytes). method/path/query point into `buf` and stay
  * valid until the next call; body is malloc'd (NULL when empty).
@@ -564,21 +595,32 @@ static int http_read_request(WellSocket fd, char *buf, size_t cap,
     int http11 = 0;
     int conn_close = 0;
     int conn_keep = 0;
+    long long header_deadline = 0; /* armed on the request's first byte (H1) */
 
     *body = NULL;
     for (;;) {
         int k;
         if (len == cap) return -1;
+        /* Total header deadline: a client trickling one header per recv must
+         * not extend the read indefinitely (audit H1). */
+        if (header_deadline && well_host_now_ms() >= header_deadline) return -1;
         k = http_recv(fd, buf + len, (int)(cap - len));
         if (k <= 0) {
             int eof = (len == 0);
             return eof ? -2 : -1;
         }
         len += (size_t)k;
+        if (!header_deadline) header_deadline = well_host_now_ms() + WELL_HTTP_HEADER_TIMEOUT_MS;
         buf[len] = '\0';
         hdr_end = strstr(buf, "\r\n\r\n");
-        if (hdr_end) break;
+        if (hdr_end) {
+            /* Even a complete head is rejected when it only arrived after the
+             * deadline (a 10s trickle used to be served as 200). */
+            if (well_host_now_ms() >= header_deadline) return -1;
+            break;
+        }
         if (len > 16384) return -1;
+        if (well_host_now_ms() >= header_deadline) return -1;
     }
 
     line = buf;
@@ -601,7 +643,13 @@ static int http_read_request(WellSocket fd, char *buf, size_t cap,
         if (!e) break;
         *e = '\0';
         if (http_starts_ci(line, "Content-Length:")) {
-            content_length = atoi(line + 15);
+            int v;
+            /* Malformed values (sign/garbage/overflow) are a 400, and two
+             * different Content-Length values are a smuggling precondition
+             * (audit H2): reject instead of silently taking the last one. */
+            if (http_parse_content_length(line + 15, &v) != 0) return -1;
+            if (content_length >= 0 && v != content_length) return -1;
+            content_length = v;
         } else if (http_starts_ci(line, "Connection:")) {
             if (http_has_ci(line + 11, "close")) conn_close = 1;
             if (http_has_ci(line + 11, "keep-alive")) conn_keep = 1;
@@ -639,7 +687,9 @@ static int http_read_request(WellSocket fd, char *buf, size_t cap,
     }
     *path = target;
     *method = buf;
-    *keep_alive = http11 ? !conn_close : conn_keep;
+    /* "close" always wins, including when several Connection headers are sent
+     * (HTTP/1.0 with "Connection: close, keep-alive" used to stay open). */
+    *keep_alive = conn_close ? 0 : (http11 ? 1 : conn_keep);
     return 0;
 }
 
@@ -842,6 +892,22 @@ static void *http_listener_thread(void *arg) {
         if (!http_wait_readable(fd, 100)) continue;
         s = http_accept(fd);
         if (s == WELL_INVALID_SOCKET) break;
+        http_set_recv_timeout(s, WELL_HTTP_IDLE_TIMEOUT_MS);
+        http_set_nodelay(s);
+        {   /* Refuse instead of spawning a thread past the cap (audit H1). */
+            int at_cap;
+            well_mutex_lock(&g_http_lock);
+            at_cap = g_http_conn_count >= WELL_HTTP_MAX_CONNECTIONS;
+            well_mutex_unlock(&g_http_lock);
+            if (at_cap) {
+                static const char busy[] =
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"
+                    "Connection: close\r\nRetry-After: 1\r\n\r\n";
+                http_send_all(s, busy, sizeof(busy) - 1);
+                http_close(s);
+                continue;
+            }
+        }
 
         conn = (WellHttpConn *)calloc(1, sizeof(WellHttpConn));
         if (!conn) well_panic("out of memory (HTTP connection)");
@@ -850,12 +916,11 @@ static void *http_listener_thread(void *arg) {
         conn->closed = 0;
         well_mutex_init(&conn->lock);
         well_cond_init(&conn->cond);
-        http_set_recv_timeout(s, WELL_HTTP_IDLE_TIMEOUT_MS);
-        http_set_nodelay(s);
         well_service_hold(); /* keep the run loop alive while the client is connected */
         well_mutex_lock(&g_http_lock);
         conn->next = g_conns;
         g_conns = conn;
+        g_http_conn_count++;
         well_mutex_unlock(&g_http_lock);
         if (well_thread_start(&th, http_conn_thread, conn) != 0)
             well_panic("HTTP: cannot start connection thread");
@@ -949,7 +1014,10 @@ void well_http_shutdown(void) {
         WellHttpConn *c;
         well_mutex_lock(&g_http_lock);
         c = g_conns;
-        if (c) g_conns = c->next;
+        if (c) {
+            g_conns = c->next;
+            if (g_http_conn_count > 0) g_http_conn_count--;
+        }
         well_mutex_unlock(&g_http_lock);
         if (!c) break;
         http_close(c->fd);
