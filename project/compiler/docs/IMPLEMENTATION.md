@@ -59,7 +59,7 @@ build/<name>_<hash8>.c  ──(TCC / gcc / clang)──►  <name>_<hash8>.exe
 |---|---|---|
 | `module a.b;` | ✅ 解析忽略 | 单文件/import 合并时不参与命名 |
 | `import "relative.we";` / `import a.b;` | ✅ | 本地相对/点路径解析，decl 合并 |
-| `entry Controller;` | ✅ | 生成 `main()`，调用 `Controller_ensure`（幂等启动） |
+| `entry Controller;` | ✅ | 生成 `main()`，调用 `ctl_<Controller>_ensure`（幂等启动） |
 | `const N: int = 1;` | ✅ | 生成 C 宏；值必须是编译期常量（字面量/枚举成员/其它 const/它们的数值运算），`new`/函数调用/Host 读取/String 拼接会在 check 阶段报错 |
 | `enum E { A = 1; B; }` | ✅ | int 自增 |
 | `enum E { A = "A"; }` | ✅ | String 枚举，生成字符串宏（普通常量，不承担事件名） |
@@ -69,7 +69,7 @@ build/<name>_<hash8>.c  ──(TCC / gcc / clang)──►  <name>_<hash8>.exe
 | `controller C { run(){...} }` | ✅ | 单例装配器；`start(C)` 幂等，无 `start(C, oid)`；不支持 `extends`（语法已移除） |
 | `handler H { onEvent(e:E){...} }` | ✅ | 也接受 `handle`/`on`/`handler` 方法名；不支持 `extends`（语法已移除） |
 | `func f(a:int):int { ... }` | ✅ | 生成带隐藏 `WellCtx*` 的 C 函数 |
-| `namespace N { f(a:int):int {...} }` | ✅ | 静态函数集合；`N.f(...)` 编译期解析，生成 `static N__f(WellCtx*, ...)`，零运行时开销、不占 oid/RC |
+| `namespace N { f(a:int):int {...} }` | ✅ | 静态函数集合；`N.f(...)` 编译期解析，生成 `static wf_N__f(WellCtx*, ...)`，零运行时开销、不占 oid/RC |
 | `static S { f: int = 1; m(): int {...} }` | ✅ | 静态类：**启动期可写、运行期只读**的静态字段 + 静态函数，不可实例化；`S.f` / `S.m()` 编译期解析 |
 
 `namespace` 语义（2026-10-22 加入）：
@@ -227,7 +227,7 @@ typedef struct WellObj {
 - **RC 原子化**：`WellObj.rc` 是 `WellAtomicInt`；Windows 用 `InterlockedIncrement/Decrement`，GCC/Clang 用 `__atomic_*`，其他编译器回退单线程；`retain` relaxed，`release` acq_rel，最后一个 release 负责销毁。`g_live` 仍是单线程调试计数。
   - **POSIX 编译器选择**：TinyCC 0.9.27 的 Linux 端口没有 `__atomic_*`/`__sync_*` 内建函数（会退化成隐式函数声明、链接失败），因此 POSIX 默认优先 gcc/clang；Windows 路径用 Interlocked，TCC 仍是 Windows 默认（见 §7 工具链）。
   - 线程局部状态（panic 目标、源码位置、临时对象栈、HTTP 当前请求）在 POSIX 上使用 `pthread_key_*`（`well_thread.c` 的 `well_tls_*`），不依赖编译器 `__thread`（TCC 不支持）；Windows 仍用 TLS 槽 / `__declspec(thread)`。
-- **级联释放**：对象 rc=0 时，生成的 `destroy_T` 先 release 所有引用字段，再 `free`。
+- **级联释放**：对象 rc=0 时，生成的 `destroy_wt_<T>` 先 release 所有引用字段，再 `free`。
 - **成环**：允许（运行时不做 DFS 检查）；环随 oid 过期整组回收，见 §3.15。
 - `WELL_RC_DEBUG=1` 时，进程结束打印 `well: live objects at shutdown = N`；正常程序应为 0。
 
@@ -484,12 +484,26 @@ typedef struct WellStore {
 
 ## 4. 代码生成要点
 
-- 每个 struct/event 生成 `typedef struct T T;`、`struct T { WellObj hdr; ... }`、`#define T_T <id>`。
-- 生成 `static T* new_T(WellCtx*, long long oid)`：分配 + 应用字段默认值（String 默认 `""`）。
-- 生成 `static void destroy_T(void*)`：release 引用字段 + free；`main` 注册到运行时。
-- handler 生成 `static void H_onEvent(WellCtx*, void* evp)`，内部 `E* e = (E*)evp;`。
-- controller 生成 `static void C_ensure(WellCtx*)` + `static void C_run(WellCtx*)`；`start(C)` 调 `C_ensure`，重复启动只执行一次。
-- `func` 生成 `static <ret> f(WellCtx* ctx, ...)`，调用时自动补 `ctx`。
+生成的 C 标识符统一加前缀/转义，避免 Well 名字与 C 关键字、libc、运行时符号冲突（Well 原名保留在元数据/JSON/诊断中）：
+
+| Well 声明 | 生成的 C 名字 |
+|---|---|
+| struct/event `X` | 类型 `wt_X`，type id `T_wt_X`，`new_wt_X` / `destroy_wt_X` / `desc_wt_X` |
+| handler `H` | `hd_H` + `hd_H_onEvent` |
+| controller `C` | `ctl_C` + `ctl_C_ensure` / `ctl_C_run` / `ctl_C_stop` |
+| `func f` | `wf_f` |
+| namespace `N { f }` / static `S { f }` | `wf_N__f` / `wf_S__f` |
+| enum `E` / 成员 | 前缀 `E_` / `E_E_MEMBER`（String 成员生成 `well_string_lit(...)`） |
+| const `K` | `C_K`（C 宏） |
+| static 字段 `S.f` | `wst_S__f` |
+| 局部变量 / 参数 / 字段 | `v_` / `f_` 前缀；C 关键字与保留名自动转义 |
+
+- 每个 struct/event 生成 `typedef struct wt_X wt_X;`、`struct wt_X { WellObj hdr; ... }`、`#define T_wt_X <id>`。
+- 生成 `static wt_X* new_wt_X(WellCtx*, long long oid)`：分配 + 应用字段默认值（String 默认 `""`）。
+- 生成 `static void destroy_wt_X(void*)`：release 引用字段 + free；`main` 注册到运行时。
+- handler 生成 `static void hd_H_onEvent(WellCtx*, void* evp)`，内部 `const E* <用户参数名> = (E*)evp;`（参数名沿用源码）。
+- controller 生成 `static void ctl_C_ensure(WellCtx*)` + `static void ctl_C_run(WellCtx*)`；`start(C)` 调 `ctl_C_ensure`，重复启动只执行一次。
+- `func` 生成 `static <ret> wf_f(WellCtx* ctx, ...)`，调用时自动补 `ctx`；实参先按源码顺序提升为临时变量，保证求值顺序与编译器无关。
 - 每个函数入口 `(void)ctx;` 避免未使用告警。
 - 生成 C 保留在 `build/<name>_<hash8>.c`（`<hash8>` 是源码路径的 sha1 前 8 位，避免不同目录同名 `main.we` 互相覆盖），便于调试；显式 `-o` 时输出到指定路径。
 

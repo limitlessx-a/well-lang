@@ -7,16 +7,15 @@ enum Color {
 
 controller Main {
     run() {
-        // The switch is guarded so this case only verifies that the checker
-        // accepts String-enum members as switch case values (the String-enum
-        // member *value* codegen bug is tracked separately: E_Color_RED is
-        // emitted as a C string literal, not a WellString*).
-        if (1 == 0) {
-            var c = Color.RED;
-            switch (c) {
-                case Color.RED: print("r");
-                case Color.BLUE: print("b");
-            }
+        var c = Color.RED;
+        switch (c) {
+            case Color.RED: print("r");
+            case Color.BLUE: print("b");
+        }
+        var d = Color.BLUE;
+        switch (d) {
+            case Color.RED: print("r");
+            case Color.BLUE: print("b");
         }
         print("ok");
     }
