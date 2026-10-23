@@ -107,27 +107,32 @@ def lex(src: str, filename: str = "<src>") -> list[Token]:
             col += i - start
             continue
         if c == '"':
+            sline, scol = line, col
             i += 1
             col += 1
             buf = []
             while i < n and src[i] != '"':
                 if src[i] == "\\":
                     i += 1
-                    col += 1
                     if i >= n:
                         err("unterminated string")
                     esc = src[i]
                     mapping = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "0": "\0"}
                     buf.append(mapping.get(esc, esc))
+                    col += 2
                 else:
                     buf.append(src[i])
+                    if src[i] == "\n":
+                        line += 1
+                        col = 1
+                    else:
+                        col += 1
                 i += 1
-                col += 1
             if i >= n:
                 err("unterminated string")
             i += 1
             col += 1
-            toks.append(Token("str", "".join(buf), line, col))
+            toks.append(Token("str", "".join(buf), sline, scol))
             continue
         matched = False
         for op in MULTI_OPS:

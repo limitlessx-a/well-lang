@@ -1,0 +1,13 @@
+module demo.str_multiline_position;
+
+controller Main {
+    run() {
+        var s: String = "line one
+line two";
+        print(s.length);
+        var x = ;
+        print(x);
+    }
+}
+
+entry Main;

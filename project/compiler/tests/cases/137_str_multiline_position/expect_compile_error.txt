@@ -1,0 +1,1 @@
+main.we:8:17: unexpected token
