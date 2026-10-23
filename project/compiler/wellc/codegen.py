@@ -664,11 +664,17 @@ class CodeGen:
             self.gen_stmt(s)
 
     def push_scope(self, mark: str, is_loop: bool = False, kind: str = None):
-        self.scope_stack.append((mark, kind or ("loop" if is_loop else "block")))
+        # Every language scope also gets its own temp-journal mark so temporaries
+        # created inside a loop/block are released when that scope exits instead
+        # of piling up until the end of the function.
+        tmark = f"_tm{self.next_id()}"
+        self.w(f"int {tmark} = well_temp_mark();")
+        self.scope_stack.append((mark, kind or ("loop" if is_loop else "block"), tmark))
 
     def pop_scope(self, mark: str):
         if self.scope_stack and self.scope_stack[-1][0] == mark:
-            self.scope_stack.pop()
+            _mark, _kind, tmark = self.scope_stack.pop()
+            self.w(f"well_temp_release_to({tmark});")
 
     def emit_scope_release(self, mark: str):
         self.w(f"well_ctx_release_from(ctx, {mark});")
@@ -676,12 +682,13 @@ class CodeGen:
     def emit_return_cleanup(self):
         if self.temp_mark:
             self.w(f"well_temp_release_to({self.temp_mark});")
-        for mark, _kind in reversed(self.scope_stack):
+        for mark, _kind, _tmark in reversed(self.scope_stack):
             self.emit_scope_release(mark)
 
     def emit_break_cleanup(self):
-        for mark, kind in reversed(self.scope_stack):
+        for mark, kind, tmark in reversed(self.scope_stack):
             self.emit_scope_release(mark)
+            self.w(f"well_temp_release_to({tmark});")
             if kind in ("loop", "switch"):
                 break
 
@@ -702,12 +709,22 @@ class CodeGen:
         elif isinstance(s, If):
             self.w(f"if ({self.gen_expr(s.cond)}) {{")
             self.ind += 1
+            im = f"_m{self.next_id()}"
+            self.w(f"int {im} = well_ctx_mark(ctx);")
+            self.push_scope(im, kind="block")
             self.gen_scoped(lambda: self.gen_stmt(s.then))
+            self.emit_scope_release(im)
+            self.pop_scope(im)
             self.ind -= 1
             if s.els:
                 self.w("} else {")
                 self.ind += 1
+                em = f"_m{self.next_id()}"
+                self.w(f"int {em} = well_ctx_mark(ctx);")
+                self.push_scope(em, kind="block")
                 self.gen_scoped(lambda: self.gen_stmt(s.els))
+                self.emit_scope_release(em)
+                self.pop_scope(em)
                 self.ind -= 1
             self.w("}")
         elif isinstance(s, Switch):
