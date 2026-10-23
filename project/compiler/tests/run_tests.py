@@ -584,6 +584,7 @@ def run_c_tests() -> bool:
         ("json_deep_test", "json deep nesting rejected"),
         ("store_cycle_test", "store cycle reload ok"),
         ("rtfix_string_lit_race", "rtfix string literal race: bad=0"),
+        ("rtfix_json_cycle", "rtfix json cycle: len="),
     ]
     ok = True
     os.makedirs(BUILD, exist_ok=True)

@@ -612,6 +612,14 @@ static void jo_linked_elems(JOut *o, WellLinked *l, int elem_kind, unsigned int 
 
 static void jo_obj(JOut *o, void *obj, const WellTypeDesc *d, int depth) {
     int i;
+    /* REF fields recurse through jo_obj directly, bypassing jo_value()'s depth
+     * check, so a cycle (legal in the language) would recurse until the stack
+     * overflows (R-04). Cap the depth here too: beyond the limit emit JSON null
+     * instead of a crash, which also bounds long non-cyclic chains. */
+    if (depth > 64) {
+        jo_puts(o, "null");
+        return;
+    }
     if (!obj || !d) {
         jo_puts(o, "null");
         return;
