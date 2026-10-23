@@ -14,7 +14,7 @@
 - **事件路由**：`on(H)` / `on(H, channel)` / `once(H)` / `off(H)`（从 handler 的 `onEvent(e: T)` 参数推断，推荐）；也支持显式 `on(EventType, H[, channel])`，其中 EventType 可以是 handler 参数事件类型本身或其子类（字段展平）；`emit(event)` / `emit(event, channel)`
   - `channel` 是 `long`；`0` = 默认/全局通道；`>0` = 普通通道；`ALL` = 订阅通配
 - 基础类型：`int / long / bool / double / String / Bytes / void / null`
-  - 整数 `/`、`%` 除数为 0 会 panic（带源码行号）；编译期字面量除零/常量溢出直接报错；运行期溢出未做语言级检查（C 有符号溢出为 UB，不要依赖 wrap）
+  - 整数 `/`、`%` 除数为 0 会 panic（带源码行号）；编译期字面量除零/常量溢出直接报错；运行期溢出明确为二补码 wrap（gcc/clang 默认追加 `-fwrapv`，TCC 实现即 wrap）
   - `String +` 单次拼接正常，但循环 `s = s + x` 是 O(n²)；大量拼接用 `Bytes`（20k 次实测约 0.6s vs Bytes ≈1–2ms）
 - 容器：`Array<T>`（`[]`）、`Map<T>`（`{}`，String 键、值同质）、`Linked<T>`（双向链表）
   - `a.push/pop/shift/unshift`、`a.get/set`、`a[i]`、`a.length`、`a.sort()`（int/long/double/String）、`a.reverse()`、`for (x of a)`
@@ -67,7 +67,7 @@ compiler/
 
 ## 使用
 
-需要 Python 3 和一个 C 编译器。本机已验证 TinyCC 0.9.27（仓库内 `tool_ai/tools/tcc/`）与 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，已加入用户 PATH；`WELL_CC=gcc` 自动 `-O2`）。
+需要 Python 3 和一个 C 编译器。本机已验证 TinyCC 0.9.27（仓库内 `tool_ai/tools/tcc/`）与 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，已加入用户 PATH；`WELL_CC=gcc` 自动 `-O2 -fwrapv`）。
 
 ```powershell
 cd compiler
@@ -110,7 +110,7 @@ python tools\bench.py --compare build\bench\baseline.json --threshold 30
 
 编译器查找顺序：环境变量 `WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认快速 TCC）→ PATH 中的 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang：TinyCC 0.9.27 的 Linux 端口没有运行时所需的 `__atomic_*`/`__sync_*` 内建函数，Windows 路径改用 Interlocked，因此 TCC 仍是 Windows 默认）。
 
-额外 C 编译参数用 `WELL_CFLAGS` 传入（如 `-O2 -g`）；当检测到 gcc/clang 时默认追加 `-O2`，TCC 使用默认参数（driver 不追加 `-O2`）；显式设置 `WELL_CFLAGS=""` 可关闭默认 `-O2`。
+额外 C 编译参数用 `WELL_CFLAGS` 传入（如 `-O2 -g`）；当检测到 gcc/clang 时默认追加 `-O2`，并**始终**追加 `-fwrapv`（语言溢出语义，`WELL_CFLAGS` 不能关闭）；TCC 使用默认参数（不追加 `-O2`）。
 
 ### C 工具链（本机）
 
@@ -123,20 +123,20 @@ python tools\bench.py --compare build\bench\baseline.json --threshold 30
 # 新开终端后可直接使用 gcc
 gcc --version
 
-# 用 gcc 构建（driver 自动追加 -O2）
+# 用 gcc 构建（driver 自动追加 -O2 -fwrapv）
 $env:WELL_CC = "gcc"
 python wellc.py build examples\features.we -o build\features_gcc.exe
 
-# 自定义 flags，或显式关闭自动 -O2
+# 自定义 flags，或显式关闭自动 -O2（-fwrapv 仍会保留）
 $env:WELL_CFLAGS = "-O2 -g"
 $env:WELL_CFLAGS = ""
 ```
 
-验证状态（2026-10-22）：GCC 16.2 -O2 下定向 HTTP/WS/JSON/TTL 用例与全部 12 个 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 115 用例串行编译约 25s/case，未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 115 个 `.we` 用例已跑通（2 个 MySQL 用例跳过）。
+验证状态（2026-10-22）：GCC 16.2 -O2 -fwrapv 下定向 HTTP/WS/JSON/TTL 用例与全部 12 个 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 115 用例串行编译约 25s/case，未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 115 个 `.we` 用例已跑通（2 个 MySQL 用例跳过）。
 
 ### CI（Linux）
 
-`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑完整 `tools/verify.py`（**115 个 `.we` 用例 + 12 个 C 测试 + check-cli**；POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2`）。2026-10-23 起 **CI 已转正**：C 测试纳入每次 push/PR 的 Linux 门禁；`52_mysql`/`53_mysql_pool` 因 runner 无 MySQL 自动 SKIP。bench（HTTP 压测/解析器基线）不进入 push 门禁，通过 `workflow_dispatch` 勾选 `run_bench=true` 手动触发，避免共享 runner 的计时噪声。需要本机 MySQL 的用例通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
+`.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑完整 `tools/verify.py`（**115 个 `.we` 用例 + 12 个 C 测试 + check-cli**；POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2 -fwrapv`）。2026-10-23 起 **CI 已转正**：C 测试纳入每次 push/PR 的 Linux 门禁；`52_mysql`/`53_mysql_pool` 因 runner 无 MySQL 自动 SKIP。bench（HTTP 压测/解析器基线）不进入 push 门禁，通过 `workflow_dispatch` 勾选 `run_bench=true` 手动触发，避免共享 runner 的计时噪声。需要本机 MySQL 的用例通过用例目录里的 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
 
 插件 CI 在 `.github/workflows/extension.yml`：`project/vscode_extension/**` 变化时跑 `npm test`（TypeScript 编译 + 格式化/import/语法/激活冒烟 4 组测试）。
 

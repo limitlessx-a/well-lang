@@ -73,20 +73,25 @@ def find_cc() -> str:
 def cc_flags() -> list[str]:
     """Extra C compiler flags for the selected toolchain.
 
-    WELL_CFLAGS always wins (an explicitly empty value disables the default).
-    When WELL_CC/autodetection resolves to gcc or clang we default to -O2;
-    TinyCC keeps its fast-compile/default-flags behaviour.
+    WELL_CFLAGS controls the optimisation flags (an explicitly empty value
+    disables the default -O2).  For gcc/clang we always append -fwrapv so
+    signed integer overflow keeps the language-defined two's-complement wrap
+    semantics; TinyCC keeps its default flags (its codegen already wraps).
     """
+    cc = os.path.basename(find_cc()).lower()
     if "WELL_CFLAGS" in os.environ:
         raw = os.environ["WELL_CFLAGS"]
         parts = shlex.split(raw, posix=(os.name != "nt"))
         # Windows shlex(posix=False) keeps surrounding quotes; strip matched ones.
-        return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in ("\"", "'") else p
-                for p in parts]
-    cc = os.path.basename(find_cc()).lower()
-    if cc.startswith(("gcc", "clang")):
-        return ["-O2"]
-    return []
+        flags = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in ("\"", "'") else p
+                 for p in parts]
+    elif cc.startswith(("gcc", "clang")):
+        flags = ["-O2"]
+    else:
+        flags = []
+    if cc.startswith(("gcc", "clang")) and "-fwrapv" not in flags:
+        flags.append("-fwrapv")
+    return flags
 
 
 def _parse_file(path: str) -> Program:

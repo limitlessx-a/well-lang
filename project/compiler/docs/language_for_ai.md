@@ -237,7 +237,7 @@ new UserVo(), new PingEvent(oid) { n: 1 }, new Bytes()
 ```
 
 - 整数 `/`、`%` 生成 checked helper：除数为 0 → panic（带 file:line）；
-- 字面量常量除零/常量溢出 → 编译错误；运行期整数溢出**没有语言级检查**（C 有符号溢出是 UB，不要依赖 wrap，见 §3.4.4）；
+- 字面量常量除零/常量溢出 → 编译错误；运行期整数溢出语义为二补码 **wrap**（gcc/clang 构建始终追加 `-fwrapv`，TCC 实现即 wrap，见 §3.4.4）；
 - 容器字面量 `[]`/`{}` 支持：`var` 初始化、下标赋值、static 字段默认值/启动期 static 赋值；
 - **不能**把容器字面量直接当函数实参/普通 struct 初始化字段，先赋给变量；
 - 没有闭包/lambda/用户泛型/接口/元组。
@@ -346,7 +346,7 @@ enum:     E.fromInt(v)（int 枚举）、E.toString(v)
 .we
  → Python 前端：lexer → parser → checker → codegen
  → build/<name>.c
- → C 编译器（默认仓库内 TinyCC；可用 WELL_CC=gcc/clang，自动 -O2）
+ → C 编译器（默认仓库内 TinyCC；可用 WELL_CC=gcc/clang，自动 -O2 -fwrapv）
  → 可执行文件（链接 runtime/core + 用到的 modules）
 ```
 
@@ -354,7 +354,7 @@ enum:     E.fromInt(v)（int 枚举）、E.toString(v)
 - handler 生成 `H_onEvent(WellCtx*, void*)`；controller 生成 `ensure/run/stop`；func/namespace 生成 `static` C 函数；
 - 每个语句前生成 `well_source_set(file,line)`，用于 panic 定位；
 - 只编译程序实际用到的 `Http/Ws/Mysql` 模块源文件；
-- `WELL_CC` 指定编译器；gcc/clang 默认 `-O2`，`WELL_CFLAGS` 可覆盖（空串禁用自动 -O2）；TCC 使用默认参数。
+- `WELL_CC` 指定编译器；gcc/clang 默认 `-O2` 并**始终**追加 `-fwrapv`（`WELL_CFLAGS` 只覆盖优化等其它 flags）；TCC 使用默认参数。
 
 ### 2.2 对象模型与引用计数
 
@@ -478,12 +478,11 @@ Cache.remove():      删除当前 ctx.oid 的全部 Cache 行（所有类型）
 - 超过 int32 的整数字面量自动按 `long`；
 - `Json.tryParse`、`Json.stringify`、`String.codePointAt/fromCodePoint`、`Bytes` 增量拼接均已提供。
 
-#### 3.4.4 已知风险：运行期整数溢出未检查
+#### 3.4.4 整数溢出语义：二补码 wrap
 
-- 生成 C 的 `+ - *` 是有符号运算，运行期溢出**没有语言级检查**；
-- TCC 下通常表现为 wrap，但 C 有符号溢出是 **UB**：gcc/clang `-O2` 下不能把 wrap 当作可靠保证，优化可能改变结果；
-- 需要确定性时：避免依赖溢出、显式范围检查；或后续加 checked 模式 / `-fwrapv`（当前默认都没有）；
-- 这不是“已修复”，而是明确的已知边界。
+- 运行期 `+ - *` 溢出按**二补码 wrap**：gcc/clang 的生成 C 始终带 `-fwrapv`，TCC 的代码生成本身即按 wrap 实现；
+- 编译期只含字面量的常量算术仍会检查 int32/long64 溢出并报错；
+- 该语义跨 gcc/clang/TCC 一致；业务上仍需范围合理时显式检查，不要用溢出做控制流。
 
 ### 3.5 配置/验证
 
@@ -494,5 +493,5 @@ python tools\verify.py            # + 12 个 C 测试
 ```
 
 - `WELL_WORKERS` 未设置时按 CPU 自动；测试 runner 固定 1；
-- `WELL_CC=gcc` 使用 gcc（自动 -O2）；`WELL_CFLAGS` 覆盖；
+- `WELL_CC=gcc` 使用 gcc（自动 -O2 -fwrapv）；`WELL_CFLAGS` 覆盖优化 flags；
 - 生成的 C 在 `build/<name>.c`，是排查 codegen 问题的第一手材料。

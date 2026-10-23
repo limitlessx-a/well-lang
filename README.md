@@ -12,7 +12,7 @@ Well 是一个 **oid actor 风格**的小型语言与运行时：`.we` 源码由
 - 静态类型检查、panic 隔离与源码位置、整数除零检查
 - 自带端到端测试、回归脚本和可复现 benchmark
 
-> 项目仍在早期阶段：语法/运行时以 `project/compiler/docs/language_for_ai.md` 为准。Linux/POSIX 已用 gcc -O2 在 GitHub Actions 跑通 **115 个 `.we` 用例 + 12 个 C 测试 + check-cli**（无 MySQL 服务时 2 个 DB 用例自动跳过）；VSCode 插件有独立 CI job 跑 `npm test`；bench 通过手动 `workflow_dispatch` 触发。
+> 项目仍在早期阶段：语法/运行时以 `project/compiler/docs/language_for_ai.md` 为准。Linux/POSIX 已用 gcc -O2 -fwrapv 在 GitHub Actions 跑通 **115 个 `.we` 用例 + 12 个 C 测试 + check-cli**（无 MySQL 服务时 2 个 DB 用例自动跳过）；VSCode 插件有独立 CI job 跑 `npm test`；bench 通过手动 `workflow_dispatch` 触发。
 
 ## 目录结构
 
@@ -51,7 +51,7 @@ python wellc.py build examples/features.we -o build/features.exe
 python wellc.py emit-c examples/hello.we -o build/hello.c
 ```
 
-使用 gcc/clang（driver 默认追加 `-O2`）：
+使用 gcc/clang（driver 默认追加 `-O2 -fwrapv`）：
 
 ```powershell
 $env:WELL_CC = "gcc"
@@ -99,7 +99,7 @@ python tools/bench.py --scenario all --json build/bench/result.json
 
 ## 当前状态
 
-- 115 个 `.we` 端到端用例 + 12 个 C 测试在 Windows/TCC 下通过；Linux CI（Ubuntu + gcc -O2）已跑通全量 `.we` 用例 + 12 个 C 测试 + `check-cli`（DB 用例缺服务时跳过）；
+- 115 个 `.we` 端到端用例 + 12 个 C 测试在 Windows/TCC 下通过；Linux CI（Ubuntu + gcc -O2 -fwrapv）已跑通全量 `.we` 用例 + 12 个 C 测试 + `check-cli`（DB 用例缺服务时跳过）；
 - 主要验证环境：Windows x64 + TinyCC 0.9.27；另有 MinGW-w64 GCC 16.2.0 的定向/优化构建验证；
 - Linux/POSIX：GitHub Actions 已转正（C 测试纳入门禁），本机用 NDK clang 对 POSIX 分支做语法检查；bench 通过 `workflow_dispatch` 手动触发；
 - 编辑器支持：`project/vscode_extension` 提供 VSCode 插件（语法高亮、错误检查、格式化、自动导入/整理包、Ctrl+点击转到定义），配套 `wellc check --json` 诊断接口，插件 CI 独立跑 `npm test`；

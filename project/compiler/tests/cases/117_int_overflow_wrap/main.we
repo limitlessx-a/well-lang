@@ -1,0 +1,15 @@
+module demo.overflow;
+
+controller OverflowController {
+    run() {
+        var a: int = 2147483647;
+        var b: int = a + 1;
+        print(b);
+
+        var c: long = 9223372036854775807;
+        var d: long = c + 1;
+        print(d);
+    }
+}
+
+entry OverflowController;

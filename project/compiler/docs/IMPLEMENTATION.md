@@ -114,7 +114,7 @@ build/<name>.c  ──(TCC / gcc / clang)──►  <name>.exe
 
 - **整数除法/取模**：`int`/`long` 上的 `/`、`%` 生成 `well_int_div` / `well_int_mod`；除数为 0 时 panic `integer division/modulo by zero`（带 `file:line`），不再触发 `0xC0000094` 崩溃；
 - **编译期常量检查**：字面量除数/模数为 0 直接编译错误；只含整数字面量的常量算术表达式在编译期检查 int32/`long` 64 位溢出（`integer constant overflow`）；
-- 超出 int32 的整数字面量自动按 `long` 处理；运行期整数溢出**没有语言级检查**，依赖 C 行为（有符号溢出是 UB，不能保证 wrap）。
+- 超出 int32 的整数字面量自动按 `long` 处理；运行期整数溢出语义为**二补码 wrap**：gcc/clang 构建始终追加 `-fwrapv`，TCC 代码生成本身即按 wrap 实现。
 
 String 方法（全部字节语义）：
 
@@ -519,9 +519,9 @@ python tools\bench.py --compare build\bench\baseline.json --threshold 30
 # POSIX CI：.github/workflows/verify.yml，Linux + gcc -O2 跑 verify.py --quick（2026-10-22 已通过；C 测试/bench 未纳入）
 ```
 
-C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang，见 §3.2 的 TinyCC 原子内建函数限制）。使用 gcc：`WELL_CC=gcc`（自动 `-O2`）。
-额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`（`WELL_CFLAGS` 覆盖，空串禁用），TCC 使用默认参数（不追加 `-O2`）。`-O2` 可能暴露 C 侧 UB，切换后先跑 `tools/verify.py`。
-本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 115 用例串行编译过慢（~25s/case），未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 115 个 `.we` 用例已通过（2 个 MySQL 用例跳过）。
+C 编译器查找顺序：`WELL_CC` → 仓库内 `tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang，见 §3.2 的 TinyCC 原子内建函数限制）。使用 gcc：`WELL_CC=gcc`（自动 `-O2 -fwrapv`）。
+额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`，并**始终**追加 `-fwrapv`（语言溢出语义，`WELL_CFLAGS` 不能关闭）；TCC 使用默认参数（不追加 `-O2`）。切换优化级别后先跑 `tools/verify.py`。
+本机验证环境：TinyCC 0.9.27 x86_64（仓库 `tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2 -fwrapv`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 12 个 C 测试，全量 115 用例串行编译过慢（~25s/case），未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 115 个 `.we` 用例已通过（2 个 MySQL 用例跳过）。
 需要本机 MySQL 的 `52_mysql`/`53_mysql_pool` 用 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时测试打印 `SKIP`（CI runner 无 MySQL 时不会误报）。
 
 ---
