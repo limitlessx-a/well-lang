@@ -21,6 +21,11 @@ WELLC = os.path.join(COMPILER_DIR, "wellc.py")
 BUILD = os.path.join(COMPILER_DIR, "build", "tests")
 CASES = os.path.join(HERE, "cases")
 
+# Hard timeouts so a hung compiler/test binary fails its case instead of
+# stalling the whole regression run (audit T3).
+BUILD_TIMEOUT = 120
+RUN_TIMEOUT = 30
+
 # Cases reported SKIP because an external dependency (requires.txt) is missing.
 SKIPPED = []
 
@@ -37,11 +42,39 @@ def missing_requirement(name: str):
     """
     if name == "mysql":
         try:
-            s = socket.create_connection(("127.0.0.1", 3306), timeout=0.5)
-        except OSError:
-            return "MySQL at 127.0.0.1:3306"
+            s = socket.create_connection(("127.0.0.1", 3306), timeout=1.0)
+        except OSError as e:
+            # Print the concrete reason (connection refused / timeout / ...);
+            # this is only a TCP probe, the case itself still verifies auth+query
+            # against the real server.
+            return f"MySQL at 127.0.0.1:3306 ({e.__class__.__name__}: {e})"
         s.close()
     return None
+
+
+def port_in_use(port: int) -> bool:
+    """True when `port` cannot be bound locally (another process owns it)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", port))
+        return False
+    except OSError:
+        return True
+    finally:
+        s.close()
+
+
+def port_hint(port: int, err: bytes = b"") -> str:
+    """Diagnostic suffix for a test server that failed to start on a hard-coded port."""
+    text = err.decode(errors="replace").lower()
+    if "bind" in text or "address already in use" in text or "10048" in text:
+        return (f" (port {port} bind failed: the hard-coded port is probably "
+                f"already in use by another process)")
+    if port_in_use(port):
+        return (f" (port {port} is already in use by another process; the case "
+                f"uses a hard-coded port, stop the conflicting listener or edit "
+                f"the case's http_port.txt/ws_port.txt)")
+    return ""
 
 
 class WsClient:
@@ -120,7 +153,8 @@ def run_ws_concurrent_case(name: str, d: str, exe: str) -> bool:
             if p.poll() is not None:
                 out, err = p.communicate()
                 print(f"FAIL {name}: server exited early (exit={p.returncode}): "
-                      f"{out.decode(errors='replace').strip()} | {err.decode(errors='replace').strip()}")
+                      f"{out.decode(errors='replace').strip()} | {err.decode(errors='replace').strip()}"
+                      f"{port_hint(port, err)}")
                 return False
             try:
                 a = WsClient(port).handshake()
@@ -129,7 +163,7 @@ def run_ws_concurrent_case(name: str, d: str, exe: str) -> bool:
                 time.sleep(0.1)
         if a is None:
             p.kill()
-            print(f"FAIL {name}: server did not listen on {port}")
+            print(f"FAIL {name}: server did not listen on {port}{port_hint(port)}")
             return False
         a.recv_frame()  # welcome
         started = time.time()
@@ -188,7 +222,8 @@ def run_ws_case(name: str, d: str, exe: str) -> bool:
             if p.poll() is not None:
                 out, err = p.communicate()
                 print(f"FAIL {name}: server exited early (exit={p.returncode}): "
-                      f"{out.decode(errors='replace').strip()} | {err.decode(errors='replace').strip()}")
+                      f"{out.decode(errors='replace').strip()} | {err.decode(errors='replace').strip()}"
+                      f"{port_hint(port, err)}")
                 return False
             try:
                 c = WsClient(port).handshake()
@@ -197,7 +232,7 @@ def run_ws_case(name: str, d: str, exe: str) -> bool:
                 time.sleep(0.1)
         if c is None:
             p.kill()
-            print(f"FAIL {name}: server did not listen on {port}")
+            print(f"FAIL {name}: server did not listen on {port}{port_hint(port)}")
             return False
         c.send_text("hi")
         for _ in range(8):
@@ -443,10 +478,27 @@ def run_case(name: str) -> bool:
     exe = os.path.join(BUILD, name + ".exe")
     os.makedirs(BUILD, exist_ok=True)
 
-    r = subprocess.run(
-        [sys.executable, WELLC, "build", src, "-o", exe],
-        cwd=COMPILER_DIR, capture_output=True, text=True,
-    )
+    # Check external dependencies before building (audit T5): cases that will be
+    # SKIPped should not pay for a compile, and a missing service must not look
+    # like a build failure.
+    reqf = os.path.join(d, "requires.txt")
+    if os.path.isfile(reqf):
+        needs = [x.strip() for x in open(reqf, encoding="utf-8") if x.strip()]
+        absent = [missing_requirement(n) for n in needs]
+        absent = [a for a in absent if a]
+        if absent:
+            print(f"SKIP {name} (needs {', '.join(absent)})")
+            SKIPPED.append(name)
+            return True
+
+    try:
+        r = subprocess.run(
+            [sys.executable, WELLC, "build", src, "-o", exe],
+            cwd=COMPILER_DIR, capture_output=True, text=True, timeout=BUILD_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"FAIL {name}: build timed out after {BUILD_TIMEOUT}s ({src})")
+        return False
     ce = os.path.join(d, "expect_compile_error.txt")
     if os.path.isfile(ce):
         want = open(ce, encoding="utf-8").read().strip()
@@ -461,16 +513,6 @@ def run_case(name: str) -> bool:
     if r.returncode != 0:
         print(f"FAIL {name}: build failed\n{r.stdout}\n{r.stderr}")
         return False
-
-    reqf = os.path.join(d, "requires.txt")
-    if os.path.isfile(reqf):
-        needs = [x.strip() for x in open(reqf, encoding="utf-8") if x.strip()]
-        absent = [missing_requirement(n) for n in needs]
-        absent = [a for a in absent if a]
-        if absent:
-            print(f"SKIP {name} (needs {', '.join(absent)})")
-            SKIPPED.append(name)
-            return True
 
     if os.path.isfile(os.path.join(d, "ws_port.txt")):
         if os.path.isfile(os.path.join(d, "ws_concurrent.txt")):
@@ -494,7 +536,12 @@ def run_case(name: str) -> bool:
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
-    rr = subprocess.run([exe], cwd=COMPILER_DIR, capture_output=True, env=env)
+    try:
+        rr = subprocess.run([exe], cwd=COMPILER_DIR, capture_output=True, env=env,
+                            timeout=RUN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(f"FAIL {name}: run timed out after {RUN_TIMEOUT}s ({exe})")
+        return False
     out = rr.stdout.decode("utf-8", errors="replace")
     err = rr.stderr.decode("utf-8", errors="replace")
     rcf = os.path.join(d, "rc_debug.txt")
@@ -607,12 +654,24 @@ def run_c_tests() -> bool:
         if os.name != "nt":
             cmd.append("-pthread")
         cmd += [os.path.join(RUNTIME_DIR, n) for n in RUNTIME_SOURCES]
-        r = subprocess.run(cmd, cwd=COMPILER_DIR, capture_output=True, text=True)
+        try:
+            r = subprocess.run(cmd, cwd=COMPILER_DIR, capture_output=True, text=True,
+                               timeout=BUILD_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            print(f"FAIL C {name}: build timed out after {BUILD_TIMEOUT}s")
+            ok = False
+            continue
         if r.returncode != 0:
             print(f"FAIL C {name}: build\n{r.stdout}\n{r.stderr}")
             ok = False
             continue
-        rr = subprocess.run([exe], cwd=COMPILER_DIR, capture_output=True, text=True)
+        try:
+            rr = subprocess.run([exe], cwd=COMPILER_DIR, capture_output=True, text=True,
+                                timeout=RUN_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            print(f"FAIL C {name}: run timed out after {RUN_TIMEOUT}s")
+            ok = False
+            continue
         out = rr.stdout.strip()
         if rr.returncode != 0 or expect not in out:
             print(f"FAIL C {name}: run exit={rr.returncode}\n{out}\n{rr.stderr}")

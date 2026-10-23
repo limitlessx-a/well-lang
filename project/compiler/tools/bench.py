@@ -275,7 +275,25 @@ def main() -> int:
             f.write("\n")
         print(f"bench: wrote {out}")
 
+    # The HTTP throughput scenario counts client-side errors (connection
+    # failures / non-200 responses). A run with errors is not a valid
+    # measurement, so fail instead of silently reporting the numbers. This also
+    # makes `verify.py --full`'s bench smoke assert errors == 0 through the exit
+    # code (audit T6).
     ok = True
+    http_thr = result["scenarios"].get("http_throughput")
+    if http_thr is not None:
+        errors = http_thr.get("errors")
+        if errors is None:
+            print("bench: http_throughput has no 'errors' field; "
+                  "error-count assertion skipped")
+        elif errors:
+            print(f"bench: FAIL: http_throughput reported {errors} client "
+                  f"error(s), expected 0")
+            ok = False
+        else:
+            print("bench: http_throughput errors=0")
+
     if args.compare:
         with open(args.compare, encoding="utf-8") as f:
             base = json.load(f)
