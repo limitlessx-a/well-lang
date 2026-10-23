@@ -1,0 +1,14 @@
+module mod.mysql_json_escapes;
+
+controller C {
+    run() {
+        Mysql.connect("127.0.0.1", 3306, "root", "db@root", "mysql");
+        var a: String = Mysql.queryJson("SELECT CHAR(1) AS c1, CHAR(8) AS c8");
+        print("ctrl=", a);
+        var b: String = Mysql.queryJson("SELECT UNHEX('410042') AS bin");
+        print("nul=", b);
+        Mysql.close();
+    }
+}
+
+entry C;

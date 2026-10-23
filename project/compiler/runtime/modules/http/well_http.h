@@ -48,6 +48,7 @@ struct WellHttpRequest {
     int responded;
     int written;
     int keep_alive;
+    int is_head; /* HEAD request: body suppressed, headers keep the GET length */
     int refs;
     long long deadline_ms;
     struct WellHttpRequest *next;

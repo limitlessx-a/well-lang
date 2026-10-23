@@ -21,10 +21,14 @@ static int (*precv)(WsSocket, char *, int, int);
 static int (*psend)(WsSocket, const char *, int, int);
 static int (*pshutdown)(WsSocket, int);
 static int (*psetsockopt)(WsSocket, int, int, const char *, int);
+static int (*pselect)(int, void *, void *, void *, const void *);
 static int (*pclosesocket)(WsSocket);
 #define WS_SOL_SOCKET 0xFFFF
 #define WS_SO_RCVTIMEO 0x1006
 #define WS_SO_SNDTIMEO 0x1005
+/* Winsock fd_set/timeval layouts (ws2_32 is resolved dynamically). */
+typedef struct { unsigned int count; WsSocket fds[64]; } WsFdSet;
+typedef struct { long sec; long usec; } WsTimeval;
 #else
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -76,6 +80,7 @@ typedef struct WsConn {
     int close_code;
     WellString *close_reason;
     int refs; /* list reference + one per scheduled task */
+    long long idle_deadline; /* frame-idle deadline checked by the reader (W2) */
     /* Audit W3: both the handler thread (Ws.send/close) and the reader thread
      * (pong/close echo) write frames to the same socket. Every frame write is
      * serialized by this per-connection lock so headers/payloads cannot
@@ -108,9 +113,10 @@ static void ws_load(void) {
     psend = (int (*)(WsSocket, const char *, int, int))GetProcAddress(g_wsm, "send");
     pshutdown = (int (*)(WsSocket, int))GetProcAddress(g_wsm, "shutdown");
     psetsockopt = (int (*)(WsSocket, int, int, const char *, int))GetProcAddress(g_wsm, "setsockopt");
+    pselect = (int (*)(int, void *, void *, void *, const void *))GetProcAddress(g_wsm, "select");
     pclosesocket = (int (*)(WsSocket))GetProcAddress(g_wsm, "closesocket");
     if (!pWSAStartup || !psocket || !pbind || !plisten || !paccept ||
-        !precv || !psend || !pshutdown || !psetsockopt || !pclosesocket)
+        !precv || !psend || !pshutdown || !psetsockopt || !pselect || !pclosesocket)
         well_panic("WebSocket: ws2_32 exports missing");
     {
         char wsa[512];
@@ -126,6 +132,12 @@ static int ws_recv(WsSocket s, char *b, int n) { return precv(s, b, n, 0); }
 static int ws_send_socket(WsSocket s, const char *b, int n) { return psend(s, b, n, 0); }
 static void ws_close_socket(WsSocket s) { if (s != WS_INVALID_SOCKET) pclosesocket(s); }
 static void ws_shutdown_socket(WsSocket s) { if (s != WS_INVALID_SOCKET) pshutdown(s, 2); }
+/* Audit W7: Ws.close() wakes the reader (blocked in recv) without discarding
+ * frames that are already queued for the peer. SD_RECEIVE = 0. */
+static void ws_shutdown_read(WsSocket s) { if (s != WS_INVALID_SOCKET) pshutdown(s, 0); }
+/* SD_SEND = 1: flush queued frames, then FIN (used before draining on a
+ * protocol error so close() does not turn into RST). */
+static void ws_shutdown_write(WsSocket s) { if (s != WS_INVALID_SOCKET) pshutdown(s, 1); }
 /* Accept timeout plus read/write timeouts on the accepted socket. */
 static void ws_apply_timeouts(WsSocket s, int recv_ms, int send_ms) {
     DWORD rv = (DWORD)recv_ms;
@@ -137,8 +149,21 @@ static void ws_apply_timeouts(WsSocket s, int recv_ms, int send_ms) {
  * also permits hijacking an active listener, so leave it alone. */
 static void ws_set_reuseaddr(WsSocket s) { (void)s; }
 /* Windows closesocket() unblocks a blocked accept(), so blocking accept is
- * fine there; POSIX needs the poll-based helper below. */
-static int ws_wait_readable(WsSocket s, int ms) { (void)s; (void)ms; return 1; }
+ * fine there; POSIX needs the poll-based helper below. The frame reader also
+ * uses this helper to notice Ws.close()/idle timeouts (audit W7). */
+static int ws_wait_readable(WsSocket s, int ms) {
+    WsFdSet rd;
+    WsTimeval tv;
+    int r;
+    if (s == WS_INVALID_SOCKET) return 0;
+    memset(&rd, 0, sizeof(rd));
+    rd.count = 1;
+    rd.fds[0] = s;
+    tv.sec = ms / 1000;
+    tv.usec = (long)(ms % 1000) * 1000;
+    r = pselect(0, &rd, NULL, NULL, &tv);
+    return r > 0 && rd.count > 0;
+}
 static unsigned short ws_htons(unsigned short v) { return (unsigned short)((v << 8) | (v >> 8)); }
 #else
 static void ws_load(void) { signal(SIGPIPE, SIG_IGN); }
@@ -150,6 +175,10 @@ static int ws_recv(WsSocket s, char *b, int n) { return (int)recv(s, b, (size_t)
 static int ws_send_socket(WsSocket s, const char *b, int n) { return (int)send(s, b, (size_t)n, 0); }
 static void ws_close_socket(WsSocket s) { if (s >= 0) close(s); }
 static void ws_shutdown_socket(WsSocket s) { if (s >= 0) shutdown(s, SHUT_RDWR); }
+/* Audit W7: see the Windows branch. */
+static void ws_shutdown_read(WsSocket s) { if (s >= 0) shutdown(s, SHUT_RD); }
+/* See the Windows branch (used before draining on a protocol error). */
+static void ws_shutdown_write(WsSocket s) { if (s >= 0) shutdown(s, SHUT_WR); }
 /* Accept timeout plus read/write timeouts on the accepted socket. */
 static void ws_apply_timeouts(WsSocket s, int recv_ms, int send_ms) {
     struct timeval tv;
@@ -338,11 +367,15 @@ static char *ws_header_value(char *headers, const char *name) {
     return NULL;
 }
 
-static int ws_handshake(WsSocket fd, char **path_out) {
+/* Reads and parses the upgrade request. On success fills *path_out (heap,
+ * still containing any "?query" suffix; the caller splits it, audit W8) and
+ * `accept` with the Sec-WebSocket-Accept value. Nothing is written to the
+ * socket here: the caller validates the route first so an unknown path gets a
+ * plain HTTP 404 instead of an upgrade followed by a 404 (audit W4). */
+static int ws_handshake_read(WsSocket fd, char **path_out, char *accept, size_t accept_cap) {
     char buf[16385];
     size_t len = 0;
-    char *end, *line, *sp1, *sp2, *key, *accept;
-    char resp[512];
+    char *end, *line, *sp1, *sp2, *key;
     long long deadline = well_host_now_ms() + WS_HANDSHAKE_TIMEOUT_MS;
     for (;;) {
         int k;
@@ -365,23 +398,27 @@ static int ws_handshake(WsSocket fd, char **path_out) {
     *sp1 = '\0';
     *sp2 = '\0';
     if (strcmp(line, "GET") != 0) return -1;
-    *path_out = ws_dup(sp1 + 1);
+    key = NULL;
     {
         char *h = strstr(sp2 + 1, "\r\n");
         if (!h) return -1;
         key = ws_header_value(h + 2, "Sec-WebSocket-Key");
     }
     if (!key) return -1;
-    accept = (char *)malloc(64);
-    if (!accept) well_panic("out of memory (WebSocket accept)");
-    ws_accept_key(key, accept, 64);
+    *path_out = ws_dup(sp1 + 1);
+    if (!*path_out) well_panic("out of memory (WebSocket path)");
+    ws_accept_key(key, accept, accept_cap);
+    return 0;
+}
+
+/* Sends the 101 response; called only after the route resolved (audit W4). */
+static int ws_handshake_send(WsSocket fd, const char *accept) {
+    char resp[512];
     snprintf(resp, sizeof(resp),
              "HTTP/1.1 101 Switching Protocols\r\n"
              "Upgrade: websocket\r\nConnection: Upgrade\r\n"
              "Sec-WebSocket-Accept: %s\r\n\r\n", accept);
-    free(accept);
-    ws_send_all(fd, resp, strlen(resp));
-    return 0;
+    return ws_send_all(fd, resp, strlen(resp));
 }
 
 /* ---------- frames ---------- */
@@ -394,36 +431,102 @@ static int ws_read_exact(WsSocket fd, unsigned char *p, size_t n) {
     return 0;
 }
 
-static int ws_read_frame(WsSocket fd, int *opcode, unsigned char **payload, size_t *plen) {
+/* Audit W7: frame reads wait in 200ms slices so a concurrent Ws.close() (or
+ * the frame-idle deadline, W2) is noticed even while the reader is blocked in
+ * recv(); a plain blocking recv() kept the thread and socket alive until the
+ * peer eventually answered or the socket timeout expired. */
+static int ws_read_exact_frame(WsConn *c, WsSocket fd, unsigned char *p, size_t n) {
+    while (n) {
+        int k;
+        if (!ws_wait_readable(fd, 200)) {
+            int closed;
+            long long deadline;
+            well_mutex_lock(&g_ws_lock);
+            closed = c->closed;
+            deadline = c->idle_deadline;
+            well_mutex_unlock(&g_ws_lock);
+            if (closed) return -1;
+            if (deadline > 0 && well_host_now_ms() >= deadline) return -1;
+            continue;
+        }
+        k = ws_recv(fd, (char *)p, (int)n);
+        if (k <= 0) return -1;
+        p += k; n -= (size_t)k;
+    }
+    return 0;
+}
+
+/* Close codes used for protocol rejections (audit W6/W9). */
+#define WS_CLOSE_PROTOCOL 1002
+#define WS_CLOSE_UNSUPPORTED 1003
+#define WS_CLOSE_TOO_BIG 1009
+#define WS_MAX_FRAME_BYTES 1048576ULL
+
+/* Reads one frame. Returns 0 on success, -1 on a fatal I/O error or a protocol
+ * violation; in the latter case *close_code is set so the caller can send a
+ * proper close frame before dropping the connection (W6: the old code just
+ * closed the socket, so the peer could not tell 1002/1003/1009 apart). */
+static int ws_read_frame(WsConn *c, WsSocket fd, int *opcode, unsigned char **payload,
+                         size_t *plen, int *close_code) {
     unsigned char h[2], mask[4];
     unsigned long long n;
-    int masked;
+    int masked, fin;
     size_t i;
-    if (ws_read_exact(fd, h, 2) != 0) return -1;
+    *close_code = 0;
+    if (ws_read_exact_frame(c, fd, h, 2) != 0) return -1;
     *opcode = h[0] & 0x0F;
-    if (!(h[0] & 0x80)) return -1; /* no fragmentation */
+    fin = (h[0] & 0x80) != 0;
+    if (h[0] & 0x70) { *close_code = WS_CLOSE_PROTOCOL; return -1; } /* W9: RSV */
     masked = (h[1] & 0x80) != 0;
+    if (!masked) { *close_code = WS_CLOSE_PROTOCOL; return -1; }
     n = h[1] & 0x7F;
     if (n == 126) {
         unsigned char e[2];
-        if (ws_read_exact(fd, e, 2) != 0) return -1;
+        if (ws_read_exact_frame(c, fd, e, 2) != 0) return -1;
         n = ((unsigned)e[0] << 8) | e[1];
     } else if (n == 127) {
         unsigned char e[8];
         int j;
-        if (ws_read_exact(fd, e, 8) != 0) return -1;
+        if (ws_read_exact_frame(c, fd, e, 8) != 0) return -1;
         n = 0;
         for (j = 0; j < 8; j++) n = (n << 8) | e[j];
     }
-    if (!masked || n > 1048576ULL) return -1;
-    if (ws_read_exact(fd, mask, 4) != 0) return -1;
+    if (*opcode >= 0x8) {
+        /* Control frames must not be fragmented and carry at most 125 bytes. */
+        if (!fin || n > 125) { *close_code = WS_CLOSE_PROTOCOL; return -1; }
+        if (*opcode != 0x8 && *opcode != 0x9 && *opcode != 0xA) {
+            *close_code = WS_CLOSE_PROTOCOL;
+            return -1;
+        }
+    } else {
+        /* Fragmentation and binary payloads are not implemented; tell the peer
+         * instead of silently dropping or resetting the connection. */
+        if (!fin) { *close_code = WS_CLOSE_UNSUPPORTED; return -1; }
+        if (*opcode != 0x1 && *opcode != 0x2) { *close_code = WS_CLOSE_PROTOCOL; return -1; }
+    }
+    if (n > WS_MAX_FRAME_BYTES) { *close_code = WS_CLOSE_TOO_BIG; return -1; }
+    if (ws_read_exact_frame(c, fd, mask, 4) != 0) return -1;
     *payload = (unsigned char *)malloc((size_t)n + 1);
     if (!*payload) well_panic("out of memory (WebSocket frame)");
-    if (ws_read_exact(fd, *payload, (size_t)n) != 0) { free(*payload); *payload = NULL; return -1; }
+    if (ws_read_exact_frame(c, fd, *payload, (size_t)n) != 0) { free(*payload); *payload = NULL; return -1; }
     for (i = 0; i < (size_t)n; i++) (*payload)[i] ^= mask[i & 3];
     (*payload)[n] = '\0';
     *plen = (size_t)n;
     return 0;
+}
+
+/* Audit W6: before closing after a protocol error, send FIN and consume what
+ * the peer already queued. Without this, close() on a socket with unread data
+ * makes TCP emit RST, which can discard the close frame we just sent. */
+static void ws_drain_and_shutdown(WsSocket fd) {
+    char tmp[512];
+    int i;
+    if (fd == WS_INVALID_SOCKET) return;
+    ws_shutdown_write(fd);
+    for (i = 0; i < 40; i++) {
+        if (!ws_wait_readable(fd, 25)) break;
+        if (ws_recv(fd, tmp, (int)sizeof(tmp)) <= 0) break;
+    }
 }
 
 static void ws_send_frame(WsSocket fd, int opcode, const unsigned char *data, size_t n) {
@@ -467,6 +570,16 @@ static void ws_conn_write_frame(WsConn *c, int opcode, const unsigned char *data
      * stall Ws.send for every other connection. */
     ws_send_frame(fd, opcode, data, n);
     well_mutex_unlock(&c->write_lock);
+}
+
+/* Sends a close frame with a status code through the serialized frame writer
+ * (audit W6: protocol errors get a proper close frame before the socket goes
+ * away). */
+static void ws_send_close_code(WsConn *c, int code) {
+    unsigned char p[2];
+    p[0] = (unsigned char)(code >> 8);
+    p[1] = (unsigned char)code;
+    ws_conn_write_frame(c, 0x8, p, 2);
 }
 
 /* ---------- connection lifetime (all refcount ops hold g_ws_lock) ---------- */
@@ -527,6 +640,7 @@ void well_ws_send(long long client_id, const char *text) {
 void well_ws_close(long long client_id, int code, const char *reason) {
     unsigned char p[128];
     WsConn *c;
+    WsSocket fd = WS_INVALID_SOCKET;
     size_t n = 0;
     ws_lock_init();
     well_mutex_lock(&g_ws_lock);
@@ -548,10 +662,16 @@ void well_ws_close(long long client_id, int code, const char *reason) {
         c->closed = 1;
         c->close_requested = 1;
         c->close_code = code;
+        fd = c->fd;
         if (c->close_reason) well_release(c->close_reason);
         c->close_reason = well_string_new(reason ? reason : "");
     }
     well_mutex_unlock(&g_ws_lock);
+    /* Audit W7: wake the reader blocked in recv() so the connection and its
+     * thread are released (and the close handler fires) even when the client
+     * never answers the close handshake. Shutting down only the read side
+     * keeps the close frame that was just queued for delivery. */
+    if (fd != WS_INVALID_SOCKET) ws_shutdown_read(fd);
     ws_conn_unref(c);
 }
 
@@ -634,6 +754,8 @@ static void *ws_reader_thread(void *arg) {
     WsConn *c = (WsConn *)arg;
     WsSocket fd;
     char *path = NULL;
+    char *query = NULL;
+    char accept[64];
     WsRoute *route = NULL;
     int want_close = 0;
     int code = 1006;
@@ -643,32 +765,71 @@ static void *ws_reader_thread(void *arg) {
     fd = c->fd;
     well_mutex_unlock(&g_ws_lock);
 
-    if (ws_handshake(fd, &path) != 0) goto finish;
-    /* Upgrade complete: switch from the handshake deadline to the idle-frame
-     * deadline (W2). */
-    ws_apply_timeouts(fd, WS_IDLE_TIMEOUT_MS, WS_SEND_TIMEOUT_MS);
+    if (ws_handshake_read(fd, &path, accept, sizeof(accept)) != 0) goto finish;
+    /* Audit W8: match the route on the path only and pass the query string to
+     * the open handler instead of dropping it / breaking the match. */
+    query = strchr(path, '?');
+    if (query) {
+        *query = '\0';
+        query++;
+    }
     route = ws_find_route(path);
     if (!route) {
         const char *nf = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         ws_send_all(fd, nf, strlen(nf));
         goto finish;
     }
+    /* Audit W4: only upgrade after the route is known to exist. */
+    if (ws_handshake_send(fd, accept) != 0) goto finish;
+    /* Upgrade complete: switch from the handshake deadline to the idle-frame
+     * deadline (W2). */
+    ws_apply_timeouts(fd, WS_IDLE_TIMEOUT_MS, WS_SEND_TIMEOUT_MS);
     well_mutex_lock(&g_ws_lock);
     c->route = route;
+    c->idle_deadline = well_host_now_ms() + WS_IDLE_TIMEOUT_MS;
     c->client.path = well_string_new(path);
-    c->client.query = well_string_new("");
+    c->client.query = well_string_new(query ? query : "");
     well_mutex_unlock(&g_ws_lock);
     ws_dispatch(c, 0, NULL, 0, NULL);
 
     for (;;) {
         int opcode;
+        int close_code = 0;
         unsigned char *payload = NULL;
         size_t plen = 0;
-        if (ws_read_frame(fd, &opcode, &payload, &plen) != 0) break;
+        if (ws_read_frame(c, fd, &opcode, &payload, &plen, &close_code) != 0) {
+            /* W6/W9: send the matching close code (1002/1003/1009) instead of
+             * dropping the TCP connection without a word; then drain so the
+             * close frame is not discarded by an RST. */
+            if (close_code) {
+                ws_send_close_code(c, close_code);
+                ws_drain_and_shutdown(fd);
+            }
+            break;
+        }
+        /* Any received frame resets the frame-idle deadline (audit W2). */
+        well_mutex_lock(&g_ws_lock);
+        c->idle_deadline = well_host_now_ms() + WS_IDLE_TIMEOUT_MS;
+        well_mutex_unlock(&g_ws_lock);
         if (opcode == 0x1) {
             WellString *text = well_string_new((const char *)payload);
             ws_dispatch(c, 1, text, 0, NULL);
+        } else if (opcode == 0x2) {
+            /* Audit W5: the language API has no binary message, so answer with
+             * 1003 (unsupported data) instead of silently dropping it. */
+            ws_send_close_code(c, WS_CLOSE_UNSUPPORTED);
+            ws_drain_and_shutdown(fd);
+            free(payload);
+            want_close = 1;
+            code = WS_CLOSE_UNSUPPORTED;
+            break;
         } else if (opcode == 0x8) {
+            if (plen == 1) { /* invalid close payload (W6) */
+                ws_send_close_code(c, WS_CLOSE_PROTOCOL);
+                ws_drain_and_shutdown(fd);
+                free(payload);
+                break;
+            }
             want_close = 1;
             code = 1000;
             if (plen >= 2) {

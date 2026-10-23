@@ -1,0 +1,37 @@
+module mod.http405;
+
+event HttpRequestEvent extends Event {
+    reqId: long;
+    method: String;
+    path: String;
+    query: String;
+    body: String;
+}
+
+event TickEvent extends Event {
+    id: long;
+    interval: long;
+    fires: long;
+}
+
+controller HttpController {
+    run() {
+        Http.route("/m", "GET", MHandler);
+        Http.listen(18190);
+        Timer.once(3000, StopHandler);
+    }
+}
+
+handler MHandler {
+    onEvent(e: HttpRequestEvent) {
+        Http.respond(e.reqId, 200, "m");
+    }
+}
+
+handler StopHandler {
+    onEvent(e: TickEvent) {
+        Http.stop();
+    }
+}
+
+entry HttpController;

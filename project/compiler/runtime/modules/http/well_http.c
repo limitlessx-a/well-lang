@@ -28,6 +28,7 @@ static int (*psetsockopt)(WellSocket, int, int, const char *, int);
 static int (*pclosesocket)(WellSocket);
 #define WELL_SOL_SOCKET 0xFFFF
 #define WELL_SO_RCVTIMEO 0x1006
+#define WELL_SO_SNDTIMEO 0x1005
 #define WELL_IPPROTO_TCP 6
 #define WELL_TCP_NODELAY 0x0001
 #else
@@ -95,6 +96,12 @@ static int g_http_sweep_stop = 0;
 /* Audit H1 (slowloris): the whole request head must arrive within this window
  * of the first byte; a trickle of headers is answered with 400 and closed. */
 #define WELL_HTTP_HEADER_TIMEOUT_MS 5000
+/* Audit H5: maximum accepted request-head size (documented in
+ * IMPLEMENTATION.md §3.12). Checked against the located head, not against the
+ * bytes that happened to share the same recv() with the body. */
+#define WELL_HTTP_MAX_HEADER 16384
+/* Audit H9: keep a stalled reader from blocking a responder in send(). */
+#define WELL_HTTP_SEND_TIMEOUT_MS 15000
 /* Audit H1: hard cap on live connections (one reader thread + 64KB scratch
  * each), so a peer cannot exhaust threads/memory by opening sockets. The
  * #ifndef lets a test build lower the cap with -DWELL_HTTP_MAX_CONNECTIONS=N. */
@@ -150,6 +157,12 @@ static int http_set_recv_timeout(WellSocket s, int ms) {
     DWORD tv = (DWORD)ms;
     return psetsockopt(s, WELL_SOL_SOCKET, WELL_SO_RCVTIMEO, (const char *)&tv, (int)sizeof(tv));
 }
+/* Audit H9: a slow reader must not block a responder (the global 504 sweeper)
+ * forever in send(). */
+static int http_set_send_timeout(WellSocket s, int ms) {
+    DWORD tv = (DWORD)ms;
+    return psetsockopt(s, WELL_SOL_SOCKET, WELL_SO_SNDTIMEO, (const char *)&tv, (int)sizeof(tv));
+}
 static void http_set_nodelay(WellSocket s) {
     int one = 1;
     psetsockopt(s, WELL_IPPROTO_TCP, WELL_TCP_NODELAY, (const char *)&one, (int)sizeof(one));
@@ -182,6 +195,14 @@ static int http_set_recv_timeout(WellSocket s, int ms) {
     tv.tv_usec = (long)(ms % 1000) * 1000;
     return setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
 }
+/* Audit H9: same as the Windows branch; keeps a slow reader from pinning a
+ * responder thread in send() indefinitely. */
+static int http_set_send_timeout(WellSocket s, int ms) {
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (long)(ms % 1000) * 1000;
+    return setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
+}
 static void http_set_nodelay(WellSocket s) {
     int one = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
@@ -202,27 +223,41 @@ static unsigned short http_htons(unsigned short v) { return htons(v); }
 
 /* Interns the handful of request-line tokens seen on every request so the
  * hot path does not allocate a new String for them. */
+static const char *const g_http_method_names[] = {
+    "GET", "POST", "PUT", "DELETE", "HEAD", "PATCH", "OPTIONS", "TRACE", "CONNECT"
+};
+#define WELL_HTTP_METHOD_COUNT \
+    (sizeof(g_http_method_names) / sizeof(g_http_method_names[0]))
+static WellString *g_http_method_vals[WELL_HTTP_METHOD_COUNT];
+static WellString *g_http_empty = NULL;
+static int g_http_strings_inited = 0;
+
+/* Audit H10: the method/empty string tables and the TLS key used to be created
+ * lazily from the first connection thread, which races when the first requests
+ * arrive concurrently. Create them once from module init / listen instead. */
+static void http_globals_init(void) {
+    size_t i;
+    if (g_http_strings_inited) return;
+    http_lock_init();
+    current_req_tls_ensure();
+    for (i = 0; i < WELL_HTTP_METHOD_COUNT; i++)
+        g_http_method_vals[i] = well_string_lit(g_http_method_names[i]);
+    g_http_empty = well_string_lit("");
+    g_http_strings_inited = 1;
+}
+
 static WellString *http_method_str(const char *m) {
-    static const char *names[] = {
-        "GET", "POST", "PUT", "DELETE", "HEAD", "PATCH", "OPTIONS", "TRACE", "CONNECT"
-    };
-    static WellString *vals[9];
-    static int inited = 0;
-    int i;
-    if (!inited) {
-        for (i = 0; i < 9; i++) vals[i] = well_string_lit(names[i]);
-        inited = 1;
-    }
-    for (i = 0; i < 9; i++) {
-        if (strcmp(names[i], m) == 0) return vals[i];
+    size_t i;
+    if (!g_http_strings_inited) http_globals_init();
+    for (i = 0; i < WELL_HTTP_METHOD_COUNT; i++) {
+        if (strcmp(g_http_method_names[i], m) == 0) return g_http_method_vals[i];
     }
     return well_string_new(m);
 }
 
 static WellString *http_empty_str(void) {
-    static WellString *empty = NULL;
-    if (!empty) empty = well_string_lit("");
-    return empty;
+    if (!g_http_strings_inited) http_globals_init();
+    return g_http_empty;
 }
 
 static char *http_strdup(const char *s) {
@@ -282,7 +317,11 @@ static void http_write_response(WellHttpRequest *req, int status, const char *bo
     fd = req->conn ? req->conn->fd : WELL_INVALID_SOCKET;
     if (fd == WELL_INVALID_SOCKET) return;
     hn = strlen(head);
-    if (blen <= 3800) {
+    if (req->is_head) {
+        /* Audit H7: a HEAD response carries the headers (including the
+         * Content-Length of the corresponding GET) but no body. */
+        http_send_all(fd, head, hn);
+    } else if (blen <= 3800) {
         /* one send for the common small response (avoids an extra syscall and
          * gives the client the complete response in one segment) */
         char buf[4096];
@@ -468,6 +507,16 @@ static WellHttpRequest *http_req_unref_locked(WellHttpRequest *req) {
     return req;
 }
 
+/* Caller holds g_http_lock. Pins a request while a responder that is not the
+ * connection thread writes to it (audit H8: the connection thread gives up
+ * waiting after its deadline and drops its references; a sweeper or an async
+ * responder must not keep a raw pointer across that point). */
+static WellHttpRequest *http_req_ref_locked(WellHttpRequest *req) {
+    if (!req) return NULL;
+    req->refs++;
+    return req;
+}
+
 /* First response wins: whoever claims `responded` writes. The reader thread
  * waits for `written` before reading the next request on a keep-alive socket.
  * Request references are dropped by the connection thread, so this function
@@ -499,8 +548,20 @@ void well_http_respond(long long req_id, int status, const char *body) {
     } else {
         http_lock_init();
         well_mutex_lock(&g_http_lock);
-        req = http_req_map_find(req_id);
+        /* Audit H8: pin the request before releasing the map lock; the reader
+         * thread may drop its references while we write the response. */
+        req = http_req_ref_locked(http_req_map_find(req_id));
         well_mutex_unlock(&g_http_lock);
+        if (!req) return;
+        http_respond_claimed(req, status, body);
+        {
+            WellHttpRequest *dead;
+            well_mutex_lock(&g_http_lock);
+            dead = http_req_unref_locked(req);
+            well_mutex_unlock(&g_http_lock);
+            if (dead) http_req_free(dead);
+        }
+        return;
     }
     if (!req) return;
     http_respond_claimed(req, status, body);
@@ -578,15 +639,56 @@ static int http_parse_content_length(const char *p, int *out) {
     return 0;
 }
 
+/* RFC 7230 token characters (a method is a token, audit H7). */
+static int http_method_token(const char *m) {
+    size_t i;
+    if (!m[0]) return 0;
+    for (i = 0; m[i]; i++) {
+        unsigned char c = (unsigned char)m[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9'))
+            continue;
+        switch (c) {
+        case '!': case '#': case '$': case '%': case '&': case '\'':
+        case '*': case '+': case '-': case '.': case '^': case '_':
+        case '`': case '|': case '~':
+            break;
+        default:
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Audit H7: distinguishes "path exists under another method" (405) from a
+ * genuinely unknown path (404). */
+static int http_path_exists(const char *path) {
+    HttpRoute *r;
+    int found = 0;
+    well_mutex_lock(&g_http_lock);
+    for (r = g_routes; r; r = r->next) {
+        if (strcmp(r->path, path) == 0) { found = 1; break; }
+    }
+    well_mutex_unlock(&g_http_lock);
+    return found;
+}
+
 /* Reads one request from a keep-alive connection into `buf` (caller-owned
- * scratch, at least 65537 bytes). method/path/query point into `buf` and stay
- * valid until the next call; body is malloc'd (NULL when empty).
+ * scratch, at least 65537 bytes). `in_len` is the number of bytes already
+ * buffered at the front of `buf` from a previous recv (keep-alive leftovers,
+ * audit H3). On success `*used_out` receives the number of bytes this request
+ * consumed and `*left_out` the number of bytes that follow it (a pipelined
+ * request and/or body tail) still sitting at buf+used. method/path/query point
+ * into `buf` and stay valid until the next call; body is malloc'd (NULL when
+ * empty).
  * Returns 0 on success, -1 on a malformed request, -2 when the peer closed
  * (or the idle read timeout elapsed) before sending a new request. */
-static int http_read_request(WellSocket fd, char *buf, size_t cap,
+static int http_read_request(WellSocket fd, char *buf, size_t cap, size_t in_len,
+                             size_t *used_out, size_t *left_out,
                              char **method, char **path, char **query,
                              char **body, int *keep_alive) {
-    size_t len = 0;
+    size_t len = in_len;
+    size_t consumed = 0;
     char *hdr_end = NULL;
     size_t body_len = 0;
     char *line, *next;
@@ -595,14 +697,34 @@ static int http_read_request(WellSocket fd, char *buf, size_t cap,
     int http11 = 0;
     int conn_close = 0;
     int conn_keep = 0;
+    int host_seen = 0;
     long long header_deadline = 0; /* armed on the request's first byte (H1) */
 
     *body = NULL;
+    *used_out = 0;
+    *left_out = 0;
+    if (len > 0) {
+        /* Leftover bytes from the previous request already start this one. */
+        if (len > WELL_HTTP_MAX_HEADER) return -1;
+        header_deadline = well_host_now_ms() + WELL_HTTP_HEADER_TIMEOUT_MS;
+    }
     for (;;) {
         int k;
+        if (len > 0) {
+            buf[len] = '\0';
+            hdr_end = strstr(buf, "\r\n\r\n");
+            if (hdr_end) {
+                /* Audit H5: reject heads larger than the documented 16KB even
+                 * when the terminator arrived in the same recv(). */
+                if ((size_t)((hdr_end + 4) - buf) > WELL_HTTP_MAX_HEADER) return -1;
+                /* Even a complete head is rejected when it only arrived after
+                 * the deadline (a 10s trickle used to be served as 200). */
+                if (well_host_now_ms() >= header_deadline) return -1;
+                break;
+            }
+            if (len > WELL_HTTP_MAX_HEADER) return -1;
+        }
         if (len == cap) return -1;
-        /* Total header deadline: a client trickling one header per recv must
-         * not extend the read indefinitely (audit H1). */
         if (header_deadline && well_host_now_ms() >= header_deadline) return -1;
         k = http_recv(fd, buf + len, (int)(cap - len));
         if (k <= 0) {
@@ -610,17 +732,8 @@ static int http_read_request(WellSocket fd, char *buf, size_t cap,
             return eof ? -2 : -1;
         }
         len += (size_t)k;
-        if (!header_deadline) header_deadline = well_host_now_ms() + WELL_HTTP_HEADER_TIMEOUT_MS;
-        buf[len] = '\0';
-        hdr_end = strstr(buf, "\r\n\r\n");
-        if (hdr_end) {
-            /* Even a complete head is rejected when it only arrived after the
-             * deadline (a 10s trickle used to be served as 200). */
-            if (well_host_now_ms() >= header_deadline) return -1;
-            break;
-        }
-        if (len > 16384) return -1;
-        if (well_host_now_ms() >= header_deadline) return -1;
+        if (!header_deadline)
+            header_deadline = well_host_now_ms() + WELL_HTTP_HEADER_TIMEOUT_MS;
     }
 
     line = buf;
@@ -634,6 +747,9 @@ static int http_read_request(WellSocket fd, char *buf, size_t cap,
         *sp1 = '\0';
         *sp2 = '\0';
         target = sp1 + 1;
+        if (!http_method_token(line)) return -1;
+        /* Origin-form request target only. */
+        if (target[0] != '/') return -1;
         http11 = (strcmp(sp2 + 1, "HTTP/1.1") == 0);
     }
 
@@ -650,29 +766,40 @@ static int http_read_request(WellSocket fd, char *buf, size_t cap,
             if (http_parse_content_length(line + 15, &v) != 0) return -1;
             if (content_length >= 0 && v != content_length) return -1;
             content_length = v;
+        } else if (http_starts_ci(line, "Host:")) {
+            host_seen = 1;
         } else if (http_starts_ci(line, "Connection:")) {
             if (http_has_ci(line + 11, "close")) conn_close = 1;
             if (http_has_ci(line + 11, "keep-alive")) conn_keep = 1;
         }
         line = e + 2;
     }
+    /* Audit H7: HTTP/1.1 requires a Host header. */
+    if (http11 && !host_seen) return -1;
     if (content_length < 0) content_length = 0;
     if (content_length > 1048576) return -1;
 
     body_len = (size_t)content_length;
+    consumed = (size_t)((hdr_end + 4) - buf);
     if (body_len > 0) {
+        size_t have = len - consumed;
         *body = (char *)malloc(body_len + 1);
         if (!*body) well_panic("out of memory (HTTP body)");
-        {
-            size_t have = len - (size_t)((hdr_end + 4) - buf);
-            if (have > body_len) have = body_len;
-            memcpy(*body, hdr_end + 4, have);
-            while (have < body_len) {
-                int k = http_recv(fd, *body + have, (int)(body_len - have));
-                if (k <= 0) { free(*body); *body = NULL; return -1; }
-                have += (size_t)k;
-            }
-            (*body)[body_len] = '\0';
+        if (have > body_len) have = body_len;
+        memcpy(*body, hdr_end + 4, have);
+        consumed += have;
+        while (have < body_len) {
+            int k = http_recv(fd, *body + have, (int)(body_len - have));
+            if (k <= 0) { free(*body); *body = NULL; return -1; }
+            have += (size_t)k;
+        }
+        (*body)[body_len] = '\0';
+        /* Audit H6: the language sees the body as a C string, so an embedded
+         * NUL would silently truncate it. Reject instead of corrupting. */
+        if (memchr(*body, '\0', body_len) != NULL) {
+            free(*body);
+            *body = NULL;
+            return -1;
         }
     }
 
@@ -690,6 +817,8 @@ static int http_read_request(WellSocket fd, char *buf, size_t cap,
     /* "close" always wins, including when several Connection headers are sent
      * (HTTP/1.0 with "Connection: close, keep-alive" used to stay open). */
     *keep_alive = conn_close ? 0 : (http11 ? 1 : conn_keep);
+    *used_out = consumed;
+    *left_out = len - consumed;
     return 0;
 }
 
@@ -723,6 +852,7 @@ static void *http_conn_thread(void *arg) {
     WellHttpConn *conn = (WellHttpConn *)arg;
     WellSocket fd = conn->fd;
     char *scratch = (char *)malloc(65537);
+    size_t scratch_len = 0; /* bytes buffered from a previous recv (audit H3) */
     if (!scratch) well_panic("out of memory (HTTP connection buffer)");
     for (;;) {
         char *method = NULL, *path = NULL, *query = NULL, *body = NULL;
@@ -735,8 +865,10 @@ static void *http_conn_thread(void *arg) {
         int written, closed;
         WellHttpRequest *deadreq;
         WellHttpConn *deadconn;
+        size_t used = 0, leftover = 0;
 
-        rc = http_read_request(fd, scratch, 65536, &method, &path, &query, &body, &keep_alive);
+        rc = http_read_request(fd, scratch, 65536, scratch_len, &used, &leftover,
+                               &method, &path, &query, &body, &keep_alive);
         if (rc == -2) break;
         if (rc != 0) {
             const char *bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -750,6 +882,9 @@ static void *http_conn_thread(void *arg) {
         }
         if (!route) {
             route = http_find_route(method, path);
+            /* Audit H7: HEAD is served by the GET route, body suppressed. */
+            if (!route && strcmp(method, "HEAD") == 0)
+                route = http_find_route("GET", path);
             if (route && strlen(method) < sizeof(conn->cache_method) &&
                 strlen(path) < sizeof(conn->cache_path)) {
                 strcpy(conn->cache_method, method);
@@ -769,9 +904,15 @@ static void *http_conn_thread(void *arg) {
         req->keep_alive = keep_alive;
         req->responded = 0;
         req->written = 0;
+        req->is_head = (strcmp(method, "HEAD") == 0);
         req->refs = 2; /* list reference + this thread */
         req->deadline_ms = well_host_now_ms() + WELL_HTTP_TIMEOUT_MS;
         free(body);
+        /* Audit H3: do not drop request bytes that were read beyond this
+         * request. method/path/query are copied into Strings above, so the
+         * buffered remainder can be moved back to the front of scratch. */
+        if (leftover > 0) memmove(scratch, scratch + used, leftover);
+        scratch_len = leftover;
 
         http_lock_init();
         well_mutex_lock(&g_http_lock);
@@ -790,6 +931,9 @@ static void *http_conn_thread(void *arg) {
             req->refs++; /* task reference */
             well_mutex_unlock(&g_http_lock);
             well_schedule_task(req->id, http_task_entry, task, http_task_done);
+        } else if (http_path_exists(path)) {
+            /* Audit H7: path exists under another method -> 405, not 404. */
+            well_http_respond(req->id, 405, "method not allowed");
         } else {
             well_http_respond(req->id, 404, "not found");
         }
@@ -854,7 +998,10 @@ static void *http_sweeper_thread(void *arg) {
                 well_mutex_lock(&c->lock);
                 if (!p->responded) {
                     p->responded = 1;
-                    expired[n++] = p;
+                    /* Audit H8: pin the request until the 504 is on the wire;
+                     * the connection thread may time out and release its own
+                     * references while we are in send(). */
+                    expired[n++] = http_req_ref_locked(p);
                 }
                 well_mutex_unlock(&c->lock);
             }
@@ -863,13 +1010,20 @@ static void *http_sweeper_thread(void *arg) {
         for (i = 0; i < n; i++) {
             WellHttpRequest *req = expired[i];
             WellHttpConn *c = req->conn;
+            WellHttpRequest *dead;
+            /* Audit H4: the connection is closed right after the 504, so the
+             * response must advertise "close" instead of "keep-alive". */
+            req->keep_alive = 0;
             http_write_response(req, 504, "gateway timeout");
             well_mutex_lock(&c->lock);
             req->written = 1;
             c->closed = 1;
             well_cond_signal(&c->cond);
             well_mutex_unlock(&c->lock);
-            /* references are dropped by the connection thread */
+            well_mutex_lock(&g_http_lock);
+            dead = http_req_unref_locked(req);
+            well_mutex_unlock(&g_http_lock);
+            if (dead) http_req_free(dead);
         }
     }
     return NULL;
@@ -893,6 +1047,7 @@ static void *http_listener_thread(void *arg) {
         s = http_accept(fd);
         if (s == WELL_INVALID_SOCKET) break;
         http_set_recv_timeout(s, WELL_HTTP_IDLE_TIMEOUT_MS);
+        http_set_send_timeout(s, WELL_HTTP_SEND_TIMEOUT_MS);
         http_set_nodelay(s);
         {   /* Refuse instead of spawning a thread past the cap (audit H1). */
             int at_cap;
@@ -946,6 +1101,7 @@ static void *http_listener_thread(void *arg) {
 void well_http_listen(int port) {
     WellSockaddrIn addr;
     int r;
+    http_globals_init();
     http_lock_init();
     load_winsock();
     if (g_http_running) well_panic("Http.listen: already running");
@@ -1041,4 +1197,12 @@ void well_http_shutdown(void) {
 }
 
 
-WellModule well_http_module = { "http", NULL, NULL, NULL, well_http_shutdown };
+/* Audit H10: one-time module initialization (runs before any connection
+ * thread exists), so the string tables / TLS key are not created racily by the
+ * first two concurrent requests. */
+static int http_module_init(void) {
+    http_globals_init();
+    return 0;
+}
+
+WellModule well_http_module = { "http", http_module_init, NULL, NULL, well_http_shutdown };

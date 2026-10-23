@@ -63,6 +63,7 @@ typedef struct WellMysqlConn {
     MysqlSocket fd;
     unsigned char seq;
     int connected;
+    int checked_out; /* currently borrowed from a pool (audit M12) */
     int io_err; /* last low-level I/O outcome, for explicit panic messages */
     struct WellMysqlConn *next_all; /* pool's live-connection list */
 } WellMysqlConn;
@@ -73,6 +74,24 @@ typedef struct WellMysqlConn {
 #define MY_IO_EOF 3
 
 static WellMysqlConn g_default;
+
+/* Audit M11: the process-wide default connection used to be completely
+ * unsynchronized, so two handlers calling Mysql.exec/queryJson concurrently
+ * interleaved the wire protocol on one socket. Serialize it and release the
+ * lock on the panic path (see well_mysql_exec below). */
+static WellMutex g_default_lock;
+static int g_default_lock_inited = 0;
+static WellLock g_default_init_lock;
+
+static void my_default_lock_ensure(void) {
+    if (g_default_lock_inited) return;
+    well_lock_acquire(&g_default_init_lock);
+    if (!g_default_lock_inited) {
+        well_mutex_init(&g_default_lock);
+        g_default_lock_inited = 1;
+    }
+    well_lock_release(&g_default_init_lock);
+}
 
 /* ---------- sockets ---------- */
 #ifdef _WIN32
@@ -223,6 +242,13 @@ static void my_panic_io(WellMysqlConn *c, const char *what) {
     well_panic(msg);
 }
 
+/* Re-raises a caught panic to the caller's boundary. The panic message was
+ * already printed by the original well_panic(), so do not call it again. */
+static void my_reraise(jmp_buf *outer) {
+    if (outer) longjmp(*outer, 1);
+    exit(WELL_PANIC_EXIT_CODE);
+}
+
 
 /* ---------- SHA1 ---------- */
 typedef struct { unsigned int h[5]; unsigned long long len; unsigned char buf[64]; size_t n; } Sha1;
@@ -294,13 +320,27 @@ static int my_read_lenenc(const unsigned char *p, size_t len, size_t *pos, unsig
     if (c == 254) { int i; unsigned long long x=0; if (*pos+8 > len) return -1; for (i=0;i<8;i++) x |= ((unsigned long long)p[*pos+i]) << (8*i); *pos += 8; *v=x; return 0; }
     return -1;
 }
-static char *my_read_lenenc_str(const unsigned char *p, size_t len, size_t *pos, int *is_null) {
+static char *my_read_lenenc_str(const unsigned char *p, size_t len, size_t *pos,
+                                int *is_null, size_t *out_len) {
     unsigned long long n; int r;
     *is_null = 0;
+    if (out_len) *out_len = 0;
     r = my_read_lenenc(p, len, pos, &n);
     if (r == 1) { *is_null = 1; return NULL; }
-    if (r != 0 || *pos + n > len) return NULL;
-    { char *s = (char *)malloc((size_t)n + 1); if (!s) well_panic("out of memory (MySQL string)"); memcpy(s, p + *pos, (size_t)n); s[n] = '\0'; *pos += (size_t)n; return s; }
+    if (r != 0) return NULL;
+    /* Audit M6: "*pos + n" wraps for hostile 8-byte lengths; compare against
+     * the bytes that are actually left and cap the copy at 16MB. */
+    if (n > (unsigned long long)(len - *pos)) return NULL;
+    if (n > 16ULL * 1024 * 1024) return NULL;
+    {
+        char *s = (char *)malloc((size_t)n + 1);
+        if (!s) well_panic("out of memory (MySQL string)");
+        memcpy(s, p + *pos, (size_t)n);
+        s[n] = '\0';
+        *pos += (size_t)n;
+        if (out_len) *out_len = (size_t)n;
+        return s;
+    }
 }
 
 /* ---------- auth ---------- */
@@ -324,24 +364,50 @@ static int my_auth(WellMysqlConn *c, const char *user, const char *password, con
     if (plen < 1 || pkt[0] != 10) { free(pkt); return -1; }
     pos = 1;
     while (pos < plen && pkt[pos]) pos++;
-    pos++;
-    pos += 4;
-    memcpy(scramble, pkt + pos, 8); pos += 8; pos++;
-    caps = pkt[pos] | (pkt[pos+1] << 8); pos += 2;
-    pos++;
-    pos += 2;
-    caps |= (unsigned)(pkt[pos] | (pkt[pos+1] << 8)) << 16; pos += 2;
-    pos++;
-    pos += 10;
-    if (caps & 0x8000) { memcpy(scramble + 8, pkt + pos, 12); pos += 12; if (pos < plen && pkt[pos] == 0) pos++; }
+    /* Audit M7: every field read below is bounds-checked. A truncated or
+     * hostile handshake used to read past the packet (memcpy from pkt+pos
+     * with pos > plen). */
+    if (pos >= plen) { free(pkt); return -1; } /* unterminated server version */
+    pos++;                                     /* NUL after the version */
+    memset(scramble, 0, sizeof(scramble));
+    if (plen - pos < 31) { free(pkt); return -1; } /* fixed handshake tail */
+    pos += 4;                                  /* thread id */
+    memcpy(scramble, pkt + pos, 8); pos += 8;  /* auth-plugin-data part 1 */
+    pos++;                                     /* filler */
+    caps = (unsigned)pkt[pos] | ((unsigned)pkt[pos + 1] << 8); pos += 2;
+    pos++;                                     /* charset */
+    pos += 2;                                  /* status flags */
+    caps |= ((unsigned)pkt[pos] | ((unsigned)pkt[pos + 1] << 8)) << 16; pos += 2;
+    pos++;                                     /* auth plugin data len */
+    pos += 10;                                 /* reserved */
+    if (caps & 0x8000) {
+        if (plen - pos < 12) { free(pkt); return -1; }
+        memcpy(scramble + 8, pkt + pos, 12);
+        pos += 12;
+        if (pos < plen && pkt[pos] == 0) pos++;
+    }
     if (caps & 0x80000) {
-        size_t k = 0; while (pos < plen && pkt[pos] && k < sizeof(plugin)-1) plugin[k++] = (char)pkt[pos++]; plugin[k] = '\0';
+        size_t k = 0;
+        while (pos < plen && pkt[pos] && k < sizeof(plugin) - 1)
+            plugin[k++] = (char)pkt[pos++];
+        plugin[k] = '\0';
     }
     free(pkt);
     if (strcmp(plugin, "mysql_native_password") != 0) {
         well_panic("MySQL: only mysql_native_password is supported");
     }
     my_native_token(password ? password : "", scramble, token);
+    {
+        /* Audit M10: resp[] is a fixed 512-byte stack buffer; reject absurd
+         * user/database names instead of overflowing it. */
+        size_t ulen = strlen(user ? user : "");
+        size_t dlen = (db && db[0]) ? strlen(db) : 0;
+        size_t need = 4 /* caps */ + 4 /* max packet */ + 1 /* charset */
+                    + 23 /* filler */ + ulen + 1 + 1 + 20 + dlen + 1
+                    + strlen(plugin) + 1;
+        if (need > sizeof(resp))
+            well_panic("MySQL: user/database name too long for handshake");
+    }
     caps = 0x00000001u | 0x00000004u | 0x00000008u | 0x00000200u | 0x00002000u | 0x00008000u | 0x00020000u | 0x00080000u;
     resp[rn++] = (unsigned char)caps; resp[rn++] = (unsigned char)(caps>>8);
     resp[rn++] = (unsigned char)(caps>>16); resp[rn++] = (unsigned char)(caps>>24);
@@ -357,10 +423,16 @@ static int my_auth(WellMysqlConn *c, const char *user, const char *password, con
     if (my_write_packet(c, resp, rn) != 0) return -1;
     if (my_read_packet(c, &pkt, &plen) != 0) return -1;
     if (pkt[0] == 0xFE) { /* auth switch */
-        char newplugin[64]; size_t k = 1; unsigned char newscr[20];
-        while (k < plen && pkt[k]) { k++; } /* plugin name at pkt+1 */ 
-        k = 1; { size_t z = 0; while (k < plen && pkt[k] && z < sizeof(newplugin)-1) newplugin[z++] = (char)pkt[k++]; newplugin[z] = '\0'; }
-        k++; if (k + 20 <= plen) memcpy(newscr, pkt + k, 20);
+        char newplugin[64] = { 0 }; size_t k = 1; unsigned char newscr[20];
+        size_t z = 0;
+        while (k < plen && pkt[k] && z < sizeof(newplugin) - 1)
+            newplugin[z++] = (char)pkt[k++];
+        newplugin[z] = '\0';
+        k++; /* NUL after the plugin name */
+        /* Audit M7: refuse a truncated scramble instead of using an
+         * uninitialised stack buffer. */
+        if (plen - k < 20) { free(pkt); return -1; }
+        memcpy(newscr, pkt + k, 20);
         if (strcmp(newplugin, "mysql_native_password") != 0) { free(pkt); well_panic("MySQL: unsupported auth switch plugin"); }
         my_native_token(password ? password : "", newscr, token);
         c->seq = 2;
@@ -427,7 +499,20 @@ WellMysqlConn *well_mysql_conn_new(const char *host, int port, const char *user,
 
 void well_mysql_connect(const char *host, int port, const char *user,
                         const char *password, const char *db) {
-    my_connect_conn(&g_default, host, port, user, password, db);
+    jmp_buf jb;
+    jmp_buf *old;
+    my_default_lock_ensure();
+    well_mutex_lock(&g_default_lock);
+    old = well_panic_push(&jb);
+    if (setjmp(jb) == 0) {
+        my_connect_conn(&g_default, host, port, user, password, db);
+        well_panic_pop(old);
+        well_mutex_unlock(&g_default_lock);
+        return;
+    }
+    well_panic_pop(old);
+    well_mutex_unlock(&g_default_lock);
+    my_reraise(old);
 }
 
 /* Copies the server error message out of an ERR packet (0xFF) into msg. */
@@ -488,6 +573,8 @@ int well_mysql_conn_exec(WellMysqlConn *c, const char *sql) {
         size_t pos = 1; unsigned long long a;
         if (my_read_lenenc(pkt, plen, &pos, &a) == 0) affected = (long long)a;
         free(pkt);
+        /* Audit M13: the public API returns int; clamp instead of wrapping. */
+        if (affected > 2147483647LL) return 2147483647;
         return (int)affected;
     }
     /* Unexpected packet (column count): drain the whole result set, then fail. */
@@ -520,6 +607,40 @@ static char *mysql_json_reserve(char *buf, size_t *cap, size_t need) {
     return nb;
 }
 
+/* Audit M8: escapes one string segment into the JSON buffer. Control bytes
+ * become \u00XX (the old code emitted them raw, which is invalid JSON) and the
+ * caller passes the lenenc length, so embedded NUL bytes are preserved as
+ * \u0000 instead of truncating the value. */
+static char *mysql_json_escape(char *buf, size_t *cap, size_t *len,
+                               const char *s, size_t n) {
+    static const char hexd[] = "0123456789abcdef";
+    size_t j;
+    for (j = 0; j < n; j++) {
+        unsigned char ch = (unsigned char)s[j];
+        buf = mysql_json_reserve(buf, cap, *len + 8);
+        if (ch == '"' || ch == '\\') {
+            buf[(*len)++] = '\\';
+            buf[(*len)++] = (char)ch;
+        } else if (ch == '\n') {
+            buf[(*len)++] = '\\'; buf[(*len)++] = 'n';
+        } else if (ch == '\r') {
+            buf[(*len)++] = '\\'; buf[(*len)++] = 'r';
+        } else if (ch == '\t') {
+            buf[(*len)++] = '\\'; buf[(*len)++] = 't';
+        } else if (ch < 0x20) {
+            buf[(*len)++] = '\\';
+            buf[(*len)++] = 'u';
+            buf[(*len)++] = '0';
+            buf[(*len)++] = '0';
+            buf[(*len)++] = hexd[(ch >> 4) & 0x0F];
+            buf[(*len)++] = hexd[ch & 0x0F];
+        } else {
+            buf[(*len)++] = (char)ch;
+        }
+    }
+    return buf;
+}
+
 WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
     unsigned char *pkt = NULL; size_t plen = 0, pos;
     unsigned long long cols = 0;
@@ -539,14 +660,41 @@ WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
     pos = 0;
     if (my_read_lenenc(pkt, plen, &pos, &cols) != 0) { free(pkt); well_panic("MySQL: bad column count"); }
     free(pkt);
-    if (cols > 4096) well_panic("MySQL: too many columns");
+    /* Audit M9: the column count comes from the server. Bound it and close the
+     * connection before panicking, otherwise the unread packets leave the
+     * stream desynchronized for any later use of this connection. */
+    if (cols > 4096) {
+        well_mysql_conn_close(c);
+        well_panic("MySQL: too many columns (connection closed)");
+    }
     names = (char **)calloc((size_t)cols, sizeof(char *));
-    if (!names) well_panic("out of memory (MySQL columns)");
+    if (!names) {
+        well_mysql_conn_close(c);
+        well_panic("out of memory (MySQL columns) (connection closed)");
+    }
     for (col = 0; col < cols; col++) {
-        size_t pp = 0, k; unsigned long long x;
+        size_t pp = 0, k;
+        int isnull = 0;
+        char *name;
         if (my_read_packet(c, &pkt, &plen) != 0) my_panic_io(c, "read column definition");
-        for (k = 0; k < 4; k++) { my_read_lenenc(pkt, plen, &pp, &x); pp += (size_t)x; }
-        { int isnull; char *name = my_read_lenenc_str(pkt, plen, &pp, &isnull); names[col] = name; }
+        for (k = 0; k < 4; k++) {
+            unsigned long long x = 0;
+            /* Audit M13: check the lenenc result and bounds before advancing. */
+            if (my_read_lenenc(pkt, plen, &pp, &x) != 0 ||
+                x > (unsigned long long)(plen - pp)) {
+                free(pkt);
+                well_mysql_conn_close(c);
+                well_panic("MySQL: bad column definition (connection closed)");
+            }
+            pp += (size_t)x;
+        }
+        name = my_read_lenenc_str(pkt, plen, &pp, &isnull, NULL);
+        if (!name && !isnull) { /* audit M13: don't silently accept garbage */
+            free(pkt);
+            well_mysql_conn_close(c);
+            well_panic("MySQL: bad column name (connection closed)");
+        }
+        names[col] = name;
         free(pkt);
     }
     if (my_read_packet(c, &pkt, &plen) != 0) my_panic_io(c, "read column terminator");
@@ -556,7 +704,7 @@ WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
     {
         int first = 1;
         for (;;) {
-            size_t pp = 0, j;
+            size_t pp = 0;
             if (my_read_packet(c, &pkt, &plen) != 0) my_panic_io(c, "read row");
             if (plen > 0 && pkt[0] == 0xFE && plen < 9) { free(pkt); break; }
             if (!first) {
@@ -567,19 +715,23 @@ WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
             buf = mysql_json_reserve(buf, &cap, len + 2);
             buf[len++] = '{';
             for (col = 0; col < cols; col++) {
-                int isnull = 0; char *val = my_read_lenenc_str(pkt, plen, &pp, &isnull);
+                int isnull = 0;
+                size_t vlen = 0;
+                char *val = my_read_lenenc_str(pkt, plen, &pp, &isnull, &vlen);
+                if (!val && !isnull) {
+                    free(pkt);
+                    well_mysql_conn_close(c);
+                    well_panic("MySQL: bad row value (connection closed)");
+                }
                 if (col) {
                     buf = mysql_json_reserve(buf, &cap, len + 2);
                     buf[len++] = ',';
                 }
                 buf = mysql_json_reserve(buf, &cap, len + 2);
                 buf[len++] = '"';
-                for (j = 0; names[col] && names[col][j]; j++) {
-                    char ch = names[col][j];
-                    buf = mysql_json_reserve(buf, &cap, len + 3);
-                    if (ch == '"' || ch == '\\') buf[len++] = '\\';
-                    buf[len++] = ch;
-                }
+                buf = mysql_json_escape(buf, &cap, &len,
+                                        names[col] ? names[col] : "",
+                                        names[col] ? strlen(names[col]) : 0);
                 buf = mysql_json_reserve(buf, &cap, len + 3);
                 buf[len++] = '"'; buf[len++] = ':';
                 if (isnull) {
@@ -588,15 +740,8 @@ WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
                 } else {
                     buf = mysql_json_reserve(buf, &cap, len + 2);
                     buf[len++] = '"';
-                    for (j = 0; val && val[j]; j++) {
-                        char ch = val[j];
-                        buf = mysql_json_reserve(buf, &cap, len + 3);
-                        if (ch == '"' || ch == '\\') buf[len++] = '\\';
-                        if (ch == '\n') { buf[len++] = '\\'; ch = 'n'; }
-                        else if (ch == '\r') { buf[len++] = '\\'; ch = 'r'; }
-                        else if (ch == '\t') { buf[len++] = '\\'; ch = 't'; }
-                        buf[len++] = ch;
-                    }
+                    /* Audit M8: length-based copy keeps embedded NULs. */
+                    buf = mysql_json_escape(buf, &cap, &len, val, vlen);
                     buf = mysql_json_reserve(buf, &cap, len + 2);
                     buf[len++] = '"';
                 }
@@ -617,11 +762,42 @@ WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
 }
 
 int well_mysql_exec(const char *sql) {
-    return well_mysql_conn_exec(&g_default, sql);
+    int r;
+    jmp_buf jb;
+    jmp_buf *old;
+    my_default_lock_ensure();
+    well_mutex_lock(&g_default_lock);
+    old = well_panic_push(&jb);
+    if (setjmp(jb) == 0) {
+        r = well_mysql_conn_exec(&g_default, sql);
+        well_panic_pop(old);
+        well_mutex_unlock(&g_default_lock);
+        return r;
+    }
+    /* Release the default-connection lock before re-raising (audit M11). */
+    well_panic_pop(old);
+    well_mutex_unlock(&g_default_lock);
+    my_reraise(old);
+    return 0; /* not reached */
 }
 
 WellString *well_mysql_query_json(const char *sql) {
-    return well_mysql_conn_query_json(&g_default, sql);
+    WellString *r;
+    jmp_buf jb;
+    jmp_buf *old;
+    my_default_lock_ensure();
+    well_mutex_lock(&g_default_lock);
+    old = well_panic_push(&jb);
+    if (setjmp(jb) == 0) {
+        r = well_mysql_conn_query_json(&g_default, sql);
+        well_panic_pop(old);
+        well_mutex_unlock(&g_default_lock);
+        return r;
+    }
+    well_panic_pop(old);
+    well_mutex_unlock(&g_default_lock);
+    my_reraise(old);
+    return NULL; /* not reached */
 }
 
 void well_mysql_conn_close(WellMysqlConn *c) {
@@ -630,7 +806,29 @@ void well_mysql_conn_close(WellMysqlConn *c) {
 }
 
 void well_mysql_close(void) {
+    my_default_lock_ensure();
+    well_mutex_lock(&g_default_lock);
     well_mysql_conn_close(&g_default);
+    well_mutex_unlock(&g_default_lock);
+}
+
+/* Audit M12: cheap liveness check for a pooled connection. Idle connections can
+ * be killed by a server restart or by wait_timeout; without COM_PING the next
+ * statement on the stale socket would panic. */
+static int my_ping(WellMysqlConn *c) {
+    unsigned char cmd[1];
+    unsigned char *pkt = NULL;
+    size_t plen = 0;
+    int ok;
+    if (!c->connected) return -1;
+    c->io_err = MY_IO_OK;
+    c->seq = 0;
+    cmd[0] = 0x0E; /* COM_PING */
+    if (my_write_packet(c, cmd, 1) != 0) return -1;
+    if (my_read_packet(c, &pkt, &plen) != 0) return -1;
+    ok = (plen > 0 && pkt[0] == 0x00);
+    free(pkt);
+    return ok ? 0 : -1;
 }
 
 /* ---------- connection pool ---------- */
@@ -649,13 +847,6 @@ struct WellMysqlPool {
     int closing;
     WellMysqlConn *all; /* every live connection (idle + checked out) */
 };
-
-/* Re-raise a caught panic to the caller's boundary. The panic message was
- * already printed by the original well_panic(), so do not call it again. */
-static void my_reraise(jmp_buf *outer) {
-    if (outer) longjmp(*outer, 1);
-    exit(WELL_PANIC_EXIT_CODE);
-}
 
 /* Caller holds pool->lock. */
 static void my_pool_track_locked(WellMysqlPool *p, WellMysqlConn *c) {
@@ -722,7 +913,21 @@ WellMysqlConn *well_mysql_pool_acquire(WellMysqlPool *pool, int timeout_ms) {
         if (pool->idle_n > 0) {
             c = pool->idle[--pool->idle_n];
             pool->active++;
+            c->checked_out = 1; /* audit M12 */
             well_mutex_unlock(&pool->lock);
+            if (!c->connected || my_ping(c) != 0) {
+                /* Stale idle connection: drop it and continue with a fresh one
+                 * instead of handing a dead socket to the caller. */
+                well_mysql_conn_close(c);
+                well_mutex_lock(&pool->lock);
+                pool->total--;
+                pool->active--;
+                my_pool_untrack_locked(pool, c);
+                well_mutex_unlock(&pool->lock);
+                free(c);
+                if (deadline >= 0 && well_mono_ms() >= deadline) return NULL;
+                continue;
+            }
             return c;
         }
         if (pool->total < pool->max_conn) {
@@ -757,6 +962,7 @@ WellMysqlConn *well_mysql_pool_acquire(WellMysqlPool *pool, int timeout_ms) {
                 return NULL;
             }
             my_pool_track_locked(pool, nc);
+            nc->checked_out = 1; /* audit M12 */
             well_mutex_unlock(&pool->lock);
             return nc;
         }
@@ -769,8 +975,17 @@ WellMysqlConn *well_mysql_pool_acquire(WellMysqlPool *pool, int timeout_ms) {
 void well_mysql_pool_release(WellMysqlPool *pool, WellMysqlConn *conn) {
     if (!pool || !conn) return;
     well_mutex_lock(&pool->lock);
+    /* Audit M12: a double release used to push the same pointer into the idle
+     * array twice (overflow / double free) and corrupt the counters. */
+    if (!conn->checked_out) {
+        well_mutex_unlock(&pool->lock);
+        fprintf(stderr,
+                "well warning: MySQL pool: release of a connection that is not checked out ignored\n");
+        return;
+    }
+    conn->checked_out = 0;
     if (pool->active > 0) pool->active--;
-    if (pool->closing || !conn->connected) {
+    if (pool->closing || !conn->connected || pool->idle_n >= pool->idle_cap) {
         pool->total--;
         my_pool_untrack_locked(pool, conn);
         well_mutex_unlock(&pool->lock);
@@ -893,6 +1108,14 @@ void well_mysql_pool_close_global(void) {
     if (g_lang_pool) { well_mysql_pool_close(g_lang_pool); g_lang_pool = NULL; }
 }
 
+/* Audit M11: initialize the default-connection lock before any handler can
+ * run (module init is called from the generated main). */
+static int well_mysql_module_init(void) {
+    my_default_lock_ensure();
+    return 0;
+}
+
 static void well_mysql_module_shutdown(void) { well_mysql_pool_close_global(); well_mysql_close(); }
-WellModule well_mysql_module = { "mysql", NULL, NULL, NULL, well_mysql_module_shutdown };
+WellModule well_mysql_module = { "mysql", well_mysql_module_init, NULL, NULL,
+                                 well_mysql_module_shutdown };
 

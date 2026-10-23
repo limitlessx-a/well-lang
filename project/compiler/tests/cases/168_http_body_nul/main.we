@@ -1,0 +1,37 @@
+module mod.http_nulbody;
+
+event HttpRequestEvent extends Event {
+    reqId: long;
+    method: String;
+    path: String;
+    query: String;
+    body: String;
+}
+
+event TickEvent extends Event {
+    id: long;
+    interval: long;
+    fires: long;
+}
+
+controller HttpController {
+    run() {
+        Http.route("/echo", "POST", EchoHandler);
+        Http.listen(18193);
+        Timer.once(3000, StopHandler);
+    }
+}
+
+handler EchoHandler {
+    onEvent(e: HttpRequestEvent) {
+        Http.respond(e.reqId, 200, e.body);
+    }
+}
+
+handler StopHandler {
+    onEvent(e: TickEvent) {
+        Http.stop();
+    }
+}
+
+entry HttpController;
