@@ -5,15 +5,16 @@ name: extension
 #
 # 说明：这里用 `npm install --no-package-lock`，避免依赖本地生成的
 # package-lock.json 中指向国内镜像的 resolved URL；CI 直接用默认 npm registry。
+#
+# 注意：`pull_request` 不设 paths 过滤。main 的 ruleset 把 `extension / test`
+# 设为必需检查，若 PR 不触发本 workflow，该检查会一直处于 "Expected" 导致
+# 无法合并；因此所有 PR 都跑本 job（约 2 分钟），push 仍按路径过滤。
 on:
   push:
     paths:
       - "project/vscode_extension/**"
       - ".github/workflows/extension.yml"
   pull_request:
-    paths:
-      - "project/vscode_extension/**"
-      - ".github/workflows/extension.yml"
   workflow_dispatch:
 
 jobs:
