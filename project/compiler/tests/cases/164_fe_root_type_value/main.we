@@ -1,0 +1,13 @@
+module demo.fe_root_type_value;
+
+struct Holder {
+    c: Controller;
+}
+
+controller Main {
+    run() {
+        print(1);
+    }
+}
+
+entry Main;

@@ -1,0 +1,13 @@
+module demo.fe_void_value;
+
+func do_nothing(): void {
+}
+
+controller Main {
+    run() {
+        var x = do_nothing();
+        print(x);
+    }
+}
+
+entry Main;

@@ -1,0 +1,9 @@
+module demo.fe_bad_escape;
+
+controller Main {
+    run() {
+        print("a\qb");
+    }
+}
+
+entry Main;

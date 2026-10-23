@@ -71,6 +71,14 @@ class Parser:
         t = self.peek()
         raise ParseError(f"{self.fn}:{t.line}:{t.col}: {msg}")
 
+    def mark(self, node, t: Token):
+        """Attach the declaration's source position (declaration diagnostics)."""
+        if not hasattr(node, "line"):
+            node.line = t.line
+            node.col = t.col
+            node.file = self.fn
+        return node
+
     def int_literal(self, t: Token) -> int:
         """Convert an int token; ``08`` must not raise a bare ValueError."""
         text = t.value
@@ -149,23 +157,32 @@ class Parser:
                 prog.entry = self.eat_id()
                 self.eat(";")
             elif self.at("const"):
-                prog.decls.append(self.parse_const())
+                start = self.peek()
+                prog.decls.append(self.mark(self.parse_const(), start))
             elif self.at("enum"):
-                prog.decls.append(self.parse_enum())
+                start = self.peek()
+                prog.decls.append(self.mark(self.parse_enum(), start))
             elif self.at("struct"):
-                prog.decls.append(self.parse_struct(False))
+                start = self.peek()
+                prog.decls.append(self.mark(self.parse_struct(False), start))
             elif self.at("event"):
-                prog.decls.append(self.parse_struct(True))
+                start = self.peek()
+                prog.decls.append(self.mark(self.parse_struct(True), start))
             elif self.at("controller"):
-                prog.decls.append(self.parse_controller())
+                start = self.peek()
+                prog.decls.append(self.mark(self.parse_controller(), start))
             elif self.at("handler"):
-                prog.decls.append(self.parse_handler())
+                start = self.peek()
+                prog.decls.append(self.mark(self.parse_handler(), start))
             elif self.at("func"):
-                prog.decls.append(self.parse_func())
+                start = self.peek()
+                prog.decls.append(self.mark(self.parse_func(), start))
             elif self.at("namespace"):
-                prog.decls.append(self.parse_namespace())
+                start = self.peek()
+                prog.decls.append(self.mark(self.parse_namespace(), start))
             elif self.at("static"):
-                prog.decls.append(self.parse_static())
+                start = self.peek()
+                prog.decls.append(self.mark(self.parse_static(), start))
             else:
                 self.err(f"unexpected top-level token {self.peek().value!r}")
         return prog
@@ -183,9 +200,10 @@ class Parser:
     def parse_enum(self) -> EnumDecl:
         self.eat("enum")
         name = self.eat_id()
+        base = None
         if self.at(":"):
             self.eat(":")
-            self.parse_type()
+            base = self.parse_type()
         self.eat("{")
         members = []
         while not self.at("}"):
@@ -211,9 +229,10 @@ class Parser:
             elif not self.at("}"):
                 self.err("expected ';' or '}' in enum")
         self.eat("}")
-        return EnumDecl(name, members)
+        return EnumDecl(name, members, base)
 
     def parse_struct(self, is_event: bool) -> StructDecl:
+        start = self.peek()
         self.eat_any_kw(("struct", "event"))
         name = self.eat_id()
         base = None
@@ -223,6 +242,7 @@ class Parser:
         self.eat("{")
         fields = []
         while not self.at("}"):
+            ft = self.peek()
             fname = self.eat_id()
             self.eat(":")
             ty = self.parse_type()
@@ -231,9 +251,9 @@ class Parser:
                 self.eat("=")
                 default = self.parse_expr()
             self.eat(";")
-            fields.append(FieldDecl(fname, ty, default))
+            fields.append(self.mark(FieldDecl(fname, ty, default), ft))
         self.eat("}")
-        return StructDecl(name, base, fields, is_event)
+        return self.mark(StructDecl(name, base, fields, is_event), start)
 
     def parse_params(self) -> list[tuple[str, TypeRef]]:
         self.eat("(")
@@ -257,11 +277,12 @@ class Parser:
         return None
 
     def parse_method(self) -> MethodDecl:
+        start = self.peek()
         name = self.eat_id()
         params = self.parse_params()
         ret = self.parse_opt_ret()
         body = self.parse_block()
-        return MethodDecl(name, params, ret, body)
+        return self.mark(MethodDecl(name, params, ret, body), start)
 
     def reject_extends(self):
         """controller/handler 的继承未实现，语法上也已移除。"""
@@ -301,6 +322,7 @@ class Parser:
         while not self.at("}"):
             # `name: Type [= default];` is a field, otherwise a function
             if self.peek().kind == "id" and self.i + 1 < len(self.toks) and self.toks[self.i + 1].value == ":":
+                ft = self.peek()
                 fname = self.eat_id()
                 self.eat(":")
                 fty = self.parse_type()
@@ -309,7 +331,7 @@ class Parser:
                     self.eat("=")
                     default = self.parse_expr()
                 self.eat(";")
-                fields.append(FieldDecl(fname, fty, default))
+                fields.append(self.mark(FieldDecl(fname, fty, default), ft))
             else:
                 funcs.append(self.parse_method())
         self.eat("}")

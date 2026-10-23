@@ -1,0 +1,12 @@
+module demo.fe_void_param;
+
+func takes_void(a: void): void {
+}
+
+controller Main {
+    run() {
+        takes_void(1);
+    }
+}
+
+entry Main;

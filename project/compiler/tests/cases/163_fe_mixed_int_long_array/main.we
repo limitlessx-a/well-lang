@@ -1,0 +1,11 @@
+module demo.fe_mixed_int_long_array;
+
+controller Main {
+    run() {
+        var a = [1, 4000000000];
+        print(a.length);
+        print(a.get(1));
+    }
+}
+
+entry Main;

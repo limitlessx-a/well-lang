@@ -1,0 +1,11 @@
+module demo.fe_dup_var;
+
+controller Main {
+    run() {
+        var x: int = 1;
+        var x: int = 2;
+        print(x);
+    }
+}
+
+entry Main;

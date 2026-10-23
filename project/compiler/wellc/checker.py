@@ -7,7 +7,24 @@ ROOTS = {"Vo", "Event", "Controller", "Handler"}
 
 
 class CheckError(Exception):
-    pass
+    def __init__(self, message, errors=None):
+        super().__init__(message)
+        # ``errors`` carries every collected semantic message (``check --json``
+        # reports them all); ``str(exc)`` stays the first one for build paths.
+        self.errors: list[str] = list(errors) if errors else [message]
+
+
+class Scope(dict):
+    """Type environment for one lexical scope.
+
+    ``declared`` holds the names declared directly in this scope so that a
+    repeated ``var``/parameter in the same scope is reported (inner scopes may
+    still shadow outer ones).
+    """
+
+    def __init__(self, base=None):
+        super().__init__(base or {})
+        self.declared: set[str] = set()
 
 
 class Checker:
@@ -31,66 +48,32 @@ class Checker:
         self.cur_pos = None   # (file, line, col) of the statement being checked
         self.expr_depth = 0
         self.stmt_depth = 0
+        self.ns_pos = {}      # namespace name -> declaration position
+        self.static_pos = {}  # static name -> declaration position
         # Set while checking a type-inferred `var x = [...]` initializer.
         self.allow_container_literal = False
 
     # ---------- public ----------
     def run(self):
         self.collect()
-        self.check_decl_types()
+        # Semantic errors are collected per declaration/method so `check`
+        # (and editors) see more than the first mistake in a file.  Build/run
+        # paths still surface ``str(CheckError)`` = the first message.
+        self.errors = []
+        self.attempt(self.check_decl_types)
         for name, h in self.controllers.items():
-            for m in h.methods:
-                if m.name == "run":
-                    self.check_method(m, {}, owner=None)
+            self.attempt(self._check_controller, h)
         for name, h in self.handlers.items():
-            ev = self.handler_event.get(name)
-            if ev is None:
-                self.err(f"handler {name} has no onEvent/handle method")
-            for m in h.methods:
-                if m.name == self.handler_method[name]:
-                    self.check_method(m, {"oid": "long"}, owner=name, event_type=ev)
+            self.attempt(self._check_handler, name, h)
         for name, f in self.funcs.items():
-            self.check_method(f, {}, owner=None, is_func=True)
+            self.attempt(self.check_method, f, {}, is_func=True)
         for ns, funcs in self.namespaces.items():
-            old = self.current_namespace
-            self.current_namespace = ns
-            for fname, f in funcs.items():
-                self.check_method(f, {}, owner=None, is_func=True)
-            self.current_namespace = old
+            self.attempt(self._check_namespace, ns, funcs)
         for sname, st in self.statics.items():
-            for fname, f in st["fields"].items():
-                self.check_type_name(f.type.name)
-                self.check_static_field_type(sname, fname, f.type.name, set())
-                if f.default is None:
-                    continue
-                d = f.default
-                if isinstance(d, ArrayLit):
-                    kind, _ = self.container_info(f.type.name)
-                    if kind != "array":
-                        self.err(f"static {sname}.{fname}: array literal default requires Array<T>")
-                    self.check_container_literal(d, f.type.name, {})
-                elif isinstance(d, ObjectLit):
-                    kind, _ = self.container_info(f.type.name)
-                    if kind != "map":
-                        self.err(f"static {sname}.{fname}: map literal default requires Map<T>")
-                    self.check_container_literal(d, f.type.name, {})
-                elif isinstance(d, New):
-                    dt = self.check_expr(d, {})
-                    if not (getattr(d, "bytes_new", False) or getattr(d, "container_new", None)):
-                        self.err(f"static {sname}.{fname}: default new is limited to Bytes/Array/Map")
-                    self.check_assignable(f.type.name, dt)
-                else:
-                    if not isinstance(d, (IntLit, FloatLit, StrLit, BoolLit, NullLit, Ident)):
-                        self.err(f"static {sname}.{fname}: default value must be a literal/const/container literal")
-                    dt = self.check_expr(d, {})
-                    self.check_assignable(f.type.name, dt)
-            old = self.current_namespace
-            self.current_namespace = sname
-            for fname, f in st["funcs"].items():
-                self.check_method(f, {}, owner=None, is_func=True)
-            self.current_namespace = old
-        if self.p.entry and self.p.entry not in self.controllers:
-            self.err(f"entry '{self.p.entry}' is not a controller")
+            self.attempt(self._check_static, sname, st)
+        self.attempt(self._check_entry)
+        if self.errors:
+            raise CheckError(self.errors[0], self.errors)
         # expose tables
         self.p.structs = self.structs
         self.p.events = {k: v for k, v in self.structs.items() if v["kind"] == "event"}
@@ -105,16 +88,126 @@ class Checker:
         self.p.handler_method = self.handler_method
         return self.p
 
+    def attempt(self, fn, *args, **kwargs):
+        """Run one semantic check unit, recording (not raising) its errors."""
+        try:
+            return fn(*args, **kwargs)
+        except CheckError as e:
+            errs = getattr(e, "errors", None) or [str(e)]
+            for msg in errs:
+                if msg not in self.errors:
+                    self.errors.append(msg)
+            return None
+
+    def _check_controller(self, h):
+        for m in h.methods:
+            if m.name == "run":
+                self.check_method(m, {}, owner=None)
+
+    def _check_handler(self, name, h):
+        ev = self.handler_event.get(name)
+        if ev is None:
+            self.cur_pos = self.pos_of(h)
+            self.err(f"handler {name} has no onEvent/handle method")
+        for m in h.methods:
+            if m.name == self.handler_method[name]:
+                self.check_method(m, {"oid": "long"}, owner=name, event_type=ev)
+
+    def _check_namespace(self, ns, funcs):
+        old = self.current_namespace
+        self.current_namespace = ns
+        try:
+            for fname, f in funcs.items():
+                self.check_method(f, {}, owner=None, is_func=True)
+        finally:
+            self.current_namespace = old
+
+    def _check_static(self, sname, st):
+        for fname, f in st["fields"].items():
+            self._check_static_field(sname, fname, f)
+        old = self.current_namespace
+        self.current_namespace = sname
+        try:
+            for fname, f in st["funcs"].items():
+                self.check_method(f, {}, owner=None, is_func=True)
+        finally:
+            self.current_namespace = old
+
+    def check_default_value(self, label: str, ty: str, d, literal_msg: str):
+        """Validate a struct/static field default value.
+
+        Only literals, consts, container literals and ``new Bytes/Array/Map``
+        are allowed: codegen materialises the default once and must not embed
+        an arbitrary expression (calls, host reads, ``new <struct>``, ...).
+        """
+        if isinstance(d, ArrayLit):
+            kind, _ = self.container_info(ty)
+            if kind != "array":
+                self.err(f"{label}: array literal default requires Array<T>")
+            self.check_container_literal(d, ty, {})
+            return
+        if isinstance(d, ObjectLit):
+            kind, _ = self.container_info(ty)
+            if kind != "map":
+                self.err(f"{label}: map literal default requires Map<T>")
+            self.check_container_literal(d, ty, {})
+            return
+        if isinstance(d, New):
+            dt = self.check_expr(d, {})
+            if not (getattr(d, "bytes_new", False) or getattr(d, "container_new", None)):
+                self.err(f"{label}: default new is limited to Bytes/Array/Map")
+            self.check_assignable(ty, dt)
+            return
+        if not self._is_default_literal(d):
+            self.err(f"{label}: {literal_msg}")
+        vt = self.check_expr(d, {})
+        self.check_assignable(ty, vt)
+
+    def _is_default_literal(self, e) -> bool:
+        if isinstance(e, (IntLit, FloatLit, StrLit, BoolLit, NullLit, Ident)):
+            return True
+        return isinstance(e, Unary) and e.op in ("-", "+") \
+            and isinstance(e.expr, (IntLit, FloatLit))
+
+    def _check_static_field(self, sname, fname, f):
+        self.cur_pos = self.pos_of(f) or self.static_pos.get(sname)
+        self.check_type_name(f.type.name)
+        self.check_static_field_type(sname, fname, f.type.name, set())
+        if f.default is None:
+            return
+        self.check_default_value(
+            f"static {sname}.{fname}", f.type.name, f.default,
+            "default value must be a literal/const/container literal")
+
+    def _check_entry(self):
+        if self.p.entry and self.p.entry not in self.controllers:
+            self.err(f"entry '{self.p.entry}' is not a controller")
+
     def err(self, msg):
         if self.cur_pos is not None:
             f, line, col = self.cur_pos
             raise CheckError(f"{f}:{line}:{col}: {msg}")
         raise CheckError(f"{self.fn}: {msg}")
 
+    def pos_of(self, node):
+        """(file, line, col) of a declaration / field / method, or None."""
+        if node is None:
+            return None
+        if isinstance(node, dict):
+            line = node.get("line")
+            if line is None:
+                return None
+            return (node.get("file", self.fn), line, node.get("col", 1))
+        line = getattr(node, "line", None)
+        if line is None:
+            return None
+        return (getattr(node, "file", self.fn), line, getattr(node, "col", 1))
+
     # ---------- declarations ----------
     def collect(self):
         # first pass: names
         for d in self.p.decls:
+            self.cur_pos = self.pos_of(d)
             if isinstance(d, EnumDecl):
                 self.enums[d.name] = d
             elif isinstance(d, StructDecl):
@@ -156,6 +249,7 @@ class Checker:
                         self.err(f"namespace {d.name}: duplicate function {f.name}")
                     table[f.name] = f
                 self.namespaces[d.name] = table
+                self.ns_pos[d.name] = self.pos_of(d)
             elif isinstance(d, StaticDecl):
                 if d.name in self.statics or d.name in self.namespaces:
                     self.err(f"duplicate type name {d.name}")
@@ -170,8 +264,10 @@ class Checker:
                         self.err(f"static {d.name}: duplicate function {f.name}")
                     table[f.name] = f
                 self.statics[d.name] = {"fields": fields, "funcs": table}
+                self.static_pos[d.name] = self.pos_of(d)
         # enums: normalize members (auto values, String default = member name)
         for name, d in self.enums.items():
+            self.cur_pos = self.pos_of(d)
             kind = None
             for mn, mv in d.members:
                 if isinstance(mv, str):
@@ -182,8 +278,19 @@ class Checker:
                     kind = "int"
                 elif mv is not None:
                     kind = "int"
+            base = getattr(d, "base", None)
+            if base is not None:
+                bname = base.name
+                if bname not in ("int", "long", "String"):
+                    self.err(f"enum {name}: unsupported base type {bname} "
+                             f"(only int/long/String enums are supported)")
+                if d.members:
+                    if bname == "String" and kind != "String":
+                        self.err(f"enum {name} is declared String but has int values")
+                    if bname in ("int", "long") and kind == "String":
+                        self.err(f"enum {name} is declared {bname} but has String values")
             if kind is None:
-                kind = "int"
+                kind = "String" if (base is not None and base.name == "String") else "int"
             normalized = []
             auto = 0
             seen_vals = set()
@@ -206,11 +313,15 @@ class Checker:
         # structs/events
         for d in self.p.decls:
             if isinstance(d, StructDecl):
+                self.cur_pos = self.pos_of(d)
                 self.structs[d.name] = {
                     "kind": "event" if d.is_event else "struct",
                     "fields": self.flatten_fields(d.name, d, set()),
                     "base": d.base,
                     "name": d.name,
+                    "file": getattr(d, "file", self.fn),
+                    "line": getattr(d, "line", None),
+                    "col": getattr(d, "col", 1),
                 }
         # consts
         for d in self.p.decls:
@@ -218,6 +329,7 @@ class Checker:
                 self.consts[d.name] = d
         # handlers: find event method
         for name, h in self.handlers.items():
+            self.cur_pos = self.pos_of(h)
             for m in h.methods:
                 if m.name in ("onEvent", "handle", "on", "handler"):
                     if len(m.params) != 1:
@@ -230,6 +342,7 @@ class Checker:
                     break
             if name not in self.handler_event:
                 self.err(f"handler {name} must define onEvent(e:SomeEvent)")
+        self.cur_pos = None
 
     def flatten_fields(self, name, d, seen):
         if name in seen:
@@ -256,23 +369,38 @@ class Checker:
 
     # ---------- methods ----------
     def check_method(self, m, outer, owner=None, event_type=None, is_func=False):
-        env = dict(outer)
+        old_pos = self.cur_pos
+        self.cur_pos = self.pos_of(m) or old_pos
+        try:
+            self._check_method(m, outer, owner=owner, event_type=event_type, is_func=is_func)
+        finally:
+            self.cur_pos = old_pos
+
+    def _check_method(self, m, outer, owner=None, event_type=None, is_func=False):
+        env = Scope(outer)
+        seen = set()
         for pname, ptype in m.params:
+            if pname in seen:
+                self.err(f"{m.name}: duplicate parameter {pname}")
+            seen.add(pname)
             self.check_type_name(ptype.name)
             env[pname] = ptype.name
+            env.declared.add(pname)
         if m.ret:
-            self.check_type_name(m.ret.name)
+            self.check_type_name(m.ret.name, allow_void=True)
         ret = m.ret.name if m.ret else "void"
         old_ret, old_loop, old_break = self.cur_ret, self.loop_depth, self.break_depth
         self.cur_ret = ret
         self.loop_depth = 0
         self.break_depth = 0
-        self.check_block(m.body, env)
-        self.cur_ret = old_ret
-        self.loop_depth = old_loop
-        self.break_depth = old_break
-        if ret != "void" and not self.block_returns(m.body):
-            self.err(f"{m.name}: not all paths return a value")
+        try:
+            self.check_block(m.body, env)
+            if ret != "void" and not self.block_returns(m.body):
+                self.err(f"{m.name}: not all paths return a value")
+        finally:
+            self.cur_ret = old_ret
+            self.loop_depth = old_loop
+            self.break_depth = old_break
 
     def check_static_field_type(self, sname, fname, ty, seen):
         """Events (directly or reachable through structs/containers) are not
@@ -292,46 +420,56 @@ class Checker:
 
     def check_decl_types(self):
         for name, st in self.structs.items():
+            self.cur_pos = self.pos_of(st)
             for f in st["fields"]:
+                self.cur_pos = self.pos_of(f) or self.pos_of(st)
                 if f.type.name == "void":
                     self.err(f"{name}.{f.name}: a field cannot be void")
                 self.check_type_name(f.type.name)
                 if f.default is not None:
-                    if isinstance(f.default, (ArrayLit, ObjectLit)):
-                        self.check_container_literal(f.default, f.type.name, {})
-                    else:
-                        vt = self.check_expr(f.default, {})
-                        self.check_assignable(f.type.name, vt)
+                    self.check_default_value(
+                        f"{name}.{f.name}", f.type.name, f.default,
+                        "default value must be a compile-time literal/const/container literal")
         for name, f in self.funcs.items():
+            self.cur_pos = self.pos_of(f)
             for pn, pt in f.params:
                 self.check_type_name(pt.name)
             if f.ret:
-                self.check_type_name(f.ret.name)
+                self.check_type_name(f.ret.name, allow_void=True)
         for name, c in self.controllers.items():
+            self.cur_pos = self.pos_of(c)
             for m in c.methods:
+                self.cur_pos = self.pos_of(m) or self.pos_of(c)
                 for pn, pt in m.params:
                     self.check_type_name(pt.name)
                 if m.ret:
-                    self.check_type_name(m.ret.name)
+                    self.check_type_name(m.ret.name, allow_void=True)
         for name, h in self.handlers.items():
+            self.cur_pos = self.pos_of(h)
             for m in h.methods:
+                self.cur_pos = self.pos_of(m) or self.pos_of(h)
                 for pn, pt in m.params:
                     self.check_type_name(pt.name)
                 if m.ret:
-                    self.check_type_name(m.ret.name)
+                    self.check_type_name(m.ret.name, allow_void=True)
         for ns, funcs in self.namespaces.items():
+            self.cur_pos = self.ns_pos.get(ns)
             for fname, f in funcs.items():
+                self.cur_pos = self.pos_of(f) or self.ns_pos.get(ns)
                 for pn, pt in f.params:
                     self.check_type_name(pt.name)
                 if f.ret:
-                    self.check_type_name(f.ret.name)
+                    self.check_type_name(f.ret.name, allow_void=True)
         for sname, st in self.statics.items():
+            self.cur_pos = self.static_pos.get(sname)
             for fname, f in st["funcs"].items():
+                self.cur_pos = self.pos_of(f) or self.static_pos.get(sname)
                 for pn, pt in f.params:
                     self.check_type_name(pt.name)
                 if f.ret:
-                    self.check_type_name(f.ret.name)
+                    self.check_type_name(f.ret.name, allow_void=True)
         for name, d in self.consts.items():
+            self.cur_pos = self.pos_of(d)
             self.check_type_name(d.type.name)
             vt = self.check_expr(d.value, {})
             # ``const`` is emitted as a C macro and expanded at every use
@@ -343,6 +481,7 @@ class Checker:
                     f"const {name}: initializer must be a compile-time constant "
                     f"(literal, enum member, another const, or arithmetic on them)")
             self.check_assignable(d.type.name, vt)
+        self.cur_pos = None
 
     def is_pure_const(self, e) -> bool:
         """True when ``e`` can be expanded as a C macro with no side effects."""
@@ -378,6 +517,12 @@ class Checker:
             if s.default is None:
                 return False
             return all(self.stmt_returns(b) for _, b in s.cases) and self.stmt_returns(s.default)
+        if isinstance(s, While):
+            # `while (true) {}` never falls through; a reachable break means it can.
+            return self.is_infinite_cond(s.cond) and not self.loop_body_breaks(s.body)
+        if isinstance(s, For):
+            # `for (;;) {}` / `for (; true;) {}` never falls through.
+            return self.is_infinite_cond(s.cond) and not self.loop_body_breaks(s.body)
         return False
 
     def is_const_case(self, e) -> bool:
@@ -444,6 +589,13 @@ class Checker:
                 ty = et
                 if ty in ("null", None):
                     self.err(f"cannot infer type of var {s.name} (add annotation)")
+                if ty == "void":
+                    self.err(f"cannot use a void expression as the initializer of var {s.name}")
+            names = getattr(env, "declared", None)
+            if names is not None:
+                if s.name in names:
+                    self.err(f"duplicate variable {s.name} in the same scope")
+                names.add(s.name)
             env[s.name] = ty
             s.ty = ty
         elif isinstance(s, Assign):
@@ -457,25 +609,25 @@ class Checker:
             self.check_expr(s.expr, env)
         elif isinstance(s, If):
             self.check_cond(s.cond, env)
-            self.check_stmt(s.then, dict(env))
+            self.check_stmt(s.then, Scope(env))
             if s.els:
-                self.check_stmt(s.els, dict(env))
+                self.check_stmt(s.els, Scope(env))
         elif isinstance(s, While):
             self.check_cond(s.cond, env)
             self.loop_depth += 1
             self.break_depth += 1
-            self.check_stmt(s.body, dict(env))
+            self.check_stmt(s.body, Scope(env))
             self.break_depth -= 1
             self.loop_depth -= 1
         elif isinstance(s, For):
-            fenv = dict(env)
+            fenv = Scope(env)
             if s.init:
                 self.check_stmt(s.init, fenv)
             if s.cond:
                 self.check_cond(s.cond, fenv)
             self.loop_depth += 1
             self.break_depth += 1
-            self.check_stmt(s.body, dict(fenv))
+            self.check_stmt(s.body, Scope(fenv))
             self.break_depth -= 1
             self.loop_depth -= 1
             if s.step:
@@ -483,7 +635,7 @@ class Checker:
         elif isinstance(s, ForEach):
             it = self.check_expr(s.iter, env)
             kind, et = self.container_info(it)
-            fenv = dict(env)
+            fenv = Scope(env)
             if s.kind == "of":
                 if kind not in ("array", "linked"):
                     self.err(f"for-of requires Array/Linked, got {it}")
@@ -517,29 +669,30 @@ class Checker:
             for val, body in s.cases:
                 vt = self.check_expr(val, env)
                 if ct == "String":
-                    if vt != "String" or not isinstance(val, StrLit):
-                        self.err("String switch case value must be a string literal")
-                    k = ("str", val.value)
+                    if vt != "String":
+                        self.err("String switch case value must be a string")
+                    if not self.is_const_case(val):
+                        self.err("case value must be a constant")
+                    sv = self.case_string_value(val)
+                    if sv is None:
+                        self.err("String switch case value must be a string literal or enum member")
+                    k = ("str", sv)
                 else:
                     self.check_assignable(ct, vt)
                     if not self.is_const_case(val):
                         self.err("case value must be a constant")
-                    if isinstance(val, IntLit):
-                        k = ("int", val.value)
-                    elif isinstance(val, Unary) and val.op == "-" and isinstance(val.expr, IntLit):
-                        k = ("int", -val.expr.value)
-                    else:
-                        k = None
+                    iv = self.case_int_value(val)
+                    k = ("int", iv) if iv is not None else None
                 if k is not None:
                     if k in seen:
                         self.err("duplicate case value")
                     seen.add(k)
-                self.check_block(body, dict(env))
+                self.check_block(body, Scope(env))
             if s.default:
-                self.check_block(s.default, dict(env))
+                self.check_block(s.default, Scope(env))
             self.break_depth -= 1
         elif isinstance(s, Block):
-            self.check_block(s, dict(env))
+            self.check_block(s, Scope(env))
         elif isinstance(s, (Break, Continue)):
             if isinstance(s, Break):
                 if self.break_depth <= 0:
@@ -655,12 +808,17 @@ class Checker:
             et = None
             for it in e.items:
                 t = self.check_expr(it, env)
+                if t == "void":
+                    self.err("cannot use a void value in an array literal")
                 if t == "null":
                     continue
                 if et is None:
                     et = t
                 elif et != t:
-                    self.err(f"array literal elements must share one type: {et} vs {t}")
+                    merged = self.merge_numeric(et, t)
+                    if merged is None:
+                        self.err(f"array literal elements must share one type: {et} vs {t}")
+                    et = merged
             if et is None:
                 self.err("cannot infer element type of array literal")
             e.ty = f"Array<{et}>"
@@ -670,12 +828,17 @@ class Checker:
             vt = None
             for k, v in e.pairs:
                 t = self.check_expr(v, env)
+                if t == "void":
+                    self.err("cannot use a void value in an object literal")
                 if t == "null":
                     continue
                 if vt is None:
                     vt = t
                 elif vt != t:
-                    self.err(f"object literal values must share one type: {vt} vs {t}")
+                    merged = self.merge_numeric(vt, t)
+                    if merged is None:
+                        self.err(f"object literal values must share one type: {vt} vs {t}")
+                    vt = merged
             if vt is None:
                 self.err("cannot infer value type of object literal")
             e.ty = f"Map<{vt}>"
@@ -902,6 +1065,96 @@ class Checker:
                 q = -q
             return q if e.op == "/" else a - q * b
         return None
+
+    def merge_numeric(self, a: str, b: str):
+        """Widened type when both are numeric, else None (literal inference)."""
+        ar = self.numeric_rank(a)
+        br = self.numeric_rank(b)
+        if ar < 0 or br < 0:
+            return None
+        rank = max(ar, br)
+        return "double" if rank >= 2 else ("long" if rank == 1 else "int")
+
+    def case_int_value(self, e, depth=0):
+        """Compile-time integer value of a switch case expression, or None."""
+        if depth > 32:
+            return None
+        if isinstance(e, IntLit):
+            return e.value
+        if isinstance(e, Unary) and e.op == "-":
+            v = self.case_int_value(e.expr, depth + 1)
+            return -v if v is not None else None
+        if isinstance(e, Ident) and e.name in self.consts:
+            return self.case_int_value(self.consts[e.name].value, depth + 1)
+        if isinstance(e, Member) and getattr(e, "is_enum", False) \
+                and isinstance(e.obj, Ident) and e.obj.name in self.enums:
+            en = self.enums[e.obj.name]
+            if en["type"] == "int":
+                for mn, mv in en["members"]:
+                    if mn == e.name:
+                        return mv
+            return None
+        if isinstance(e, Binary) and e.op in ("+", "-", "*", "/", "%"):
+            a = self.case_int_value(e.left, depth + 1)
+            b = self.case_int_value(e.right, depth + 1)
+            if a is None or b is None:
+                return None
+            if e.op == "+":
+                return a + b
+            if e.op == "-":
+                return a - b
+            if e.op == "*":
+                return a * b
+            if b == 0:
+                return None
+            q = abs(a) // abs(b)
+            if (a < 0) != (b < 0):
+                q = -q
+            return q if e.op == "/" else a - q * b
+        return None
+
+    def case_string_value(self, e):
+        """Compile-time String value of a switch case expression, or None."""
+        if isinstance(e, StrLit):
+            return e.value
+        if isinstance(e, Ident) and e.name in self.consts:
+            c = self.consts[e.name]
+            if c.type.name == "String":
+                return self.case_string_value(c.value)
+            return None
+        if isinstance(e, Member) and getattr(e, "is_enum", False) \
+                and isinstance(e.obj, Ident) and e.obj.name in self.enums:
+            en = self.enums[e.obj.name]
+            if en["type"] == "String":
+                for mn, mv in en["members"]:
+                    if mn == e.name:
+                        return mv
+            return None
+        return None
+
+    def is_infinite_cond(self, cond) -> bool:
+        """True for ``for(;;)`` / ``while(true)`` / ``while(1)`` style loops."""
+        if cond is None:
+            return True
+        if isinstance(cond, BoolLit):
+            return cond.value
+        if isinstance(cond, IntLit):
+            return cond.value != 0
+        return False
+
+    def loop_body_breaks(self, s) -> bool:
+        """Does the loop body contain a ``break`` that exits *this* loop?"""
+        if isinstance(s, Break):
+            return True
+        if isinstance(s, (While, For, ForEach, Switch)):
+            # break inside a nested loop/switch targets the inner construct
+            return False
+        if isinstance(s, Block):
+            return any(self.loop_body_breaks(x) for x in s.stmts)
+        if isinstance(s, If):
+            return self.loop_body_breaks(s.then) or (
+                s.els is not None and self.loop_body_breaks(s.els))
+        return False
 
     def is_event_subtype(self, child: str, base: str) -> bool:
         """True when `child` is `base` or inherits it (event/struct field flattening)."""
@@ -1582,7 +1835,9 @@ class Checker:
                 self.check_type_name(ty)
                 if ty not in self.structs:
                     self.err(f"Cache.get: {ty} is not a struct/event type")
-                self.check_expr(e.args[1], env)
+                ot = self.check_expr(e.args[1], env)
+                if ot not in ("int", "long"):
+                    self.err("Cache.get: oid must be int/long")
                 e.ty = ty
                 e.cache_op = "get"
                 e.cache_type = ty
@@ -1610,10 +1865,12 @@ class Checker:
                 if len(e.args) != 2 or not isinstance(e.args[0], Ident):
                     self.err(f"Model.{name}(Type, oid) expects a type name and oid")
                 ty = e.args[0].name
-                self.check_type_name(ty)
+                self.check_type_name(ty, allow_roots=True)
                 if ty not in self.structs and ty not in ("Vo",):
                     self.err(f"Model.{name}: {ty} is not a struct/event type")
-                self.check_expr(e.args[1], env)
+                ot = self.check_expr(e.args[1], env)
+                if ot not in ("int", "long"):
+                    self.err(f"Model.{name}: oid must be int/long")
                 e.ty = ty
                 e.model_op = name
                 e.model_type = ty
@@ -1632,7 +1889,9 @@ class Checker:
                     self.err("Model.remove(Type, oid) expects a type name and oid")
                 ty = e.args[0].name
                 self.check_type_name(ty)
-                self.check_expr(e.args[1], env)
+                ot = self.check_expr(e.args[1], env)
+                if ot not in ("int", "long"):
+                    self.err("Model.remove: oid must be int/long")
                 e.ty = "void"
                 e.model_op = "remove"
                 e.model_type = ty
@@ -1643,7 +1902,9 @@ class Checker:
             name = e.func.name
             if name == "print":
                 for a in e.args:
-                    self.check_expr(a, env)
+                    at = self.check_expr(a, env)
+                    if at == "void":
+                        self.err("print: cannot print a void expression")
                 e.ty = "void"
                 e.builtin = "print"
                 return
@@ -1893,19 +2154,25 @@ class Checker:
             return "linked", ty[7:-1]
         return None, None
 
-    def check_type_name(self, ty):
+    def check_type_name(self, ty, allow_void=False, allow_roots=False):
         kind, et = self.container_info(ty)
         if kind:
             if et in ("void", "null", "") or et.startswith("Array<") and not et.endswith(">"):
                 self.err(f"invalid container type {ty}")
-            self.check_type_name(et)
+            self.check_type_name(et, allow_void=allow_void, allow_roots=allow_roots)
             return
         if ty in BUILTIN:
+            if ty == "void" and not allow_void:
+                self.err("void cannot be used as a value type")
             return
         if ty in self.statics:
             self.err(f"static {ty} cannot be used as a value type")
-        if ty in self.structs or ty in ROOTS:
+        if ty in self.structs:
             return
+        if ty in ROOTS:
+            if allow_roots:
+                return
+            self.err(f"{ty} cannot be used as a value type")
         self.err(f"unknown type {ty}")
 
     def field_type(self, ty, field):
@@ -1923,16 +2190,27 @@ class Checker:
             return True
         return ty in self.structs
 
+    @staticmethod
+    def numeric_rank(ty: str) -> int:
+        """Widening rank (lower -> higher); ``-1`` for non-numeric types."""
+        return {"bool": 0, "int": 0, "long": 1, "float": 2, "double": 2}.get(ty, -1)
+
     def check_assignable(self, target, value):
         if value == "null":
             if self.is_ref_type(target):
                 return
             self.err(f"cannot assign null to {target}")
+        if value == "void":
+            self.err("cannot use a void value as an expression")
         if target == value:
-            return
-        if target in NUMERIC and value in NUMERIC:
             return
         if target in ("bool", "int") and value in ("bool", "int"):
             return
+        tr = self.numeric_rank(target)
+        vr = self.numeric_rank(value)
+        if tr >= 0 and vr >= 0:
+            if tr >= vr:
+                return
+            self.err(f"cannot assign {value} to {target} (narrowing conversion is not allowed)")
         # String is strict; refs strict
         self.err(f"cannot assign {value} to {target}")

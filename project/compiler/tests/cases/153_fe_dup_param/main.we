@@ -1,0 +1,13 @@
+module demo.fe_dup_param;
+
+func add(x: int, x: int): int {
+    return x;
+}
+
+controller Main {
+    run() {
+        print(add(1, 2));
+    }
+}
+
+entry Main;

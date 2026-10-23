@@ -1,0 +1,14 @@
+module demo.fe_decl_position;
+
+struct BadVo {
+    a: int;
+    b: Nope;
+}
+
+controller Main {
+    run() {
+        print(1);
+    }
+}
+
+entry Main;

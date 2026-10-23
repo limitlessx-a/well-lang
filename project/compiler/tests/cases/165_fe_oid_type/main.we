@@ -1,0 +1,16 @@
+module demo.fe_oid_type;
+
+struct ItemVo {
+    n: int;
+}
+
+controller Main {
+    run() {
+        var item = Model.get(ItemVo, "not-an-oid");
+        if (item == null) {
+            print("null");
+        }
+    }
+}
+
+entry Main;

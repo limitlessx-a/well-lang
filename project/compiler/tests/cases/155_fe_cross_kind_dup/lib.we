@@ -1,0 +1,5 @@
+module demo.fe_cross_kind_dup.lib;
+
+func S(): int {
+    return 1;
+}

@@ -1,0 +1,19 @@
+module demo.fe_infinite_loop_return;
+
+func spin(): int {
+    while (true) {
+    }
+}
+
+func spin2(): int {
+    for (;;) {
+    }
+}
+
+controller Main {
+    run() {
+        print(1);
+    }
+}
+
+entry Main;

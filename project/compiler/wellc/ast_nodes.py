@@ -192,6 +192,7 @@ class ConstDecl:
 class EnumDecl:
     name: str
     members: list[tuple[str, Optional[Any]]]  # (name, int|str|None)
+    base: Optional["TypeRef"] = None          # explicit `enum E: String` annotation
 
 
 @dataclass

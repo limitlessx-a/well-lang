@@ -1,0 +1,15 @@
+module demo.fe_cross_kind_dup;
+
+import "lib.we";
+
+struct S {
+    x: int;
+}
+
+controller Main {
+    run() {
+        print(1);
+    }
+}
+
+entry Main;

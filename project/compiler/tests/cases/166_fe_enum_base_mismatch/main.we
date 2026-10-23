@@ -1,0 +1,13 @@
+module demo.fe_enum_base_mismatch;
+
+enum Bad: String {
+    A = 1;
+}
+
+controller Main {
+    run() {
+        print(1);
+    }
+}
+
+entry Main;

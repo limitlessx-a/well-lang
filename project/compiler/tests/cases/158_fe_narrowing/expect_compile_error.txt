@@ -1,0 +1,1 @@
+narrowing conversion is not allowed

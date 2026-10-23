@@ -1,0 +1,10 @@
+module demo.fe_narrowing;
+
+controller Main {
+    run() {
+        var big: int = 5000000000;
+        print(big);
+    }
+}
+
+entry Main;

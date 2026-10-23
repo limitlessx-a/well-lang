@@ -1,0 +1,1 @@
+duplicate variable x in the same scope

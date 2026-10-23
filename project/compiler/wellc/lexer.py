@@ -118,7 +118,9 @@ def lex(src: str, filename: str = "<src>") -> list[Token]:
                         err("unterminated string")
                     esc = src[i]
                     mapping = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "0": "\0"}
-                    buf.append(mapping.get(esc, esc))
+                    if esc not in mapping:
+                        err(f"unknown escape sequence '\\{esc}'")
+                    buf.append(mapping[esc])
                     col += 2
                 else:
                     buf.append(src[i])
