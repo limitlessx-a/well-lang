@@ -1588,7 +1588,8 @@ class Checker:
                 if len(e.args) != len(f.params):
                     self.err(f"{name} expects {len(f.params)} arguments, got {len(e.args)}")
                 for i, a in enumerate(e.args):
-                    self.check_expr(a, env)
+                    at = self.check_expr(a, env)
+                    self.check_assignable(f.params[i][1].name, at)
                 e.ty = f.ret.name if f.ret else "void"
                 e.call_user = name
                 return

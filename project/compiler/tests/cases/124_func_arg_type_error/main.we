@@ -1,0 +1,13 @@
+module demo.func_arg_type_error;
+
+func add(a: int, b: int): int {
+    return a + b;
+}
+
+controller Main {
+    run() {
+        print(add("x", "y"));
+    }
+}
+
+entry Main;
