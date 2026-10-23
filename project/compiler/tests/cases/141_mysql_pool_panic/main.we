@@ -1,0 +1,33 @@
+module demo.mysql_pool_panic;
+
+event StepEvent extends Event {
+    n: int;
+}
+
+controller C {
+    run() {
+        Mysql.pool("127.0.0.1", 3306, "root", "db@root", "mysql", 1, 1);
+        on(StepEvent, StepHandler);
+        emit(new StepEvent(1) { n: 1 });
+        emit(new StepEvent(1) { n: 2 });
+        emit(new StepEvent(1) { n: 3 });
+    }
+}
+
+handler StepHandler {
+    onEvent(e: StepEvent) {
+        if (e.n == 1) {
+            print("bad-sql");
+            Mysql.execPool("SELECT * FROM no_such_table_well");
+            print("bad-sql-did-not-panic");
+        } else if (e.n == 2) {
+            Mysql.execPool("SET @well_after_panic = 1");
+            print("reused");
+        } else {
+            Mysql.closePool();
+            print("closed");
+        }
+    }
+}
+
+entry C;

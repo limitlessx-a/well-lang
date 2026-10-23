@@ -1,0 +1,29 @@
+module demo.mysql_exec_resultset;
+
+event StepEvent extends Event {
+    n: int;
+}
+
+controller C {
+    run() {
+        Mysql.connect("127.0.0.1", 3306, "root", "db@root", "mysql");
+        on(StepEvent, StepHandler);
+        emit(new StepEvent(1) { n: 1 });
+        emit(new StepEvent(1) { n: 2 });
+    }
+}
+
+handler StepHandler {
+    onEvent(e: StepEvent) {
+        if (e.n == 1) {
+            print("exec-select");
+            Mysql.exec("SELECT 1 AS a, 2 AS b");
+            print("exec-did-not-panic");
+        } else {
+            var j: String = Mysql.queryJson("SELECT 42 AS x");
+            print("after=", j);
+        }
+    }
+}
+
+entry C;
