@@ -94,7 +94,8 @@ python tools/bench.py --scenario all --json build/bench/result.json
 - 编译器/构建说明：[`project/compiler/README.md`](project/compiler/README.md)
 - VSCode 插件：[`project/vscode_extension/README.md`](project/vscode_extension/README.md)
 - 路线图与优先级：[`project/document/待开发功能-优先级.md`](project/document/待开发功能-优先级.md)
-- 代码审计：[`project/document/核心代码审计.md`](project/document/核心代码审计.md)（2026-10-23 重做版，含修复进度）
+- 代码审计（第一轮修复版）：[`project/document/核心代码审计.md`](project/document/核心代码审计.md)（110 条全部闭环）
+- 代码审计（第二轮复核）：[`project/document/核心代码审计-第二轮.md`](project/document/核心代码审计-第二轮.md)（修复复核 + 新发现 P0×3 / P1×15）
 - 修改日志：[`project/document/修改日志.md`](project/document/修改日志.md)
 - 审计/修复明细与复现脚本：`project/tool_ai/audit/`、`project/tool_ai/tmp/`（本地证据，不入版本库）
 
