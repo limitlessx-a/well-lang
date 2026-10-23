@@ -796,7 +796,43 @@ typedef struct {
     int n;
     int cap;
 } WellLitTable;
-static WellLitTable g_lits = {NULL, 0, 0};
+
+/* The interned-literal table is read on every evaluation of a string literal
+ * (codegen inlines well_string_lit() into worker/handler code) but appended to
+ * only the first time a given literal is seen. Appending therefore uses a
+ * copy-on-write snapshot: a published snapshot is immutable, so the lookup fast
+ * path needs no lock; writers serialize on g_lits_lock and publish a new
+ * snapshot descriptor. The items array is shared between snapshots while it has
+ * spare capacity: an append writes slot `n`, which every older snapshot (with a
+ * smaller `n`) never reads, so concurrent lock-free readers cannot observe a
+ * half-written entry. Snapshots are process-lifetime and intentionally leaked
+ * (same as the interned strings themselves). */
+static WellLitTable *g_lits_pub = NULL;
+static WellLock g_lits_lock = 0;
+
+/* Acquire/release publication of the snapshot pointer. The fallback matches the
+ * single-threaded fallback used by well_atomic_* for compilers without builtins
+ * (e.g. TinyCC on POSIX). */
+static WellLitTable *lits_pub_load(void) {
+#ifdef _WIN32
+    return (WellLitTable *)InterlockedCompareExchangePointer(
+        (PVOID volatile *)&g_lits_pub, NULL, NULL);
+#elif defined(__GNUC__) || defined(__clang__)
+    return __atomic_load_n(&g_lits_pub, __ATOMIC_ACQUIRE);
+#else
+    return g_lits_pub;
+#endif
+}
+
+static void lits_pub_store(WellLitTable *t) {
+#ifdef _WIN32
+    InterlockedExchangePointer((PVOID volatile *)&g_lits_pub, (PVOID)t);
+#elif defined(__GNUC__) || defined(__clang__)
+    __atomic_store_n(&g_lits_pub, t, __ATOMIC_RELEASE);
+#else
+    g_lits_pub = t;
+#endif
+}
 
 /* FNV-1a 64-bit (public domain); strings are immutable so hash is cached. */
 static unsigned long long hash_bytes(const char *s, size_t n) {
@@ -848,26 +884,73 @@ WellString *well_string_new(const char *src) {
     return string_alloc(src);
 }
 
-WellString *well_string_lit(const char *src) {
+static WellString *lits_lookup(WellLitTable *t, const char *key) {
     int i;
-    WellString *s;
-    if (!g_inited) well_init();
-    for (i = 0; i < g_lits.n; i++) {
-        if (strcmp(g_lits.items[i]->data, src ? src : "") == 0)
-            return g_lits.items[i];
+    if (!t) return NULL;
+    for (i = 0; i < t->n; i++) {
+        if (strcmp(t->items[i]->data, key) == 0) return t->items[i];
     }
-    s = string_alloc(src);
+    return NULL;
+}
+
+/* Slow path: only reached the first time a literal is evaluated. Caller does
+ * not hold g_lits_lock. The string is allocated before taking the lock so a
+ * well_panic()/longjmp on OOM can never leave the spinlock held; re-checking
+ * after the lock handles another worker interning the same literal meanwhile. */
+static WellString *lits_insert(const char *key) {
+    WellLitTable *t, *nt;
+    WellString *s, *found;
+    int n, cap;
+    s = string_alloc(key);
     s->hdr.flags |= WELL_FLAG_IMMORTAL;
     g_live--; /* literals are process-lifetime and not "live objects" */
-    if (g_lits.n == g_lits.cap) {
-        int ncap = g_lits.cap ? g_lits.cap * 2 : 32;
-        WellString **ni = (WellString **)realloc(g_lits.items, (size_t)ncap * sizeof(WellString *));
-        if (!ni) well_panic("out of memory (literals)");
-        g_lits.items = ni;
-        g_lits.cap = ncap;
+    well_lock_acquire(&g_lits_lock);
+    t = lits_pub_load();
+    found = lits_lookup(t, key);
+    if (found) {
+        free(s); /* another worker interned it first */
+        well_lock_release(&g_lits_lock);
+        return found;
     }
-    g_lits.items[g_lits.n++] = s;
+    n = t ? t->n : 0;
+    cap = t ? t->cap : 0;
+    nt = (WellLitTable *)malloc(sizeof(WellLitTable));
+    if (!nt) {
+        well_lock_release(&g_lits_lock);
+        well_panic("out of memory (literals)");
+    }
+    if (n == cap) {
+        WellString **ni;
+        int ncap = cap ? cap * 2 : 32;
+        ni = (WellString **)malloc((size_t)ncap * sizeof(WellString *));
+        if (!ni) {
+            free(nt);
+            well_lock_release(&g_lits_lock);
+            well_panic("out of memory (literals)");
+        }
+        if (t && n > 0) memcpy(ni, t->items, (size_t)n * sizeof(WellString *));
+        nt->items = ni;
+        nt->cap = ncap;
+    } else {
+        /* Spare capacity: append into slot n of the shared array. Older
+         * snapshots only scan indices < their own n, so slot n is invisible to
+         * them until the new snapshot is published below. */
+        nt->items = t->items;
+        nt->cap = cap;
+    }
+    nt->items[n] = s;
+    nt->n = n + 1;
+    lits_pub_store(nt);
+    well_lock_release(&g_lits_lock);
     return s;
+}
+
+WellString *well_string_lit(const char *src) {
+    const char *key = src ? src : "";
+    WellString *s;
+    if (!g_inited) well_init();
+    s = lits_lookup(lits_pub_load(), key);
+    return s ? s : lits_insert(key);
 }
 
 WellString *well_string_concat(WellString *a, WellString *b) {

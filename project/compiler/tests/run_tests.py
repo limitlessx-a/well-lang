@@ -583,6 +583,7 @@ def run_c_tests() -> bool:
         ("work_stealing_test", "work stealing ok"),
         ("json_deep_test", "json deep nesting rejected"),
         ("store_cycle_test", "store cycle reload ok"),
+        ("rtfix_string_lit_race", "rtfix string literal race: bad=0"),
     ]
     ok = True
     os.makedirs(BUILD, exist_ok=True)
