@@ -208,16 +208,22 @@ Bytes（可变字节缓冲）：
 
 ```c
 typedef struct WellObj {
-    int rc;
+    long long oid;
+    void *exec_pins;
+    struct WellObj *reg_next;
+    struct WellObj *reg_prev;
+    WellAtomicInt rc;
     unsigned int type_id;
     unsigned int flags;
-    long long oid;
-} WellObj;
+    unsigned int alloc_size;   /* 32-bit: pool class / allocation size */
+} WellObj;                     /* 48 bytes (8-byte fields first, no padding) */
 ```
 
-每个 struct/event 的第一个字段是 `WellObj hdr`；`String` 是 `{ WellObj hdr; char* data; }`。
+每个 struct/event 的第一个字段是 `WellObj hdr`；`String` 是 `{ WellObj hdr; unsigned long long hash; long long len; }`，字节数据始终内联在 header 之后，用 `well_str_data(s)`（即 `(char *)(s + 1)`）访问。
+`WellObj` 为 48B、`WellString` 为 64B、`WellBytes` 为 72B（v1：56B/80B/80B）。`alloc_size` 是 32 位；
+大于 `POOL_MAX_SIZE` 的对象记 0（释放时直接 `free`），因此不需要 64 位大小字段。
 
-`WellString` 的 header 与字节数据在**同一块 malloc** 中（`data` 指向 header 之后），减少一次分配/释放；空操作数拼接（`"" + b`、`a + ""`）直接 retain 另一侧，不分配/复制。
+`WellString` 的 header 与字节数据在**同一块 malloc / size-class 池块**中（字节紧跟在 header 之后，`well_str_data(s)` 访问），减少一次分配/释放；`hash` 在首次用于 Map key/相等比较时惰性计算（`WELL_FLAG_HASHED`），空操作数拼接（`"" + b`、`a + ""`）直接 retain 另一侧，不分配/复制。
 
 ### 3.2 引用计数（设计稿 A 方案）
 
@@ -239,8 +245,9 @@ typedef struct WellObj {
   - **POSIX 编译器选择**：TinyCC 0.9.27 的 Linux 端口没有 `__atomic_*`/`__sync_*` 内建函数（会退化成隐式函数声明、链接失败），因此 POSIX 默认优先 gcc/clang；Windows 路径用 Interlocked，TCC 仍是 Windows 默认（见 §7 工具链）。
   - 线程局部状态（panic 目标、源码位置、临时对象栈、HTTP 当前请求）在 POSIX 上使用 `pthread_key_*`（`well_thread.c` 的 `well_tls_*`），不依赖编译器 `__thread`（TCC 不支持）；Windows 仍用 TLS 槽 / `__declspec(thread)`。
 - **级联释放**：对象 rc=0 时，生成的 `destroy_wt_<T>` 先 release 所有引用字段，再 `free`。
+- **String 释放**：String 从不进入 oid registry、也没有 event payload pin，`well_release` 对 `WELL_T_STRING` 跳过 `well_registry_remove`/unpin（省一次分片自旋锁）。
 - **成环**：允许（运行时不做 DFS 检查）；环随 oid 过期整组回收，见 §3.15。
-- `WELL_RC_DEBUG=1` 时，进程结束打印 `well: live objects at shutdown = N`；正常程序应为 0。
+- `WELL_RC_DEBUG=1` 时开启 live 对象计数，进程结束打印 `well: live objects at shutdown = N`（正常应为 0）。计数默认关闭：普通运行不为每次对象分配/释放做全局原子 RMW；C 测试 runner 会自动设置该环境变量，`well_live_count()`/泄漏断言仍可用。
 
 ### 3.2.1 DAG / 环检测
 
@@ -417,14 +424,16 @@ typedef struct WellStore {
 - API：`Http.route(path, method, Handler)`、`Http.listen(port)`、`Http.respond(reqId,status,body)`、`Http.stop()`；
 - `Http.listen` 非阻塞：启动监听线程与超时清扫线程，并 `well_service_hold()`；主线程进入 `well_run_loop`，`Http.stop()` 释放服务后返回；
 - listener 只做 accept：每个连接交给独立 reader 线程，连接之间互不阻塞；每连接持有一个 service 计数，连接关闭前 run loop 不会退出；
-- reader 线程按需循环读请求（**HTTP/1.1 默认 keep-alive**，`Connection: close` 时单次；HTTP/1.0 需显式 `Connection: keep-alive`），把请求作为 task 投递到该请求 oid 的队列，然后等待响应写出（`written`）再读下一个请求；
+- reader 线程按需循环读请求（**HTTP/1.1 默认 keep-alive**，`Connection: close` 时单次；HTTP/1.0 需显式 `Connection: keep-alive`），然后等待响应写出（`written`）再读下一个请求；
+- **处理器内联执行（默认）**：每个请求有全新 oid，互不冲突，因此 reader 线程直接以 `WellCtx(reqId)` 调用 route handler，省去 task 入队、worker 唤醒和回切；panic 仍由 setjmp 隔离。`WELL_HTTP_INLINE=0` 可回退到“每请求 task 投递到 worker”的旧路径（保留用于对比/特殊场景）；
 - **保留跨请求残余字节**（`scratch` 滚动缓冲）：一次 `recv` 多读到的下一个请求/body 尾部不丢弃，下一次循环从缓冲区继续解析，因此支持**顺序 pipelining**（同一连接上流水线发送的请求依次得到响应；同一时刻仍只有一个在飞请求）；
+- **pipelined 响应批量发送**：inline handler 的响应先格式化进每连接 `outbuf`；`scratch` 里还有完整下一个请求时继续处理，没有才一次 `send`。`Http.stop()` 在 handler 内调用时先 flush 当前连接，避免 shutdown 抢先。depth32/8 连接实测 953k req/s（v1 88.3k）；
 - 空闲连接超过 `WELL_HTTP_IDLE_TIMEOUT_MS`（15s）没有新请求则关闭（`SO_RCVTIMEO`）；发送侧设 `WELL_HTTP_SEND_TIMEOUT_MS`（15s，`SO_SNDTIMEO`），慢读客户端不会永久阻塞连接线程；
-- handler 在 worker 线程执行（每请求一个 task，run-to-completion）；handler 内可 `emit` 业务事件，由另一个 oid 的 handler 稍后响应；
+- handler 在连接线程（默认）或 worker 线程（`WELL_HTTP_INLINE=0`）执行，run-to-completion；handler 内可 `emit` 业务事件，由另一个 oid 的 handler 稍后响应；
 - `Http.respond(reqId, status, body)` 可在任意 oid/handler 中调用，首个响应生效：认领 `responded` 后写响应（`Connection: keep-alive/close` 按请求决定），置 `written` 通知 reader；后续调用为空操作；
-- 同步响应快速路径：http task 在进入 handler 前把当前请求记录到线程局部（TLS），`Http.respond` 命中同一 reqId 时直接使用该指针，跳过全局请求表锁；异步响应（业务 oid）仍走哈希表；
+- 同步响应快速路径：进入 handler 前把当前请求记录到线程局部（TLS），`Http.respond` 命中同一 reqId 时直接使用该指针，跳过全局请求表锁；异步响应（业务 oid）仍走哈希表；
 - 引用计数：请求（list + 连接线程 + task）、连接（list + 每个在飞请求），各自最后引用释放时销毁；响应者（handler/清扫线程）只写响应、不释放请求引用，请求引用统一由连接线程在 `written` 后释放；
-- 请求结构体本身有上限 64 的对象池，避免每请求 calloc/free；
+- 请求结构体本身有上限 64 的对象池，避免每请求 calloc/free；keep-alive 连接缓存上一次的 path `String`，同路径请求不再分配/哈希；
 - 超时清扫线程：`WELL_HTTP_TIMEOUT_MS`（5s）内无人响应则返回 504 并关闭该连接；504 响应强制 `Connection: close`（连接随后即关闭，不给客户端留下"可复用"的错觉），清扫线程写响应期间对请求加引用，避免与连接线程的释放竞争；
 - 路由按 method + path 精确匹配，未命中返回 404；连接级缓存上一次的 `method+path -> route`，keep-alive 下命中即跳过模块锁；
 - 自写 parser：request line（仅 origin-form `/...`，method 必须是 RFC 7230 token）、headers、严格 Content-Length、body；
@@ -443,7 +452,7 @@ typedef struct WellStore {
 - API：`Ws.route(path, OpenHandler, MessageHandler, CloseHandler)`、`Ws.listen`、`Ws.send`、`Ws.close`、`Ws.stop`；
 - `Ws.listen` 非阻塞：启动监听线程并 `well_service_hold()`；主线程进入 `well_run_loop`，`Ws.stop()` 后返回；
 - listener 只做 accept，每连接交给独立 reader 线程完成握手与收帧，因此已有连接不会阻塞新连接；
-- 每个连接是一个 oid；open/message/close handler 作为 task 投递到该 oid 队列（同 oid 单 runner，消息 FIFO）；
+- 每个连接是一个 oid；open/message/close handler 默认在**该连接的 reader 线程**直接执行（同一连接天然串行，省去每帧 task 入队/worker 唤醒），`WELL_WS_INLINE=0` 回退为投递到该 oid 的调度器队列；
 - `Ws.send/Ws.close(clientId, ...)` 按 clientId 查连接表，可从任意 handler（含业务 oid）调用；**每连接一把写锁**串行化帧写入（handler 线程与 reader 的 pong/close 不会交错帧），发送时不在全局锁内阻塞 `send`；
 - 连接对象引用计数（连接表 + 每个 task）；reader 退出后由最后一个引用释放；
 - 每连接持有一个 service 计数：连接未关闭时 run loop 不会退出；
@@ -538,7 +547,7 @@ python wellc.py build examples\features.we -o build\features.exe
 # 只生成 C
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
-# 端到端测试（188 个 .we 用例 + 18 个 C 测试；runner 默认 WELL_WORKERS=1）
+# 端到端测试（190 个 .we 用例 + 19 个 C 测试；runner 默认 WELL_WORKERS=1）
 python tests\run_tests.py
 
 # 一键回归（推荐）：默认全部 .we 用例 + C 测试 + check-cli；
@@ -557,7 +566,7 @@ python tools\bench.py --compare build\bench\baseline.json --threshold 30
 C 编译器查找顺序：`WELL_CC` → 仓库内 `project/tool_ai/tools/tcc/tcc/tcc.exe`（Windows 存在时，默认 TCC）→ PATH 中 `gcc`/`clang`/`tcc`（POSIX 优先 gcc/clang，见 §3.2 的 TinyCC 原子内建函数限制）。使用 gcc：`WELL_CC=gcc`（自动 `-O2 -fwrapv`）。
 额外参数用 `WELL_CFLAGS`（如 `-O2 -g`）；检测到 gcc/clang 时默认追加 `-O2`，并**始终**追加 `-fwrapv`（语言溢出语义，`WELL_CFLAGS` 不能关闭）；TCC 使用默认参数（不追加 `-O2`）。切换优化级别后先跑 `tools/verify.py`。
 本机验证环境：TinyCC 0.9.27 x86_64（仓库 `project/tool_ai/tools/tcc/`，Windows 默认）；已安装 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，x86_64-ucrt-posix-seh，`bin` 已加入用户 PATH；新终端可直接 `gcc --version`）。使用 `WELL_CC=gcc` 构建会自动 `-O2 -fwrapv`。CPU parser 微基准：TCC ≈11–14 µs/parse，GCC -O2 ≈6–8 µs/parse（约 1.8×）；HTTP 网络压测噪声大，未见稳定吞吐差异。gcc -O2 下已跑定向 HTTP/WS/JSON/TTL 用例 + 全部 C 测试，全量 `.we` 用例串行编译过慢（~25s/case），本机未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）跑全部 `.we` 用例（无 MySQL 的依赖用例 SKIP）。
-测试规模（2026-10-23）：**188 个 `.we` 用例 + 18 个 C 测试**；runner 默认 `WELL_WORKERS=1` 保证确定性。需要本机 MySQL 的 `52_mysql`/`53_mysql_pool`/`128_mysql_big_column`/`140_mysql_exec_resultset`/`141_mysql_pool_panic`/`169_mysql_json_escapes` 与 C `mysql_conn_test` 用 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP`（CI runner 无 MySQL 时不会误报）。
+测试规模（2026-11-10，V4）：**190 个 `.we` 用例 + 19 个 C 测试**（TinyCC 全量 `verify.py` ≈113 s）；runner 默认 `WELL_WORKERS=1` 保证确定性。需要本机 MySQL 的 `52_mysql`/`53_mysql_pool`/`128_mysql_big_column`/`140_mysql_exec_resultset`/`141_mysql_pool_panic`/`169_mysql_json_escapes` 与 C `mysql_conn_test` 用 `requires.txt` 声明依赖：`127.0.0.1:3306` 不可达时打印 `SKIP`（CI runner 无 MySQL 时不会误报）。
 诊断契约：`check` 人类可读模式每行 `FILE:LINE:COL: severity: message`；`--json` 只输出一个 JSON 对象，`diagnostics` 可含多条（同一方法体内仍首错即停），`code` 取值为 `lex`/`parse`/`semantic`/`import`/`internal`；退出码无 error=0（仅 warning 也算 0）、有 error=1、参数/IO 错误=2。
 
 ---

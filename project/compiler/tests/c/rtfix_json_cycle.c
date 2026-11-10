@@ -42,8 +42,8 @@ int main(void) {
     b->next = a; /* cycle: legal in the language */
 
     js = well_json_stringify(a, 0);
-    ok = js && well_string_len(js) > 0 && strstr(js->data, "\"v\":1") != NULL &&
-         strstr(js->data, "null") != NULL;
+    ok = js && well_string_len(js) > 0 && strstr(well_str_data(js), "\"v\":1") != NULL &&
+         strstr(well_str_data(js), "null") != NULL;
     printf("rtfix json cycle: len=%lld ok=%d\n",
            js ? well_string_len(js) : -1LL, ok);
     return ok ? 0 : 1;

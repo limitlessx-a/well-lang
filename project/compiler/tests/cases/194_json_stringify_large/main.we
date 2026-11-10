@@ -1,0 +1,18 @@
+module rt.json_stringify_large;
+
+// Exercises the Json.stringify output builder when the result outgrows its
+// 512-byte stack buffer (heap growth path).
+controller Main {
+    run() {
+        var a: Array<int> = [];
+        for (var i: int = 0; i < 1000; i = i + 1) {
+            a.push(i);
+        }
+        var s: String = Json.stringify(a, 0);
+        print(s.length);
+        print(s[0]);
+        print(s[s.length - 1]);
+    }
+}
+
+entry Main;

@@ -1,0 +1,28 @@
+﻿module bench.mysql;
+
+// Scalar-query round-trip benchmark (single connection, local test server).
+// Credentials match the MySQL test cases (project/compiler/tests/cases/52_mysql).
+controller MysqlBench {
+    run() {
+        Mysql.connect("127.0.0.1", 3306, "root", "db@root", "mysql");
+        var iters: int = 20000;
+        var acc: long = 0;
+        // Warm-up: auth + first query + server-side statement cache.
+        var warm: String = Mysql.queryJson("SELECT 1 AS x");
+        acc = acc + warm.length;
+        var t0: long = Host.nowMs();
+        for (var i: int = 0; i < iters; i = i + 1) {
+            var r: String = Mysql.queryJson("SELECT 1 AS x");
+            acc = acc + r.length;
+        }
+        var elapsed: long = Host.nowMs() - t0;
+        print("iters ", iters);
+        print("total_ms ", elapsed);
+        print("us_per_query ", elapsed * 1000 / iters);
+        print("checksum ", acc);
+        Mysql.close();
+    }
+}
+
+entry MysqlBench;
+

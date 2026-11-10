@@ -1,0 +1,26 @@
+﻿module bench.heapstrpush;
+
+struct Holder {
+    a: Array<String>;
+}
+
+controller HeapStrPushBench {
+    run() {
+        var n: long = 1000000;
+        var acc: long = 0;
+        var h: Holder = new Holder();
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            var a: Array<String> = [];
+            a.push("x");
+            a.push("yy");
+            h.a = a;
+            acc = acc + h.a[0].length + h.a[1].length;
+        }
+        var ms: long = Host.nowMs() - t0;
+        print("well-heapstrpush n=", n, " ms=", ms, " ns_per_op=", ms * 1000000 / n,
+              " acc=", acc);
+    }
+}
+
+entry HeapStrPushBench;

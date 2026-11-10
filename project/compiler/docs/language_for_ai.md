@@ -1,7 +1,7 @@
 # Well 语言与运行时（AI 参考）
 
 > 面向需要生成/修改 Well 代码的 AI。只覆盖三部分：**语法规则**、**实现方式**、**注意事项**。
-> 以当前实现为准（2026-10-23，188 个 `.we` 用例 + 18 个 C 测试）。冲突时以源码/测试为准。
+> 以当前实现为准（2026-11-10，V4，190 个 `.we` 用例 + 19 个 C 测试）。冲突时以源码/测试为准。
 
 ---
 
@@ -312,7 +312,7 @@ Json.parse(T, String)             T*，失败 panic
 Json.tryParse(T, String)          T* 或 null，不 panic
 Json.stringify(v[, indent])       String；v 可为 struct/event/null/标量/顶层 Array/Map/Linked
 File.read/write/exists/remove(path[, text])
-Host.nowMs() / Host.env(name) / Host.log(...)
+Host.nowMs() / Host.monoUs() / Host.env(name) / Host.log(...)
 Http.route(path, method, Handler) / Http.listen(port) / Http.respond(reqId,status,body) / Http.stop()
 Ws.route(path, OpenH, MsgH, CloseH) / Ws.listen(port) / Ws.send(clientId,text) / Ws.close(...) / Ws.stop()
 Timer.once(ms, Handler): long / Timer.loop(ms, Handler): long / Timer.cancel(id)
@@ -504,7 +504,7 @@ python tools\verify.py            # + 全部 C 测试
 python tools\verify.py --full     # + HTTP bench smoke
 ```
 
-- 测试规模：188 个 `.we` 用例 + 18 个 C 测试；MySQL 依赖用例（`52/53/128/140/141/169`）与 `mysql_conn_test` 无服务时 SKIP；
+- 测试规模：190 个 `.we` 用例 + 19 个 C 测试；MySQL 依赖用例（`52/53/128/140/141/169`）与 `mysql_conn_test` 无服务时 SKIP；
 - `WELL_WORKERS` 未设置时按 CPU 自动；测试 runner 固定 1 保证确定性；
 - `WELL_CC=gcc` 使用 gcc（自动 -O2 -fwrapv）；`WELL_CFLAGS` 覆盖优化 flags；
 - 生成的 C 在 `build/<stem>_<sha1前8>.c`（`-o` 可指定），是排查 codegen 问题的第一手材料；`emit-c -o` 会自动建父目录。

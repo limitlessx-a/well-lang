@@ -7,25 +7,6 @@
 #include <setjmp.h>
 
 /* ---------- containers ---------- */
-struct WellArray {
-    WellObj hdr;
-    WellValue *items;
-    long long len;
-    long long cap;
-    int is_ref;
-};
-
-struct WellMap {
-    WellObj hdr;
-    WellString **keys;   /* insertion order */
-    WellValue *vals;
-    long long len;
-    long long cap;
-    long long *slots;    /* 0 = empty, -1 = tombstone, >0 = entry index + 1 */
-    long long slot_cap;  /* power of two */
-    long long tomb;
-    int is_ref;
-};
 
 #define MAP_TOMBSTONE (-1LL)
 #define MAP_LOAD_NUM 7
@@ -43,36 +24,63 @@ static void container_release(WellValue v, int is_ref) {
     if (is_ref && v.p) well_release(v.p);
 }
 
-WellArray *well_array_new(WellCtx *ctx, int is_ref) {
-    WellArray *a = (WellArray *)well_new(sizeof(WellArray), WELL_T_ARRAY, ctx ? ctx->oid : 0);
-    a->items = NULL;
+static WellArray *array_new_impl(WellCtx *ctx, int is_ref, int flat) {
+    WellArray *a = (WellArray *)((is_ref && !flat)
+        ? well_new_uninit(sizeof(WellArray), WELL_T_ARRAY, ctx ? ctx->oid : 0)
+        : well_new_uninit_unregistered(sizeof(WellArray), WELL_T_ARRAY, ctx ? ctx->oid : 0));
+    a->items = a->inline_items;
     a->len = 0;
-    a->cap = 0;
+    a->cap = 4;
     a->is_ref = is_ref;
     return a;
 }
 
-WellMap *well_map_new(WellCtx *ctx, int is_ref) {
-    WellMap *m = (WellMap *)well_new(sizeof(WellMap), WELL_T_MAP, ctx ? ctx->oid : 0);
-    m->keys = NULL;
-    m->vals = NULL;
+WellArray *well_array_new(WellCtx *ctx, int is_ref) {
+    return array_new_impl(ctx, is_ref, 0);
+}
+
+WellArray *well_array_new_flat(WellCtx *ctx, int is_ref) {
+    return array_new_impl(ctx, is_ref, 1);
+}
+
+static WellMap *map_new_impl(WellCtx *ctx, int is_ref, int flat) {
+    WellMap *m = (WellMap *)((is_ref && !flat)
+        ? well_new_uninit(sizeof(WellMap), WELL_T_MAP, ctx ? ctx->oid : 0)
+        : well_new_uninit_unregistered(sizeof(WellMap), WELL_T_MAP, ctx ? ctx->oid : 0));
+    m->keys = m->inline_keys;
+    m->vals = m->inline_vals;
     m->len = 0;
-    m->cap = 0;
-    m->slots = NULL;
+    m->cap = 4;
+    m->slots = m->inline_slots;
     m->slot_cap = 0;
     m->tomb = 0;
     m->is_ref = is_ref;
     return m;
 }
 
+WellMap *well_map_new(WellCtx *ctx, int is_ref) {
+    return map_new_impl(ctx, is_ref, 0);
+}
+
+WellMap *well_map_new_flat(WellCtx *ctx, int is_ref) {
+    return map_new_impl(ctx, is_ref, 1);
+}
+
 long long well_array_len(WellArray *a) { return a ? a->len : 0; }
 
 static void array_grow(WellArray *a, long long need) {
     if (need <= a->cap) return;
-    long long ncap = a->cap ? a->cap * 2 : 8;
+    long long ncap = a->cap ? a->cap * 2 : 4;
     while (ncap < need) ncap *= 2;
-    WellValue *ni = (WellValue *)realloc(a->items, (size_t)ncap * sizeof(WellValue));
-    if (!ni) well_panic("out of memory (array)");
+    WellValue *ni;
+    if (a->items == a->inline_items) {
+        ni = (WellValue *)malloc((size_t)ncap * sizeof(WellValue));
+        if (!ni) well_panic("out of memory (array)");
+        if (a->len > 0) memcpy(ni, a->inline_items, (size_t)a->len * sizeof(WellValue));
+    } else {
+        ni = (WellValue *)realloc(a->items, (size_t)ncap * sizeof(WellValue));
+        if (!ni) well_panic("out of memory (array)");
+    }
     a->items = ni;
     a->cap = ncap;
 }
@@ -154,7 +162,7 @@ WellArray *well_array_concat(WellArray *a, WellArray *b, WellCtx *ctx) {
 
 /* Array<String> only (checked by the compiler). */
 WellString *well_array_join(WellArray *a, WellString *sep) {
-    const char *sp = sep ? sep->data : "";
+    const char *sp = sep ? well_str_data(sep) : "";
     size_t spl = sep ? (size_t)sep->len : 0; /* R-12: cached length, not strlen */
     long long n = a ? a->len : 0;
     long long i;
@@ -171,7 +179,7 @@ WellString *well_array_join(WellArray *a, WellString *sep) {
     p = buf;
     for (i = 0; i < n; i++) {
         WellString *s = (WellString *)a->items[i].p;
-        const char *d = s ? s->data : "";
+        const char *d = s ? well_str_data(s) : "";
         size_t l = (size_t)(s ? s->len : 0);
         if (i) { memcpy(p, sp, spl); p += spl; }
         memcpy(p, d, l);
@@ -223,7 +231,7 @@ static int array_cmp_kind(WellValue x, WellValue y, int kind) {
         WellString *a = (WellString *)x.p, *b = (WellString *)y.p;
         long long la = a ? a->len : 0, lb = b ? b->len : 0;
         long long n = la < lb ? la : lb;
-        int c = n ? memcmp(a->data, b->data, (size_t)n) : 0;
+        int c = n ? memcmp(well_str_data(a), well_str_data(b), (size_t)n) : 0;
         if (c) return c < 0 ? -1 : 1;
         return (la > lb) - (la < lb);
     }
@@ -397,11 +405,11 @@ static void map_rehash(WellMap *m, long long ncap) {
     if (!ns) well_panic("out of memory (map hash)");
     mask = ncap - 1;
     for (i = 0; i < m->len; i++) {
-        unsigned long long h = m->keys[i]->hash & (unsigned long long)mask;
+        unsigned long long h = well_string_hash(m->keys[i]) & (unsigned long long)mask;
         while (ns[h]) h = (h + 1) & (unsigned long long)mask;
         ns[h] = i + 1;
     }
-    free(m->slots);
+    if (m->slots != m->inline_slots) free(m->slots);
     m->slots = ns;
     m->slot_cap = ncap;
     m->tomb = 0;
@@ -409,11 +417,23 @@ static void map_rehash(WellMap *m, long long ncap) {
 
 static void map_grow_entries(WellMap *m, long long need) {
     if (need <= m->cap) return;
-    long long ncap = m->cap ? m->cap * 2 : 8;
+    long long ncap = m->cap ? m->cap * 2 : 4;
     while (ncap < need) ncap *= 2;
-    WellString **nk = (WellString **)realloc(m->keys, (size_t)ncap * sizeof(WellString *));
-    WellValue *nv = (WellValue *)realloc(m->vals, (size_t)ncap * sizeof(WellValue));
-    if (!nk || !nv) well_panic("out of memory (map)");
+    WellString **nk;
+    WellValue *nv;
+    if (m->keys == m->inline_keys) {
+        nk = (WellString **)malloc((size_t)ncap * sizeof(WellString *));
+        nv = (WellValue *)malloc((size_t)ncap * sizeof(WellValue));
+        if (!nk || !nv) well_panic("out of memory (map)");
+        if (m->len > 0) {
+            memcpy(nk, m->inline_keys, (size_t)m->len * sizeof(WellString *));
+            memcpy(nv, m->inline_vals, (size_t)m->len * sizeof(WellValue));
+        }
+    } else {
+        nk = (WellString **)realloc(m->keys, (size_t)ncap * sizeof(WellString *));
+        nv = (WellValue *)realloc(m->vals, (size_t)ncap * sizeof(WellValue));
+        if (!nk || !nv) well_panic("out of memory (map)");
+    }
     m->keys = nk;
     m->vals = nv;
     m->cap = ncap;
@@ -421,6 +441,9 @@ static void map_grow_entries(WellMap *m, long long need) {
 
 static void map_ensure(WellMap *m, long long need) {
     map_grow_entries(m, need);
+    /* The first four entries use the linear small-map path; build the hash
+     * slots lazily when the fifth entry arrives. */
+    if (m->slot_cap == 0 && need <= 4) return;
     if (m->slot_cap == 0 ||
         (need + m->tomb) * MAP_LOAD_DEN >= m->slot_cap * MAP_LOAD_NUM) {
         long long ncap = 8;
@@ -434,7 +457,7 @@ static long long map_find_slot(WellMap *m, WellString *k) {
     unsigned long long mask, h;
     if (!m || !k || m->slot_cap == 0) return -1;
     mask = (unsigned long long)(m->slot_cap - 1);
-    h = k->hash & mask;
+    h = well_string_hash(k) & mask;
     for (;;) {
         long long s = m->slots[h];
         if (s == 0) return -1;
@@ -445,7 +468,7 @@ static long long map_find_slot(WellMap *m, WellString *k) {
 
 static void map_insert_slot(WellMap *m, long long entry) {
     unsigned long long mask = (unsigned long long)(m->slot_cap - 1);
-    unsigned long long h = m->keys[entry]->hash & mask;
+    unsigned long long h = well_string_hash(m->keys[entry]) & mask;
     long long tomb = -1;
     for (;;) {
         long long s = m->slots[h];
@@ -459,6 +482,15 @@ static void map_insert_slot(WellMap *m, long long entry) {
     }
 }
 
+static void map_store_value(WellMap *m, long long i, WellValue v) {
+    if (m->is_ref && m->vals[i].p) {
+        well_graph_remove_edge((WellObj *)m, (WellObj *)m->vals[i].p);
+        well_release(m->vals[i].p);
+    }
+    m->vals[i] = v;
+    if (m->is_ref && v.p) well_retain(v.p);
+}
+
 void well_map_set(WellMap *m, WellString *k, WellValue v, WellCtx *ctx) {
     long long slot;
     if (!m) well_panic("set on null map");
@@ -469,15 +501,24 @@ void well_map_set(WellMap *m, WellString *k, WellValue v, WellCtx *ctx) {
         well_graph_add_edge((WellObj *)m, (WellObj *)v.p);
     }
     map_ensure(m, m->len + 1);
+    if (m->slot_cap == 0) {
+        long long i;
+        for (i = 0; i < m->len; i++) {
+            if (m->keys[i] == k || well_string_eq(m->keys[i], k)) {
+                map_store_value(m, i, v);
+                return;
+            }
+        }
+        m->keys[m->len] = k;
+        m->vals[m->len] = v;
+        m->len++;
+        well_retain(k);
+        if (m->is_ref && v.p) well_retain(v.p);
+        return;
+    }
     slot = map_find_slot(m, k);
     if (slot >= 0) {
-        long long i = m->slots[slot] - 1;
-        if (m->is_ref && m->vals[i].p) {
-            well_graph_remove_edge((WellObj *)m, (WellObj *)m->vals[i].p);
-            well_release(m->vals[i].p);
-        }
-        m->vals[i] = v;
-        if (m->is_ref && v.p) well_retain(v.p);
+        map_store_value(m, m->slots[slot] - 1, v);
         return;
     }
     m->keys[m->len] = k;
@@ -490,8 +531,18 @@ void well_map_set(WellMap *m, WellString *k, WellValue v, WellCtx *ctx) {
 
 WellValue well_map_get(WellMap *m, WellString *k) {
     WellValue v;
+    long long i;
     v.i = 0;
     if (!m || !k) return v;
+    /* Small maps are common (config/JSON objects); a linear scan avoids the
+     * hash and slot probe for <= 4 entries. */
+    if (m->len <= 4) {
+        for (i = 0; i < m->len; i++) {
+            if (m->keys[i] == k || well_string_eq(m->keys[i], k))
+                return m->vals[i];
+        }
+        return v;
+    }
     {
         long long slot = map_find_slot(m, k);
         if (slot >= 0) return m->vals[m->slots[slot] - 1];
@@ -500,16 +551,29 @@ WellValue well_map_get(WellMap *m, WellString *k) {
 }
 
 int well_map_has(WellMap *m, WellString *k) {
-    return m && k && map_find_slot(m, k) >= 0;
+    long long i;
+    if (!m || !k) return 0;
+    if (m->slot_cap == 0) {
+        for (i = 0; i < m->len; i++)
+            if (m->keys[i] == k || well_string_eq(m->keys[i], k)) return 1;
+        return 0;
+    }
+    return map_find_slot(m, k) >= 0;
 }
 
 void well_map_delete(WellMap *m, WellString *k, WellCtx *ctx) {
     long long slot, i;
     if (!m || !k) return;
     well_check_oid((void *)m, ctx, "container write");
-    slot = map_find_slot(m, k);
-    if (slot < 0) return;
-    i = m->slots[slot] - 1;
+    if (m->slot_cap == 0) {
+        for (i = 0; i < m->len; i++)
+            if (m->keys[i] == k || well_string_eq(m->keys[i], k)) break;
+        if (i >= m->len) return;
+    } else {
+        slot = map_find_slot(m, k);
+        if (slot < 0) return;
+        i = m->slots[slot] - 1;
+    }
     well_release(m->keys[i]);
     if (m->is_ref && m->vals[i].p) {
         well_graph_remove_edge((WellObj *)m, (WellObj *)m->vals[i].p);
@@ -544,8 +608,8 @@ static void array_destroy(void *p) {
     if (a->is_ref) {
         for (i = 0; i < a->len; i++) container_release(a->items[i], 1);
     }
-    free(a->items);
-    free(a);
+    if (a->items && a->items != a->inline_items) free(a->items);
+    well_obj_free(a);
 }
 
 static void map_destroy(void *p) {
@@ -556,10 +620,10 @@ static void map_destroy(void *p) {
         well_release(m->keys[i]);
         if (m->is_ref) container_release(m->vals[i], 1);
     }
-    free(m->keys);
-    free(m->vals);
-    free(m->slots);
-    free(m);
+    if (m->keys != m->inline_keys) free(m->keys);
+    if (m->vals != m->inline_vals) free(m->vals);
+    if (m->slots != m->inline_slots) free(m->slots);
+    well_obj_free(m);
 }
 
 /* ---------- Linked<T> ---------- */
@@ -728,7 +792,7 @@ static void linked_destroy(void *p) {
         free(n);
         n = next;
     }
-    free(l);
+    well_obj_free(l);
 }
 
 void well_array_force_clear(void *p) {
@@ -741,10 +805,10 @@ void well_array_force_clear(void *p) {
             if (o && o->type_id == WELL_T_STRING) well_release(o);
         }
     }
-    free(a->items);
-    a->items = NULL;
+    if (a->items && a->items != a->inline_items) free(a->items);
+    a->items = a->inline_items;
     a->len = 0;
-    a->cap = 0;
+    a->cap = 4;
 }
 
 void well_map_force_clear(void *p) {
@@ -758,9 +822,13 @@ void well_map_force_clear(void *p) {
             if (o && o->type_id == WELL_T_STRING) well_release(o);
         }
     }
-    free(m->keys); free(m->vals); free(m->slots);
-    m->keys = NULL; m->vals = NULL; m->slots = NULL;
-    m->len = 0; m->cap = 0; m->slot_cap = 0; m->tomb = 0;
+    if (m->keys != m->inline_keys) free(m->keys);
+    if (m->vals != m->inline_vals) free(m->vals);
+    if (m->slots != m->inline_slots) free(m->slots);
+    m->keys = m->inline_keys;
+    m->vals = m->inline_vals;
+    m->slots = m->inline_slots;
+    m->len = 0; m->cap = 4; m->slot_cap = 0; m->tomb = 0;
 }
 
 void well_linked_force_clear(void *p) {

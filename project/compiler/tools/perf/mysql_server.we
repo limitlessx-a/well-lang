@@ -1,0 +1,28 @@
+module bench.mysqldb;
+
+// HTTP -> MySQL benchmark server.  Every request runs one pooled
+// `SELECT 1 AS x`; the response body is the JSON row returned by the driver.
+event HttpRequestEvent extends Event {
+    reqId: long;
+    method: String;
+    path: String;
+    query: String;
+    body: String;
+}
+
+controller DbController {
+    run() {
+        Mysql.pool("127.0.0.1", 3306, "root", "db@root", "well_bench", 2, 8);
+        Http.route("/db", "GET", DbHandler);
+        Http.listen({{PORT}});
+    }
+}
+
+handler DbHandler {
+    onEvent(e: HttpRequestEvent) {
+        var json: String = Mysql.queryJsonPool("SELECT 1 AS x");
+        Http.respond(e.reqId, 200, json);
+    }
+}
+
+entry DbController;

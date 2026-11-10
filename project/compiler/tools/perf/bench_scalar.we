@@ -1,0 +1,26 @@
+﻿module bench.scalar;
+
+// Mixed scalar work: long multiply/accumulate (LCG) plus a double chain.
+// Both chains are serial, so the measured time is execution latency rather
+// than a vectorised replay.  Host.monoUs() keeps the resolution useful.
+controller ScalarBench {
+    run() {
+        var n: long = 20000000;
+        var lacc: long = 12345;
+        var dacc: double = 1.5;
+        var t0: long = Host.monoUs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            lacc = (lacc * 1103515245 + 12345) % 2147483648;
+            dacc = dacc * 1.0000001 + 0.25;
+        }
+        var t1: long = Host.monoUs();
+        print("iters ", n);
+        print("elapsed_us ", t1 - t0);
+        print("ns_per_op ", (t1 - t0) * 1000.0 / n);
+        print("checksum ", lacc);
+        print("dchecksum ", dacc);
+    }
+}
+
+entry ScalarBench;
+

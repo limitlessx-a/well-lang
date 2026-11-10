@@ -177,7 +177,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "compile:tests": "tsc src/formatter.ts src/wellParse.ts src/imports.ts --outDir build/ts --module commonjs --target ES2020 --strict --skipLibCheck",
-    "test": "npm run compile && npm run compile:tests && node --test test/",
+    "test": "npm run compile && npm run compile:tests && node --test test/activation.test.js test/format.test.js test/grammar.test.js test/imports.test.js",
     "test:activation": "npm run compile && node test/activation.test.js",
     "package": "vsce package --no-dependencies"
   },

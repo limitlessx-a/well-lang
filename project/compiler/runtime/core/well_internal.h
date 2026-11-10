@@ -88,9 +88,16 @@ long long well_mono_ms(void);
 void well_model_touch_oid(long long oid);
 void well_oid_pin(long long oid);
 void well_oid_unpin(long long oid);
+/* touch (TTL activity) + pin under one activity-lock acquisition */
+void well_oid_touch_and_pin(long long oid);
 void well_event_pin_payload(void *event);
 void well_event_unpin_payload(void *event);
 void well_pool_sweep(void);
+/* Switch reference counting from plain to atomic; called before the first
+ * thread is created (assembly/controller phase is single-threaded). */
+void well_rc_mark_multithreaded(void);
+/* Flush this thread's cached pool blocks (called when a thread exits). */
+void well_pool_thread_cleanup(void);
 int well_cache_discard_oid(long long oid);
 void well_array_force_clear(void *arr);
 void well_map_force_clear(void *map);

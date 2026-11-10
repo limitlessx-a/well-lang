@@ -1,4 +1,5 @@
 #include "wellrt.h"
+#include "well_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,9 +23,14 @@ typedef struct {
     void **objs;
     int obj_n;
     int obj_cap;
-    /* Raw scratch buffer of the string currently being decoded (malloc'ed by
-     * jstr_push): freed on the error path as well. */
-    char *scratch;
+    /* Reusable scratch buffer for the string currently being decoded.  Reusing
+     * one buffer per parse removes a malloc/free per string (JSON objects often
+     * have several); callers must consume it before the next string is parsed
+     * (keys are looked up before their value is parsed, values are converted
+     * immediately). */
+    char *strbuf;
+    size_t strcap;
+    size_t strlen_last;
 } JsonParser;
 
 typedef struct {
@@ -74,8 +80,10 @@ static void jreg_drop(JsonParser *p, void *obj) {
  * the parser, plus the raw scratch string. */
 static void jreg_cleanup(JsonParser *p) {
     int i;
-    free(p->scratch);
-    p->scratch = NULL;
+    free(p->strbuf);
+    p->strbuf = NULL;
+    p->strcap = 0;
+    p->strlen_last = 0;
     for (i = 0; i < p->obj_n; i++) well_release(p->objs[i]);
     p->obj_n = 0;
     free(p->objs);
@@ -86,8 +94,10 @@ static void jreg_cleanup(JsonParser *p) {
 /* Success path: the top-level object's creation reference is handed to the
  * caller; nested objects were dropped when attached. */
 static void jreg_success(JsonParser *p) {
-    free(p->scratch);
-    p->scratch = NULL;
+    free(p->strbuf);
+    p->strbuf = NULL;
+    p->strcap = 0;
+    p->strlen_last = 0;
     free(p->objs);
     p->objs = NULL;
     p->obj_n = 0;
@@ -118,18 +128,17 @@ static void jexpect(JsonParser *p, char c) {
 
 static void jstr_push(JsonParser *p, JsonStr *b, char c) {
     if (b->len + 1 >= b->cap) {
-        size_t ncap = b->cap ? b->cap * 2 : 32;
+        size_t ncap = b->cap ? b->cap * 2 : 64;
         char *np = (char *)realloc(b->p, ncap);
         if (!np) {
-            /* The old buffer stays valid and reachable from the parser so the
-             * error path can free it; jerr() does not return. */
-            p->scratch = b->p;
+            /* The old buffer stays valid and is owned by the parser. */
             jerr(p, "out of memory (JSON string)");
             return;
         }
         b->p = np;
         b->cap = ncap;
-        p->scratch = np;
+        p->strbuf = np;
+        p->strcap = ncap;
     }
     b->p[b->len++] = c;
 }
@@ -176,15 +185,47 @@ static unsigned jhex4(JsonParser *p) {
 static char *jparse_string_alloc(JsonParser *p) {
     JsonStr b;
     memset(&b, 0, sizeof(b));
-    p->scratch = NULL;
+    b.p = p->strbuf;
+    b.cap = p->strcap;
     if (jpeek(p) != '"') jerr(p, "expected string");
     p->pos++;
+    /* Fast path: the vast majority of JSON strings contain no escapes. Scan to
+     * the closing quote and copy the raw span in one memcpy instead of pushing
+     * one char at a time through jstr_push(). */
+    {
+        size_t start = p->pos, q = start;
+        while (q < p->len) {
+            unsigned char ch = (unsigned char)p->s[q];
+            if (ch == '"') break;
+            if (ch == '\\' || ch < 0x20) { q = (size_t)-1; break; }
+            q++;
+        }
+        if (q != (size_t)-1 && q < p->len) {
+            size_t n = q - start;
+            if (n + 1 > p->strcap) {
+                size_t ncap = p->strcap ? p->strcap : 64;
+                char *nb;
+                while (ncap < n + 1) ncap *= 2;
+                nb = (char *)realloc(p->strbuf, ncap);
+                if (!nb) jerr(p, "out of memory (JSON string)");
+                p->strbuf = nb;
+                p->strcap = ncap;
+            }
+            if (n) memcpy(p->strbuf, p->s + start, n);
+            p->strbuf[n] = '\0';
+            p->strlen_last = n;
+            p->pos = q + 1;
+            return p->strbuf;
+        }
+        p->pos = start; /* escape/control char: use the general decoder */
+    }
     while (p->pos < p->len) {
         unsigned char c = (unsigned char)p->s[p->pos++];
         if (c == '"') {
             jstr_push(p, &b, '\0');
-            /* Hand the buffer to the caller: it is no longer error-path state. */
-            p->scratch = NULL;
+            p->strbuf = b.p;
+            p->strcap = b.cap;
+            p->strlen_last = b.len - 1;
             return b.p;
         }
         if (c == '\\') {
@@ -301,8 +342,7 @@ static void jskip_object(JsonParser *p) {
     jexpect(p, '{');
     if (jpeek(p) == '}') { p->pos++; return; }
     for (;;) {
-        char *k = jparse_string_alloc(p);
-        free(k);
+        (void)jparse_string_alloc(p);
         jexpect(p, ':');
         jskip_value(p);
         if (jpeek(p) == ',') { p->pos++; continue; }
@@ -333,7 +373,7 @@ static void jskip_value(JsonParser *p) {
         p->depth--;
         return;
     }
-    if (c == '"') { free(jparse_string_alloc(p)); }
+    if (c == '"') { (void)jparse_string_alloc(p); }
     else if (c == 't') { if (!jmatch_lit(p, "true")) jerr(p, "bad true"); }
     else if (c == 'f') { if (!jmatch_lit(p, "false")) jerr(p, "bad false"); }
     else if (c == 'n') { if (!jmatch_lit(p, "null")) jerr(p, "bad null"); }
@@ -382,8 +422,7 @@ static WellValue jparse_elem(JsonParser *p, int kind, unsigned int type_id,
         break;
     case WELL_FIELD_STRING: {
         char *s = jparse_string_alloc(p);
-        WellString *ws = well_string_new(s);
-        free(s);
+        WellString *ws = well_string_new_n(s, p->strlen_last);
         jreg_add(p, ws);
         v.p = ws;
         if (owned) *owned = ws;
@@ -433,10 +472,9 @@ static void *jparse_container(JsonParser *p, int kind, int elem_kind,
         else {
             for (;;) {
                 char *raw = jparse_string_alloc(p);
-                WellString *key = well_string_new(raw);
+                WellString *key = well_string_new_n(raw, p->strlen_last);
                 void *owned = NULL;
                 WellValue v;
-                free(raw);
                 jreg_add(p, key);
                 jexpect(p, ':');
                 v = jparse_elem(p, elem_kind, elem_type_id, oid, &owned);
@@ -508,8 +546,7 @@ static void jparse_field(JsonParser *p, WellObj *obj, const WellFieldDesc *f, lo
             break;
         }
         raw = jparse_string_alloc(p);
-        s = well_string_new(raw);
-        free(raw);
+        s = well_string_new_n(raw, p->strlen_last);
         jreg_add(p, s);
         well_set_ref(obj, (void **)slot, s);
         jreg_drop(p, s);
@@ -554,7 +591,6 @@ static void *jparse_object(JsonParser *p, const WellTypeDesc *d, long long oid) 
             const WellFieldDesc *f;
             jexpect(p, ':');
             f = well_type_field(d, key);
-            free(key);
             if (f) jparse_field(p, o, f, oid);
             else jskip_value(p);
             if (jpeek(p) == ',') { p->pos++; continue; }
@@ -575,15 +611,29 @@ typedef struct JOut {
     size_t len;
     size_t cap;
     int indent;
+    int heap;
+    /* Most API responses are a few hundred bytes; build them on the stack and
+     * only fall back to malloc when the output outgrows JO_STACK. */
+    char stack[512];
 } JOut;
 
 static void jo_need(JOut *o, size_t extra) {
-    if (o->len + extra + 1 <= o->cap) return;
+    size_t need = o->len + extra + 1;
+    if (need <= o->cap) return;
     {
         size_t ncap = o->cap ? o->cap * 2 : 256;
-        while (ncap < o->len + extra + 1) ncap *= 2;
-        o->p = (char *)realloc(o->p, ncap);
-        if (!o->p) well_panic("out of memory (Json.stringify)");
+        while (ncap < need) ncap *= 2;
+        if (!o->heap) {
+            char *np = (char *)malloc(ncap);
+            if (!np) well_panic("out of memory (Json.stringify)");
+            memcpy(np, o->p, o->len);
+            o->p = np;
+            o->heap = 1;
+        } else {
+            char *np = (char *)realloc(o->p, ncap);
+            if (!np) well_panic("out of memory (Json.stringify)");
+            o->p = np;
+        }
         o->cap = ncap;
     }
 }
@@ -601,9 +651,21 @@ static void jo_puts_len(JOut *o, const char *s, size_t n) {
 
 static void jo_puts(JOut *o, const char *s) { jo_puts_len(o, s, strlen(s)); }
 
+/* Two digits per division, same table as well_str_from_int. */
+static const char d2[201] = "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899";
 static void jo_long(JOut *o, long long v) {
     char buf[32];
-    int n = snprintf(buf, sizeof(buf), "%lld", v);
+    int n = 0, neg = v < 0;
+    unsigned long long u = neg ? (unsigned long long)(-(v + 1)) + 1ULL
+                               : (unsigned long long)v;
+    do {
+        unsigned rem = (unsigned)(u % 100ULL);
+        u /= 100ULL;
+        buf[n++] = d2[rem * 2 + 1];
+        if (u || rem >= 10) buf[n++] = d2[rem * 2];
+    } while (u);
+    if (neg) buf[n++] = '-';
+    { int i; for (i = 0; i < n / 2; i++) { char t = buf[i]; buf[i] = buf[n - 1 - i]; buf[n - 1 - i] = t; } }
     jo_puts_len(o, buf, (size_t)n);
 }
 
@@ -639,11 +701,18 @@ static void jo_byte_escaped(JOut *o, unsigned char c) {
 }
 
 static void jo_escaped(JOut *o, const char *s, long long n) {
-    long long i;
+    long long i, start = 0;
     jo_putc(o, '"');
     if (s) {
-        for (i = 0; i < n; i++)
-            jo_byte_escaped(o, (unsigned char)s[i]);
+        for (i = 0; i < n; i++) {
+            unsigned char c = (unsigned char)s[i];
+            if (c == '"' || c == '\\' || c < 0x20) {
+                if (i > start) jo_puts_len(o, s + start, (size_t)(i - start));
+                jo_byte_escaped(o, c);
+                start = i + 1;
+            }
+        }
+        if (n > start) jo_puts_len(o, s + start, (size_t)(n - start));
     }
     jo_putc(o, '"');
 }
@@ -691,7 +760,7 @@ static void jo_map_elems(JOut *o, WellMap *m, int elem_kind, unsigned int elem_t
     for (j = 0; j < n; j++) {
         WellString *k = well_map_key_at(m, j);
         jo_sep(o, depth + 1, j == 0);
-        jo_escaped(o, k ? k->data : "", k ? k->len : 0);
+        jo_escaped(o, k ? well_str_data(k) : "", k ? k->len : 0);
         jo_putc(o, ':');
         if (o->indent > 0) jo_putc(o, ' ');
         jo_value(o, well_map_value_at(m, j), elem_kind, elem_type_id, depth + 1);
@@ -750,7 +819,7 @@ static void jo_obj(JOut *o, void *obj, const WellTypeDesc *d, int depth) {
         case WELL_FIELD_STRING: {
             WellString *s = *(WellString **)base;
             if (!s) jo_puts(o, "null");
-            else jo_escaped(o, s->data, s->len);
+            else jo_escaped(o, well_str_data(s), s->len);
             break;
         }
         case WELL_FIELD_REF: {
@@ -793,7 +862,7 @@ static void jo_value(JOut *o, WellValue v, int kind, unsigned int type_id, int d
     case WELL_FIELD_STRING: {
         WellString *s = (WellString *)v.p;
         if (!s) jo_puts(o, "null");
-        else jo_escaped(o, s->data, s->len);
+        else jo_escaped(o, well_str_data(s), s->len);
         break;
     }
     case WELL_FIELD_REF:
@@ -809,14 +878,18 @@ static void jo_begin(JOut *o, int indent) {
     if (indent < 0) indent = 0;
     if (indent > 8) indent = 8;
     o->indent = indent;
+    o->p = o->stack;
+    o->cap = sizeof(o->stack);
+    o->heap = 0;
 }
 
 static WellString *jo_finish(JOut *o) {
     WellString *r;
     jo_need(o, 1);
     o->p[o->len] = 0;
-    r = well_string_new(o->p);
-    free(o->p);
+    r = well_string_new_n(o->p, o->len);
+    if (o->heap) free(o->p);
+    o->p = NULL;
     return r;
 }
 
@@ -880,7 +953,7 @@ WellString *well_json_stringify_str(WellString *s, int indent) {
     JOut o;
     jo_begin(&o, indent);
     if (!s) jo_puts(&o, "null");
-    else jo_escaped(&o, s->data, s->len);
+    else jo_escaped(&o, well_str_data(s), s->len);
     return jo_finish(&o);
 }
 

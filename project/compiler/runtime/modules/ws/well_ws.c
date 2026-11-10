@@ -57,6 +57,10 @@ static int g_ws_running = 0;
 static WsSocket g_ws_listen_fd = WS_INVALID_SOCKET;
 static WellThread g_ws_thread;
 static int g_ws_thread_started = 0;
+/* Run open/message/close handlers on the connection's reader thread instead of
+ * a scheduler worker (same per-connection serialization, no handoff). */
+static int g_ws_inline = 0;
+static int g_ws_inline_cfg = 0;
 
 /* Audit W2: blocking recv/send without a deadline lets one half-open or idle
  * peer pin a reader thread forever, and there was no cap on live connections
@@ -86,6 +90,12 @@ typedef struct WsConn {
      * serialized by this per-connection lock so headers/payloads cannot
      * interleave with a frame from the other thread. */
     WellMutex write_lock;
+    /* Reused inbound frame buffer (header+mask+payload): one allocation per
+     * connection instead of one per message.  Only the reader thread touches it. */
+    unsigned char *frame_buf;
+    size_t frame_cap;
+    size_t frame_len; /* bytes buffered from recv */
+    size_t frame_pos; /* consumed bytes at the front */
     struct WsConn *next;
 } WsConn;
 
@@ -96,6 +106,12 @@ static void ws_lock_init(void) {
     if (g_ws_inited) return;
     well_mutex_init(&g_ws_lock);
     well_cond_init(&g_ws_cond);
+    if (!g_ws_inline_cfg) {
+        const char *e = getenv("WELL_WS_INLINE");
+        g_ws_inline_cfg = 1;
+        /* Default on; WELL_WS_INLINE=0 restores scheduler-worker dispatch. */
+        g_ws_inline = !(e && e[0] && atoi(e) == 0);
+    }
     g_ws_inited = 1;
 }
 
@@ -126,7 +142,7 @@ static void ws_load(void) {
 }
 static WsSocket ws_socket(void) { return psocket(2, 1, 0); }
 static int ws_bind(WsSocket s, WsSockaddr *a) { return pbind(s, a, (int)sizeof(*a)); }
-static int ws_listen_socket(WsSocket s) { return plisten(s, 16); }
+static int ws_listen_socket(WsSocket s) { return plisten(s, 128); }
 static WsSocket ws_accept(WsSocket s) { return paccept(s, NULL, NULL); }
 static int ws_recv(WsSocket s, char *b, int n) { return precv(s, b, n, 0); }
 static int ws_send_socket(WsSocket s, const char *b, int n) { return psend(s, b, n, 0); }
@@ -148,6 +164,11 @@ static void ws_apply_timeouts(WsSocket s, int recv_ms, int send_ms) {
 /* Windows allows rebinding a TIME_WAIT port by default; SO_REUSEADDR there
  * also permits hijacking an active listener, so leave it alone. */
 static void ws_set_reuseaddr(WsSocket s) { (void)s; }
+static void ws_set_nodelay(WsSocket s) {
+    int one = 1;
+    psetsockopt(s, 6 /* IPPROTO_TCP */, 1 /* TCP_NODELAY */,
+                (const char *)&one, (int)sizeof(one));
+}
 /* Windows closesocket() unblocks a blocked accept(), so blocking accept is
  * fine there; POSIX needs the poll-based helper below. The frame reader also
  * uses this helper to notice Ws.close()/idle timeouts (audit W7). */
@@ -169,7 +190,7 @@ static unsigned short ws_htons(unsigned short v) { return (unsigned short)((v <<
 static void ws_load(void) { signal(SIGPIPE, SIG_IGN); }
 static WsSocket ws_socket(void) { return socket(AF_INET, SOCK_STREAM, 0); }
 static int ws_bind(WsSocket s, WsSockaddr *a) { return bind(s, (struct sockaddr *)a, sizeof(*a)); }
-static int ws_listen_socket(WsSocket s) { return listen(s, 16); }
+static int ws_listen_socket(WsSocket s) { return listen(s, 128); }
 static WsSocket ws_accept(WsSocket s) { return accept(s, NULL, NULL); }
 static int ws_recv(WsSocket s, char *b, int n) { return (int)recv(s, b, (size_t)n, 0); }
 static int ws_send_socket(WsSocket s, const char *b, int n) { return (int)send(s, b, (size_t)n, 0); }
@@ -191,6 +212,10 @@ static void ws_apply_timeouts(WsSocket s, int recv_ms, int send_ms) {
 }
 /* Let a server restart immediately even when the old listener's connections
  * are still in TIME_WAIT (the tests reuse ports across runs). */
+static void ws_set_nodelay(WsSocket s) {
+    int one = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+}
 static void ws_set_reuseaddr(WsSocket s) {
     int one = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
@@ -431,12 +456,26 @@ static int ws_read_exact(WsSocket fd, unsigned char *p, size_t n) {
     return 0;
 }
 
-/* Audit W7: frame reads wait in 200ms slices so a concurrent Ws.close() (or
- * the frame-idle deadline, W2) is noticed even while the reader is blocked in
- * recv(); a plain blocking recv() kept the thread and socket alive until the
- * peer eventually answered or the socket timeout expired. */
-static int ws_read_exact_frame(WsConn *c, WsSocket fd, unsigned char *p, size_t n) {
-    while (n) {
+/* Buffered inbound frames: one recv can deliver several small frames (and
+ * always delivers a whole frame header+mask+payload when the peer writes it in
+ * one go), instead of one syscall per header piece.  Close/idle checks mirror
+ * the old exact-read loop: wait in 200ms slices so Ws.close() and the idle
+ * deadline are noticed while the reader is blocked. */
+static int ws_buf_fill(WsConn *c, WsSocket fd, size_t need) {
+    if (c->frame_pos) {
+        size_t rem = c->frame_len - c->frame_pos;
+        if (rem) memmove(c->frame_buf, c->frame_buf + c->frame_pos, rem);
+        c->frame_len = rem;
+        c->frame_pos = 0;
+    }
+    if (c->frame_cap < need + 1) {
+        size_t ncap = need + 1;
+        unsigned char *nb = (unsigned char *)realloc(c->frame_buf, ncap);
+        if (!nb) well_panic("out of memory (WebSocket frame)");
+        c->frame_buf = nb;
+        c->frame_cap = ncap;
+    }
+    while (c->frame_len < need) {
         int k;
         if (!ws_wait_readable(fd, 200)) {
             int closed;
@@ -449,9 +488,10 @@ static int ws_read_exact_frame(WsConn *c, WsSocket fd, unsigned char *p, size_t 
             if (deadline > 0 && well_host_now_ms() >= deadline) return -1;
             continue;
         }
-        k = ws_recv(fd, (char *)p, (int)n);
+        k = ws_recv(fd, (char *)c->frame_buf + c->frame_len,
+                    (int)(c->frame_cap - 1 - c->frame_len));
         if (k <= 0) return -1;
-        p += k; n -= (size_t)k;
+        c->frame_len += (size_t)k;
     }
     return 0;
 }
@@ -468,28 +508,32 @@ static int ws_read_exact_frame(WsConn *c, WsSocket fd, unsigned char *p, size_t 
  * closed the socket, so the peer could not tell 1002/1003/1009 apart). */
 static int ws_read_frame(WsConn *c, WsSocket fd, int *opcode, unsigned char **payload,
                          size_t *plen, int *close_code) {
-    unsigned char h[2], mask[4];
     unsigned long long n;
     int masked, fin;
-    size_t i;
+    size_t i, hdr;
+    unsigned char *buf, *mask;
     *close_code = 0;
-    if (ws_read_exact_frame(c, fd, h, 2) != 0) return -1;
-    *opcode = h[0] & 0x0F;
-    fin = (h[0] & 0x80) != 0;
-    if (h[0] & 0x70) { *close_code = WS_CLOSE_PROTOCOL; return -1; } /* W9: RSV */
-    masked = (h[1] & 0x80) != 0;
+    if (ws_buf_fill(c, fd, 2) != 0) return -1;
+    buf = c->frame_buf;
+    *opcode = buf[0] & 0x0F;
+    fin = (buf[0] & 0x80) != 0;
+    if (buf[0] & 0x70) { *close_code = WS_CLOSE_PROTOCOL; return -1; } /* W9: RSV */
+    masked = (buf[1] & 0x80) != 0;
     if (!masked) { *close_code = WS_CLOSE_PROTOCOL; return -1; }
-    n = h[1] & 0x7F;
+    n = buf[1] & 0x7F;
+    hdr = 2;
     if (n == 126) {
-        unsigned char e[2];
-        if (ws_read_exact_frame(c, fd, e, 2) != 0) return -1;
-        n = ((unsigned)e[0] << 8) | e[1];
+        if (ws_buf_fill(c, fd, 4) != 0) return -1;
+        buf = c->frame_buf;
+        n = ((unsigned)buf[2] << 8) | buf[3];
+        hdr = 4;
     } else if (n == 127) {
-        unsigned char e[8];
         int j;
-        if (ws_read_exact_frame(c, fd, e, 8) != 0) return -1;
+        if (ws_buf_fill(c, fd, 10) != 0) return -1;
+        buf = c->frame_buf;
         n = 0;
-        for (j = 0; j < 8; j++) n = (n << 8) | e[j];
+        for (j = 0; j < 8; j++) n = (n << 8) | buf[2 + j];
+        hdr = 10;
     }
     if (*opcode >= 0x8) {
         /* Control frames must not be fragmented and carry at most 125 bytes. */
@@ -505,13 +549,17 @@ static int ws_read_frame(WsConn *c, WsSocket fd, int *opcode, unsigned char **pa
         if (*opcode != 0x1 && *opcode != 0x2) { *close_code = WS_CLOSE_PROTOCOL; return -1; }
     }
     if (n > WS_MAX_FRAME_BYTES) { *close_code = WS_CLOSE_TOO_BIG; return -1; }
-    if (ws_read_exact_frame(c, fd, mask, 4) != 0) return -1;
-    *payload = (unsigned char *)malloc((size_t)n + 1);
-    if (!*payload) well_panic("out of memory (WebSocket frame)");
-    if (ws_read_exact_frame(c, fd, *payload, (size_t)n) != 0) { free(*payload); *payload = NULL; return -1; }
-    for (i = 0; i < (size_t)n; i++) (*payload)[i] ^= mask[i & 3];
-    (*payload)[n] = '\0';
-    *plen = (size_t)n;
+    {
+        size_t total = hdr + 4 + (size_t)n;
+        if (ws_buf_fill(c, fd, total) != 0) { *payload = NULL; return -1; }
+        buf = c->frame_buf;
+        mask = buf + hdr;
+        *payload = buf + hdr + 4;
+        for (i = 0; i < (size_t)n; i++) (*payload)[i] ^= mask[i & 3];
+        (*payload)[n] = '\0';
+        c->frame_pos += total;
+        *plen = (size_t)n;
+    }
     return 0;
 }
 
@@ -544,8 +592,17 @@ static void ws_send_frame(WsSocket fd, int opcode, const unsigned char *data, si
         h[hn++] = 127;
         for (i = 7; i >= 0; i--) h[hn++] = (unsigned char)((unsigned long long)n >> (i * 8));
     }
-    ws_send_all(fd, (const char *)h, hn);
-    if (n) ws_send_all(fd, (const char *)data, n);
+    if (n <= 1024) {
+        /* One send for the common small/medium frame instead of header+payload
+         * syscalls (the write lock already prevents interleaving). */
+        unsigned char buf[10 + 1024];
+        memcpy(buf, h, hn);
+        if (n) memcpy(buf + hn, data, n);
+        ws_send_all(fd, (const char *)buf, hn + n);
+    } else {
+        ws_send_all(fd, (const char *)h, hn);
+        if (n) ws_send_all(fd, (const char *)data, n);
+    }
 }
 
 /* Single write entry point for one connection (audit W3): the handler thread
@@ -725,12 +782,17 @@ static void ws_task_run(WellCtx *ctx, void *arg) {
     }
 }
 
-static void ws_task_done(void *arg) {
-    WsTask *t = (WsTask *)arg;
-    WsConn *c = t->conn;
+static void ws_task_free(WsTask *t) {
+    if (!t) return;
     if (t->text) well_release(t->text);
     if (t->reason) well_release(t->reason);
     free(t);
+}
+
+static void ws_task_done(void *arg) {
+    WsTask *t = (WsTask *)arg;
+    WsConn *c = t->conn;
+    ws_task_free(t);
     ws_conn_unref(c);
 }
 
@@ -744,6 +806,26 @@ static void ws_dispatch(WsConn *c, int kind, WellString *text, int code,
     t->text = text;
     t->code = code;
     t->reason = reason;
+    if (g_ws_inline) {
+        /* Run on this connection's reader thread: one event at a time is
+         * already the per-connection invariant, so this preserves ordering and
+         * removes the scheduler handoff from every frame. */
+        WellCtx ctx;
+        jmp_buf jb;
+        jmp_buf *old;
+        well_ctx_init(&ctx, c->id);
+        old = well_panic_push(&jb);
+        if (setjmp(jb) == 0) {
+            ws_task_run(&ctx, t);
+            well_panic_pop(old);
+        } else {
+            well_panic_pop(old);
+            well_temp_reset();
+        }
+        well_ctx_clear(&ctx);
+        ws_task_free(t);
+        return;
+    }
     well_mutex_lock(&g_ws_lock);
     c->refs++;
     well_mutex_unlock(&g_ws_lock);
@@ -812,14 +894,13 @@ static void *ws_reader_thread(void *arg) {
         c->idle_deadline = well_host_now_ms() + WS_IDLE_TIMEOUT_MS;
         well_mutex_unlock(&g_ws_lock);
         if (opcode == 0x1) {
-            WellString *text = well_string_new((const char *)payload);
+            WellString *text = well_string_new_n((const char *)payload, plen);
             ws_dispatch(c, 1, text, 0, NULL);
         } else if (opcode == 0x2) {
             /* Audit W5: the language API has no binary message, so answer with
              * 1003 (unsupported data) instead of silently dropping it. */
             ws_send_close_code(c, WS_CLOSE_UNSUPPORTED);
             ws_drain_and_shutdown(fd);
-            free(payload);
             want_close = 1;
             code = WS_CLOSE_UNSUPPORTED;
             break;
@@ -827,7 +908,6 @@ static void *ws_reader_thread(void *arg) {
             if (plen == 1) { /* invalid close payload (W6) */
                 ws_send_close_code(c, WS_CLOSE_PROTOCOL);
                 ws_drain_and_shutdown(fd);
-                free(payload);
                 break;
             }
             want_close = 1;
@@ -847,12 +927,10 @@ static void *ws_reader_thread(void *arg) {
             /* The reader thread must use the same write lock as Ws.send so the
              * close echo cannot split a handler frame (W3). */
             ws_conn_write_frame(c, 0x8, payload, plen);
-            free(payload);
             break;
         } else if (opcode == 0x9) {
             ws_conn_write_frame(c, 0xA, payload, plen);
         }
-        free(payload);
     }
 
 finish:
@@ -878,6 +956,9 @@ finish:
         if (route && route->close_fn) ws_dispatch(c, 2, NULL, code, reason);
         else if (reason) well_release(reason);
     }
+    free(c->frame_buf);
+    c->frame_buf = NULL;
+    c->frame_cap = 0;
     free(path);
     ws_conn_unref(c); /* list reference; the close task keeps it alive if scheduled */
     well_service_release();
@@ -902,6 +983,7 @@ static void *ws_listener_thread(void *arg) {
         s = ws_accept(fd);
         if (s == WS_INVALID_SOCKET) break;
         ws_apply_timeouts(s, WS_HANDSHAKE_TIMEOUT_MS, WS_SEND_TIMEOUT_MS);
+        ws_set_nodelay(s);
         {   /* Refuse instead of spawning a thread past the cap (W2). */
             int at_cap;
             well_mutex_lock(&g_ws_lock);

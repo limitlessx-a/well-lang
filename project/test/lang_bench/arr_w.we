@@ -1,0 +1,21 @@
+module bench.arr;
+
+controller ArrBench {
+    run() {
+        var n: long = 20000000;
+        var a: Array<long> = new Array<long>();
+        for (var k: int = 0; k < 1024; k = k + 1) {
+            a.push(k);
+        }
+        var acc: long = 0;
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            acc = acc + a[i % 1024];
+        }
+        var ms: long = Host.nowMs() - t0;
+        print("well-arr n=", n, " ms=", ms, " ns_per_iter=", ms * 1000000 / n,
+              " acc=", acc);
+    }
+}
+
+entry ArrBench;

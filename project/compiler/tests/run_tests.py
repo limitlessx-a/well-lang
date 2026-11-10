@@ -30,6 +30,25 @@ RUN_TIMEOUT = 120
 # Cases reported SKIP because an external dependency (requires.txt) is missing.
 SKIPPED = []
 
+# Windows Device Guard / Smart App Control can block newly linked unsigned test
+# executables.  WELL_TEST_EXEC=tcc-run compiles the emitted C and runs it inside
+# the already-trusted tcc.exe (`tcc ... -run`) instead of executing build/*.exe.
+# Native execution stays the default for CI and normal development.
+TCC_RUN = os.environ.get("WELL_TEST_EXEC") == "tcc-run"
+
+
+def tcc_run_command(c_path: str) -> list[str]:
+    from wellc.driver import find_cc, RUNTIME_DIR, RUNTIME_SOURCES
+    cmd = [find_cc(),
+           "-I", os.path.join(RUNTIME_DIR, "core"),
+           "-I", os.path.join(RUNTIME_DIR, "modules", "http"),
+           "-I", os.path.join(RUNTIME_DIR, "modules", "ws"),
+           "-I", os.path.join(RUNTIME_DIR, "modules", "mysql"),
+           c_path]
+    cmd += [os.path.join(RUNTIME_DIR, n) for n in RUNTIME_SOURCES]
+    cmd += ["-run"]
+    return cmd
+
 
 def norm(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").strip().split("\n"))
@@ -142,10 +161,10 @@ class WsClient:
             pass
 
 
-def run_ws_concurrent_case(name: str, d: str, exe: str) -> bool:
+def run_ws_concurrent_case(name: str, d: str, run_cmd: list) -> bool:
     """The listener must keep accepting while a connection is already open."""
     port = int(open(os.path.join(d, "ws_port.txt"), encoding="utf-8").read().strip())
-    p = subprocess.Popen([exe], cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = subprocess.Popen(run_cmd, cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     a = b = None
     latency = 0.0
     frames = []
@@ -213,9 +232,9 @@ def run_ws_concurrent_case(name: str, d: str, exe: str) -> bool:
     return True
 
 
-def run_ws_case(name: str, d: str, exe: str) -> bool:
+def run_ws_case(name: str, d: str, run_cmd: list) -> bool:
     port = int(open(os.path.join(d, "ws_port.txt"), encoding="utf-8").read().strip())
-    p = subprocess.Popen([exe], cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = subprocess.Popen(run_cmd, cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     c = None
     frames = []
     try:
@@ -295,12 +314,12 @@ def http_recv_response(s) -> bytes:
     return head + b"\r\n\r\n" + rest[:cl]
 
 
-def run_http_keepalive_case(name: str, d: str, exe: str) -> bool:
+def run_http_keepalive_case(name: str, d: str, run_cmd: list) -> bool:
     """Several requests on one connection; the server must keep it open."""
     port = int(open(os.path.join(d, "http_port.txt"), encoding="utf-8").read().strip())
     spec = open(os.path.join(d, "http_keepalive.txt"), "rb").read()
     requests = [r for r in spec.replace(b"\r\n", b"\n").split(b"===\n") if r.strip()]
-    p = subprocess.Popen([exe], cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = subprocess.Popen(run_cmd, cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     s = None
     for _ in range(50):
         if p.poll() is not None:
@@ -351,10 +370,10 @@ def run_http_keepalive_case(name: str, d: str, exe: str) -> bool:
     return True
 
 
-def run_http_case(name: str, d: str, exe: str) -> bool:
+def run_http_case(name: str, d: str, run_cmd: list) -> bool:
     port_file = os.path.join(d, "http_port.txt")
     port = int(open(port_file, encoding="utf-8").read().strip())
-    p = subprocess.Popen([exe], cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = subprocess.Popen(run_cmd, cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     s = None
     for _ in range(50):
         if p.poll() is not None:
@@ -409,11 +428,11 @@ def run_http_case(name: str, d: str, exe: str) -> bool:
     return True
 
 
-def run_http_concurrent_case(name: str, d: str, exe: str) -> bool:
+def run_http_concurrent_case(name: str, d: str, run_cmd: list) -> bool:
     """The listener must accept a second connection while the first is still
     waiting for its handler: the request/response pair is not serialized."""
     port = int(open(os.path.join(d, "http_port.txt"), encoding="utf-8").read().strip())
-    p = subprocess.Popen([exe], cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = subprocess.Popen(run_cmd, cwd=COMPILER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     s = None
     for _ in range(50):
         if p.poll() is not None:
@@ -492,9 +511,14 @@ def run_case(name: str) -> bool:
             SKIPPED.append(name)
             return True
 
+    c_run = os.path.join(BUILD, name + "_tcc.c")
+    if TCC_RUN:
+        build_cmd = [sys.executable, WELLC, "emit-c", src, "-o", c_run]
+    else:
+        build_cmd = [sys.executable, WELLC, "build", src, "-o", exe]
     try:
         r = subprocess.run(
-            [sys.executable, WELLC, "build", src, "-o", exe],
+            build_cmd,
             cwd=COMPILER_DIR, capture_output=True, text=True, timeout=BUILD_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -514,17 +538,18 @@ def run_case(name: str) -> bool:
     if r.returncode != 0:
         print(f"FAIL {name}: build failed\n{r.stdout}\n{r.stderr}")
         return False
+    run_cmd = tcc_run_command(c_run) if TCC_RUN else [exe]
 
     if os.path.isfile(os.path.join(d, "ws_port.txt")):
         if os.path.isfile(os.path.join(d, "ws_concurrent.txt")):
-            return run_ws_concurrent_case(name, d, exe)
-        return run_ws_case(name, d, exe)
+            return run_ws_concurrent_case(name, d, run_cmd)
+        return run_ws_case(name, d, run_cmd)
     if os.path.isfile(os.path.join(d, "http_port.txt")):
         if os.path.isfile(os.path.join(d, "http_keepalive.txt")):
-            return run_http_keepalive_case(name, d, exe)
+            return run_http_keepalive_case(name, d, run_cmd)
         if os.path.isfile(os.path.join(d, "http_concurrent.txt")):
-            return run_http_concurrent_case(name, d, exe)
-        return run_http_case(name, d, exe)
+            return run_http_concurrent_case(name, d, run_cmd)
+        return run_http_case(name, d, run_cmd)
 
     env = os.environ.copy()
     env["WELL_WORKERS"] = "1"  # deterministic tests; env.txt may override
@@ -538,7 +563,7 @@ def run_case(name: str) -> bool:
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
     try:
-        rr = subprocess.run([exe], cwd=COMPILER_DIR, capture_output=True, env=env,
+        rr = subprocess.run(run_cmd, cwd=COMPILER_DIR, capture_output=True, env=env,
                             timeout=RUN_TIMEOUT)
     except subprocess.TimeoutExpired:
         print(f"FAIL {name}: run timed out after {RUN_TIMEOUT}s ({exe})")
@@ -635,6 +660,7 @@ def run_c_tests() -> bool:
         ("rtfix_json_cycle", "rtfix json cycle: len="),
         ("rtfix_owner_race", "rtfix owner stack tls: seen_by_a=1 main=0"),
         ("rtfix_module_init", "module init nested register ok"),
+        ("src_pos_tls_test", "src pos tls ok pairs=20 errors=0"),
     ]
     ok = True
     os.makedirs(BUILD, exist_ok=True)
@@ -646,29 +672,42 @@ def run_c_tests() -> bool:
             print(f"SKIP C {name} (needs {mysql_missing})")
             continue
         src = os.path.join(HERE, "c", name + ".c")
-        exe = os.path.join(BUILD, name + ".exe")
-        cmd = [find_cc(), "-I", os.path.join(RUNTIME_DIR, "core"),
-               "-I", os.path.join(RUNTIME_DIR, "modules", "http"),
-               "-I", os.path.join(RUNTIME_DIR, "modules", "ws"),
-               "-I", os.path.join(RUNTIME_DIR, "modules", "mysql")]
-        cmd += cc_flags()
-        cmd += ["-o", exe, src]
-        if os.name != "nt":
-            cmd.append("-pthread")
-        cmd += [os.path.join(RUNTIME_DIR, n) for n in RUNTIME_SOURCES]
+        if TCC_RUN:
+            run_cmd = [find_cc(), "-I", os.path.join(RUNTIME_DIR, "core"),
+                       "-I", os.path.join(RUNTIME_DIR, "modules", "http"),
+                       "-I", os.path.join(RUNTIME_DIR, "modules", "ws"),
+                       "-I", os.path.join(RUNTIME_DIR, "modules", "mysql"),
+                       "-UNDEBUG",
+                       src]
+            run_cmd += [os.path.join(RUNTIME_DIR, n) for n in RUNTIME_SOURCES]
+            run_cmd += ["-run"]
+        else:
+            exe = os.path.join(BUILD, name + ".exe")
+            build_cmd = [find_cc(), "-I", os.path.join(RUNTIME_DIR, "core"),
+                         "-I", os.path.join(RUNTIME_DIR, "modules", "http"),
+                         "-I", os.path.join(RUNTIME_DIR, "modules", "ws"),
+                         "-I", os.path.join(RUNTIME_DIR, "modules", "mysql"),
+                         "-UNDEBUG"]
+            build_cmd += cc_flags()
+            build_cmd += ["-o", exe, src]
+            if os.name != "nt":
+                build_cmd.append("-pthread")
+            build_cmd += [os.path.join(RUNTIME_DIR, n) for n in RUNTIME_SOURCES]
+            try:
+                r = subprocess.run(build_cmd, cwd=COMPILER_DIR, capture_output=True,
+                                   text=True, timeout=BUILD_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                print(f"FAIL C {name}: build timed out after {BUILD_TIMEOUT}s")
+                ok = False
+                continue
+            if r.returncode != 0:
+                print(f"FAIL C {name}: build\n{r.stdout}\n{r.stderr}")
+                ok = False
+                continue
+            run_cmd = [exe]
         try:
-            r = subprocess.run(cmd, cwd=COMPILER_DIR, capture_output=True, text=True,
-                               timeout=BUILD_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            print(f"FAIL C {name}: build timed out after {BUILD_TIMEOUT}s")
-            ok = False
-            continue
-        if r.returncode != 0:
-            print(f"FAIL C {name}: build\n{r.stdout}\n{r.stderr}")
-            ok = False
-            continue
-        try:
-            rr = subprocess.run([exe], cwd=COMPILER_DIR, capture_output=True, text=True,
+            rr = subprocess.run(run_cmd, cwd=COMPILER_DIR, capture_output=True, text=True,
+                                env=dict(os.environ, WELL_RC_DEBUG="1"),
                                 timeout=RUN_TIMEOUT)
         except subprocess.TimeoutExpired:
             print(f"FAIL C {name}: run timed out after {RUN_TIMEOUT}s")

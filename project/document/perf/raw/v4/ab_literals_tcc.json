@@ -1,0 +1,163 @@
+{
+  "label": "literal lookup TCC base vs v4",
+  "metric_regex": "ns_per_lookup\\s+([0-9.]+)",
+  "rounds": 7,
+  "warmup": 2,
+  "variants": {
+    "base": {
+      "summary": {
+        "n": 5,
+        "min": 14.0,
+        "median": 14.0,
+        "max": 15.0,
+        "mean": 14.2
+      },
+      "samples_all": [
+        14.0,
+        14.0,
+        15.0,
+        14.0,
+        14.0,
+        14.0,
+        14.0
+      ],
+      "samples_kept": [
+        15.0,
+        14.0,
+        14.0,
+        14.0,
+        14.0
+      ],
+      "wall_s": [
+        0.19062389999817242,
+        0.0651821999999811,
+        0.06645209999987856,
+        0.0629570999990392,
+        0.06305540000175824,
+        0.06462289999763016,
+        0.06433800000013434
+      ]
+    },
+    "v4": {
+      "summary": {
+        "n": 5,
+        "min": 12.0,
+        "median": 14.0,
+        "max": 14.0,
+        "mean": 13.4
+      },
+      "samples_all": [
+        14.0,
+        14.0,
+        14.0,
+        12.0,
+        13.0,
+        14.0,
+        14.0
+      ],
+      "samples_kept": [
+        14.0,
+        12.0,
+        13.0,
+        14.0,
+        14.0
+      ],
+      "wall_s": [
+        0.18855600000097184,
+        0.06516560000090976,
+        0.06071210000300198,
+        0.057492699997965246,
+        0.06111359999704291,
+        0.06285879999995814,
+        0.06180870000025607
+      ]
+    }
+  },
+  "raw": [
+    {
+      "round": 0,
+      "variant": "base",
+      "metric": 14.0,
+      "wall_s": 0.191
+    },
+    {
+      "round": 0,
+      "variant": "v4",
+      "metric": 14.0,
+      "wall_s": 0.189
+    },
+    {
+      "round": 1,
+      "variant": "v4",
+      "metric": 14.0,
+      "wall_s": 0.065
+    },
+    {
+      "round": 1,
+      "variant": "base",
+      "metric": 14.0,
+      "wall_s": 0.065
+    },
+    {
+      "round": 2,
+      "variant": "base",
+      "metric": 15.0,
+      "wall_s": 0.066
+    },
+    {
+      "round": 2,
+      "variant": "v4",
+      "metric": 14.0,
+      "wall_s": 0.061
+    },
+    {
+      "round": 3,
+      "variant": "v4",
+      "metric": 12.0,
+      "wall_s": 0.057
+    },
+    {
+      "round": 3,
+      "variant": "base",
+      "metric": 14.0,
+      "wall_s": 0.063
+    },
+    {
+      "round": 4,
+      "variant": "base",
+      "metric": 14.0,
+      "wall_s": 0.063
+    },
+    {
+      "round": 4,
+      "variant": "v4",
+      "metric": 13.0,
+      "wall_s": 0.061
+    },
+    {
+      "round": 5,
+      "variant": "v4",
+      "metric": 14.0,
+      "wall_s": 0.063
+    },
+    {
+      "round": 5,
+      "variant": "base",
+      "metric": 14.0,
+      "wall_s": 0.065
+    },
+    {
+      "round": 6,
+      "variant": "base",
+      "metric": 14.0,
+      "wall_s": 0.064
+    },
+    {
+      "round": 6,
+      "variant": "v4",
+      "metric": 14.0,
+      "wall_s": 0.062
+    }
+  ],
+  "timestamp": "2026-10-24T19:33:46+0800"
+}

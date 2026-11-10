@@ -1291,6 +1291,12 @@ class Checker:
                 e.ty = "long"
                 e.builtin = "host_now"
                 return
+            if name == "monoUs":
+                if e.args:
+                    self.err("Host.monoUs() takes no arguments")
+                e.ty = "long"
+                e.builtin = "host_mono_us"
+                return
             if name == "env":
                 if len(e.args) != 1:
                     self.err("Host.env(name) expects 1 argument")

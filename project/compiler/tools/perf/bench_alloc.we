@@ -1,0 +1,40 @@
+module bench.alloc;
+
+// Object lifecycle microbenchmark: every iteration allocates a struct and a
+// short String, writes fields and lets the loop scope release both.  It
+// exercises well_new / registry / object pool / well_release per iteration.
+struct AllocVo extends Vo {
+    a: int;
+    b: int;
+    c: long;
+    label: String;
+}
+
+controller AllocBench {
+    run() {
+        var iters: long = 2000000;
+        var acc: long = 0;
+        for (var w: int = 0; w < 20000; w = w + 1) {
+            var o: AllocVo = new AllocVo();
+            o.a = w;
+            o.label = String.fromInt(w);
+            acc = acc + o.a;
+        }
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < iters; i = i + 1) {
+            var o: AllocVo = new AllocVo();
+            o.a = 1;
+            o.b = 2;
+            o.c = i;
+            o.label = String.fromInt(i);
+            acc = acc + o.a + o.b;
+        }
+        var elapsed: long = Host.nowMs() - t0;
+        print("iters ", iters);
+        print("total_ms ", elapsed);
+        print("ns_per_iter ", elapsed * 1000000 / iters);
+        print("checksum ", acc);
+    }
+}
+
+entry AllocBench;

@@ -1,0 +1,163 @@
+{
+  "label": "alloc TCC base vs v4(stack)",
+  "metric_regex": "ns_per_iter\\s+([0-9.]+)",
+  "rounds": 7,
+  "warmup": 2,
+  "variants": {
+    "base": {
+      "summary": {
+        "n": 5,
+        "min": 224.0,
+        "median": 224.0,
+        "max": 225.0,
+        "mean": 224.2
+      },
+      "samples_all": [
+        227.0,
+        225.0,
+        224.0,
+        224.0,
+        224.0,
+        224.0,
+        225.0
+      ],
+      "samples_kept": [
+        224.0,
+        224.0,
+        224.0,
+        224.0,
+        225.0
+      ],
+      "wall_s": [
+        0.4688626999995904,
+        0.46052879999842844,
+        0.456195700000535,
+        0.45850549999886425,
+        0.4568698000002769,
+        0.45633989999987534,
+        0.4582434000003559
+      ]
+    },
+    "v4": {
+      "summary": {
+        "n": 5,
+        "min": 72.0,
+        "median": 72.0,
+        "max": 74.0,
+        "mean": 72.6
+      },
+      "samples_all": [
+        73.0,
+        73.0,
+        73.0,
+        72.0,
+        72.0,
+        72.0,
+        74.0
+      ],
+      "samples_kept": [
+        73.0,
+        72.0,
+        72.0,
+        72.0,
+        74.0
+      ],
+      "wall_s": [
+        0.15588149999894085,
+        0.15341650000118534,
+        0.1530175000007148,
+        0.1514805000006163,
+        0.1509062000004633,
+        0.15212719999908586,
+        0.15496560000246973
+      ]
+    }
+  },
+  "raw": [
+    {
+      "round": 0,
+      "variant": "base",
+      "metric": 227.0,
+      "wall_s": 0.469
+    },
+    {
+      "round": 0,
+      "variant": "v4",
+      "metric": 73.0,
+      "wall_s": 0.156
+    },
+    {
+      "round": 1,
+      "variant": "v4",
+      "metric": 73.0,
+      "wall_s": 0.153
+    },
+    {
+      "round": 1,
+      "variant": "base",
+      "metric": 225.0,
+      "wall_s": 0.461
+    },
+    {
+      "round": 2,
+      "variant": "base",
+      "metric": 224.0,
+      "wall_s": 0.456
+    },
+    {
+      "round": 2,
+      "variant": "v4",
+      "metric": 73.0,
+      "wall_s": 0.153
+    },
+    {
+      "round": 3,
+      "variant": "v4",
+      "metric": 72.0,
+      "wall_s": 0.151
+    },
+    {
+      "round": 3,
+      "variant": "base",
+      "metric": 224.0,
+      "wall_s": 0.459
+    },
+    {
+      "round": 4,
+      "variant": "base",
+      "metric": 224.0,
+      "wall_s": 0.457
+    },
+    {
+      "round": 4,
+      "variant": "v4",
+      "metric": 72.0,
+      "wall_s": 0.151
+    },
+    {
+      "round": 5,
+      "variant": "v4",
+      "metric": 72.0,
+      "wall_s": 0.152
+    },
+    {
+      "round": 5,
+      "variant": "base",
+      "metric": 224.0,
+      "wall_s": 0.456
+    },
+    {
+      "round": 6,
+      "variant": "base",
+      "metric": 225.0,
+      "wall_s": 0.458
+    },
+    {
+      "round": 6,
+      "variant": "v4",
+      "metric": 74.0,
+      "wall_s": 0.155
+    }
+  ],
+  "timestamp": "2026-10-24T19:40:04+0800"
+}

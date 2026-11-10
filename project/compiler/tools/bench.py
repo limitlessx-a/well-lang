@@ -189,20 +189,53 @@ def bench_parser(iterations: int) -> dict:
     return stats_us(samples, "parse")
 
 
+def spawn_server(exe: str) -> subprocess.Popen:
+    """Start the built server, tolerating a scanner's transient lock.
+
+    On Windows an anti-virus/App-Control scan can briefly reject a newly built
+    executable with WinError 4551 even though it is fine moments later.  Retry
+    for a few seconds instead of failing the whole benchmark run.  Windows Smart
+    App Control also blocks *new* unsigned test binaries launched directly by
+    an unsigned host; launching through cmd.exe (the documented dev workaround
+    for this machine) works and keeps the benchmark reproducible.
+    """
+    last: OSError | None = None
+    argv = ["cmd.exe", "/c", exe] if os.name == "nt" else [exe]
+    for _ in range(40):
+        try:
+            return subprocess.Popen(
+                argv, cwd=COMPILER_DIR,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
+        except OSError as e:
+            last = e
+            time.sleep(0.25)
+    assert last is not None
+    raise last
+
+
+def stop_server(proc: subprocess.Popen) -> None:
+    """Stop the server (and, on Windows, the cmd.exe wrapper's child)."""
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        proc.kill()
+
+
 def run_http(iterations: int, clients: int, seconds: float) -> dict:
     port = free_port()
     exe = build_server(port)
-    proc = subprocess.Popen(
-        [exe], cwd=COMPILER_DIR,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-    )
+    proc = spawn_server(exe)
     try:
         wait_ready(port, proc)
         lat = bench_latency(port, iterations)
         thr = bench_throughput(port, clients, seconds)
         return {"http_latency": lat, "http_throughput": thr}
     finally:
-        proc.kill()
+        stop_server(proc)
         try:
             proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:

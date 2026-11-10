@@ -12,6 +12,11 @@
 #define WELL_FLAG_IMMORTAL 1u
 #define WELL_FLAG_IN_MODEL 2u
 #define WELL_FLAG_FROZEN 4u
+#define WELL_FLAG_HASHED 8u
+#define WELL_FLAG_UNREGISTERED 16u
+/* Storage lives in a C frame (stack-allocated struct): the destroy function
+ * releases its reference fields, but well_obj_free must not free the pointer. */
+#define WELL_FLAG_STACK 32u
 
 #if defined(_WIN32)
 typedef volatile long WellAtomicInt;
@@ -20,14 +25,17 @@ typedef volatile int WellAtomicInt;
 #endif
 
 typedef struct WellObj {
-    WellAtomicInt rc;
-    unsigned int type_id;
-    unsigned int flags;
+    /* 8-byte fields first, then the 4-byte header words: 48 bytes total. */
     long long oid;
     void *exec_pins;     /* internal: event execution pins */
     struct WellObj *reg_next; /* internal: oid registry */
     struct WellObj *reg_prev;
-    size_t alloc_size;
+    WellAtomicInt rc;
+    unsigned int type_id;
+    unsigned int flags;
+    /* Pool class / allocation size.  32 bits are enough: objects above
+     * POOL_MAX_SIZE are malloc'd and only need the "not pooled" marker. */
+    unsigned int alloc_size;
 } WellObj;
 
 typedef union WellValue {
@@ -41,12 +49,48 @@ typedef struct WellMap WellMap;
 typedef struct WellLinked WellLinked;
 typedef struct WellLinkedNode WellLinkedNode;
 
+/* Array layout is public so generated hot loops can use the fast read macro
+ * below without an out-of-line call (TinyCC does not inline static functions). */
+struct WellArray {
+    WellObj hdr;
+    WellValue *items;
+    long long len;
+    long long cap;
+    int is_ref;
+    /* Small arrays keep their first 4 elements inline to avoid a malloc/free
+     * pair for the common `new Array; push; release` pattern. */
+    WellValue inline_items[4];
+};
+
+/* Map layout is public for the stack-literal fast path and the small-map
+ * linear lookup helpers. */
+struct WellMap {
+    WellObj hdr;
+    struct WellString **keys;   /* insertion order */
+    WellValue *vals;
+    long long len;
+    long long cap;
+    long long *slots;    /* 0 = empty, -1 = tombstone, >0 = entry index + 1 */
+    long long slot_cap;  /* power of two; 0 = small linear mode */
+    long long tomb;
+    int is_ref;
+    struct WellString *inline_keys[4];
+    WellValue inline_vals[4];
+    long long inline_slots[8];
+};
+
 typedef struct WellString {
     WellObj hdr;
-    char *data;
     unsigned long long hash;
     long long len; /* cached byte length: len(s) is used in parsing loops */
 } WellString;
+
+/* String bytes are stored inline immediately after the header in the same
+ * allocation; this accessor replaces the former `data` pointer (8 bytes saved
+ * per String, and 64B is now an exact pool class). */
+static inline char *well_str_data(WellString *s) {
+    return (char *)(s + 1);
+}
 
 /* Mutable byte buffer: build binary/text payloads without O(n^2) concatenation. */
 typedef struct WellBytes {
@@ -81,14 +125,41 @@ typedef struct WellCtx {
 /* runtime */
 void well_init(void);
 void well_shutdown(void);
-void well_panic(const char *msg);
+#if defined(__GNUC__) || defined(__clang__)
+#define WELL_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define WELL_NORETURN __attribute__((noreturn))
+#else
+#define WELL_UNLIKELY(x) (x)
+#define WELL_NORETURN
+#endif
+WELL_NORETURN void well_panic(const char *msg);
 /* exit code for an uncaught panic (controller/assembly phase) */
 #define WELL_PANIC_EXIT_CODE 70
 /* current source location (set by generated code) shown in panic messages */
 void well_source_set(const char *file, int line);
+/* read back the calling thread's position (diagnostics/tests) */
+const char *well_source_file(void);
+int well_source_line(void);
 /* checked integer division/modulo (panic on zero divisor) */
 long long well_int_div(long long a, long long b);
 long long well_int_mod(long long a, long long b);
+
+/* Inline checked division/modulo used by generated code.
+ *
+ * The out-of-line call used to prevent the C compiler from strength-reducing
+ * constant divisors and from keeping the operands in registers; with the check
+ * inlined the hot path is a predictable branch plus the native instruction.
+ * The panic path stays out of line. */
+static inline long long well_div_checked(long long a, long long b) {
+    if (WELL_UNLIKELY(b == 0)) return well_int_div(a, b); /* panics */
+    if (WELL_UNLIKELY(a == (-9223372036854775807LL - 1) && b == -1)) return 0;
+    return a / b;
+}
+static inline long long well_mod_checked(long long a, long long b) {
+    if (WELL_UNLIKELY(b == 0)) return well_int_mod(a, b); /* panics */
+    if (WELL_UNLIKELY(a == (-9223372036854775807LL - 1) && b == -1)) return 0;
+    return a % b;
+}
 
 /* module registry: core does not include module headers */
 typedef struct WellModule {
@@ -112,6 +183,10 @@ void well_builtin_event_register(WellBuiltinEventKind kind,
 void *well_builtin_event_new(WellBuiltinEventKind kind, long long oid, void *payload);
 
 void *well_new(size_t size, unsigned int type_id, long long oid);
+void *well_new_uninit(size_t size, unsigned int type_id, long long oid);
+void *well_new_uninit_unregistered(size_t size, unsigned int type_id, long long oid);
+void *well_new_zero_unregistered(size_t size, unsigned int type_id, long long oid);
+void well_register_obj(WellObj *o);
 void well_register_type(unsigned int id, void (*destroy)(void *));
 void well_retain(void *obj);
 void well_release(void *obj);
@@ -185,15 +260,44 @@ void well_ctx_init(WellCtx *ctx, long long oid);
 void well_ctx_clear(WellCtx *ctx);
 void well_ctx_pin(WellCtx *ctx, long long oid);
 void well_ctx_unpin(WellCtx *ctx, long long oid);
+int well_ctx_bind(WellCtx *ctx, void **slot, int owned);
+void well_ctx_replace_at(WellCtx *ctx, int idx, void **slot, void *new_value, int owned);
 void well_ctx_replace(WellCtx *ctx, void **slot, void *new_value, int owned);
-int well_ctx_mark(WellCtx *ctx);
 void well_ctx_release_from(WellCtx *ctx, int mark);
+/* Hot scope helpers.  These are macros rather than static inline functions:
+ * TinyCC does not reliably inline them, and every generated loop/block calls
+ * well_ctx_mark()/well_ctx_release_to() twice per iteration. */
+#define well_ctx_mark(ctx) ((ctx) ? (ctx)->n : 0)
+#define well_ctx_release_to(ctx, mark) \
+    do { \
+        WellCtx *_wctx = (ctx); \
+        if (_wctx && _wctx->n > (mark)) well_ctx_release_from(_wctx, (mark)); \
+    } while (0)
 void well_track(WellCtx *ctx, void *obj);        /* borrow -> retain + track */
 void well_track_owned(WellCtx *ctx, void *obj);  /* transfer ownership to frame */
 
 /* ownership checks */
+#ifdef WELL_NO_OID_CHECK
+#define well_check_oid(obj, ctx, where) ((void)0)
+#define well_check_oid_at(obj, ctx, where, file, line) ((void)0)
+#define well_check_value_oid(target, value, ctx) ((void)0)
+#else
 void well_check_oid(void *obj, WellCtx *ctx, const char *where);
 void well_check_value_oid(void *target, void *value, WellCtx *ctx);
+/* Fast path for generated field writes: the oid/frozen test is inlined and a
+ * violation calls out of line, where the exact source position is attached, so
+ * the statement no longer needs a separate well_source_set(). */
+WELL_NORETURN void well_check_oid_fail(void *obj, WellCtx *ctx, const char *where,
+                                       const char *file, int line);
+#define well_check_oid_at(obj, ctx, where, file, line) \
+    do { \
+        WellObj *_wo = (WellObj *)(obj); \
+        WellCtx *_wc = (ctx); \
+        if (WELL_UNLIKELY(!_wo || _wo->oid != _wc->oid || \
+                          (_wo->flags & WELL_FLAG_FROZEN))) \
+            well_check_oid_fail(_wo, _wc, (where), (file), (line)); \
+    } while (0)
+#endif
 void well_set_ref(void *owner, void **slot, void *val);
 /* static-class lifecycle: data belongs to the assembly oid (startup ctx.oid,
  * currently 0); writable during startup only, read-only after well_run_loop */
@@ -233,11 +337,18 @@ void well_cache_remove_ctx(WellCtx *ctx);
 
 /* Strings */
 WellString *well_string_lit(const char *s);
+/* Per-literal-site cache: codegen emits a function-local static pointer so a
+ * hot literal does one load + branch instead of hashing/probing the intern
+ * table on every evaluation. */
+WellString *well_string_lit_slot(WellString **slot, const char *s);
 WellString *well_string_new(const char *s);
 WellString *well_string_concat(WellString *a, WellString *b);
 const char *well_string_cstr(WellString *s);
 int well_string_eq(WellString *a, WellString *b);
 long long well_string_len(WellString *s);
+/* Lazily computes/caches the FNV-1a hash (most Strings are never used as Map
+ * keys or compared, so hashing at creation was wasted work). */
+unsigned long long well_string_hash(WellString *s);
 
 /* String helpers, all byte oriented (consistent with String.length). */
 long long well_str_byte_at(WellString *s, long long i);
@@ -292,11 +403,26 @@ WellString *well_str_replace_take(WellString *s, WellString *old_s, WellString *
 
 /* containers: Array<T> / Map<T> (homogeneous, String keys) */
 WellArray *well_array_new(WellCtx *ctx, int is_ref);
+WellArray *well_array_new_flat(WellCtx *ctx, int is_ref);
 WellMap *well_map_new(WellCtx *ctx, int is_ref);
+WellMap *well_map_new_flat(WellCtx *ctx, int is_ref);
 long long well_array_len(WellArray *a);
 void well_array_push(WellArray *a, WellValue v, WellCtx *ctx);
 WellValue well_array_pop(WellArray *a, WellCtx *ctx);
 WellValue well_array_get(WellArray *a, long long i);
+/* Fast path for hot indexed reads.  Same null/range behavior as
+ * well_array_get().  TinyCC does not inline static functions, so it keeps the
+ * out-of-line call; optimized compilers get an always-inline helper. */
+#if defined(__TINYC__)
+#define well_array_get_fast(a, i) well_array_get((a), (i))
+#else
+static inline __attribute__((always_inline)) WellValue well_array_get_fast(WellArray *a, long long i) {
+    WellValue v;
+    v.i = 0;
+    if (a && i >= 0 && i < a->len) v = a->items[i];
+    return v;
+}
+#endif
 void well_array_set(WellArray *a, long long i, WellValue v, WellCtx *ctx);
 WellArray *well_array_slice(WellArray *a, long long start, long long end, WellCtx *ctx);
 WellArray *well_array_concat(WellArray *a, WellArray *b, WellCtx *ctx);
@@ -344,9 +470,11 @@ WellValue well_linked_value(WellLinkedNode *n);
 static inline WellValue well_box_i(long long v) { WellValue x; x.i = v; return x; }
 static inline WellValue well_box_d(double v) { WellValue x; x.d = v; return x; }
 static inline WellValue well_box_p(void *v) { WellValue x; x.p = v; return x; }
-static inline long long well_unbox_i(WellValue v) { return v.i; }
-static inline double well_unbox_d(WellValue v) { return v.d; }
-static inline void *well_unbox_p(WellValue v) { return v.p; }
+/* Value accessors are macros: TinyCC does not inline the former helpers and
+ * they sit on every container read.  The argument is evaluated once. */
+#define well_unbox_i(v) ((v).i)
+#define well_unbox_d(v) ((v).d)
+#define well_unbox_p(v) ((v).p)
 
 /* events / subscriptions */
 #define WELL_CHANNEL_ALL (-1LL)
@@ -397,6 +525,9 @@ void well_file_remove(const char *path);
 
 /* Host API */
 long long well_host_now_ms(void);
+/* monotonic microseconds (QPC / CLOCK_MONOTONIC): benchmark-grade resolution */
+long long well_mono_us(void);
+long long well_host_mono_us(void);
 WellString *well_host_env(const char *name);
 void well_log_str(WellString *s);
 void well_log_int(long long v);

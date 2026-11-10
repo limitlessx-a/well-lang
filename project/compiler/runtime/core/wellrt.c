@@ -31,20 +31,52 @@ static int g_inited = 0;
  * existing RC-atomic policy above. */
 #if defined(_WIN32)
 static volatile LONG64 g_live = 0;
-static long long live_inc(void) { return (long long)InterlockedIncrement64(&g_live); }
-static long long live_dec(void) { return (long long)InterlockedDecrement64(&g_live); }
-static long long live_load(void) { return (long long)InterlockedCompareExchange64(&g_live, 0, 0); }
 #elif defined(__GNUC__) || defined(__clang__)
 static volatile long long g_live = 0;
-static long long live_inc(void) { return __atomic_add_fetch(&g_live, 1, __ATOMIC_RELAXED); }
-static long long live_dec(void) { return __atomic_sub_fetch(&g_live, 1, __ATOMIC_RELAXED); }
-static long long live_load(void) { return __atomic_load_n(&g_live, __ATOMIC_RELAXED); }
 #else
-/* No atomic builtins: the runtime is only supported single-threaded here. */
 static volatile long long g_live = 0;
-static long long live_inc(void) { return ++g_live; }
-static long long live_dec(void) { return --g_live; }
-static long long live_load(void) { return g_live; }
+#endif
+/* Diagnostic only: the counter is off unless WELL_RC_DEBUG is set, so normal
+ * runs do not pay two global atomic RMWs per object allocation/release. */
+static int g_live_track = 0;
+static int g_live_cfg = 0;
+static void live_cfg_init(void) {
+    const char *e;
+    if (g_live_cfg) return;
+    g_live_cfg = 1;
+    e = getenv("WELL_RC_DEBUG");
+    g_live_track = e && e[0] && e[0] != '0';
+}
+#if defined(_WIN32)
+static long long live_inc(void) {
+    if (!g_live_track) return 0;
+    return (long long)InterlockedIncrement64(&g_live);
+}
+static long long live_dec(void) {
+    if (!g_live_track) return 0;
+    return (long long)InterlockedDecrement64(&g_live);
+}
+static long long live_load(void) {
+    if (!g_live_track) return 0;
+    return (long long)InterlockedCompareExchange64(&g_live, 0, 0);
+}
+#elif defined(__GNUC__) || defined(__clang__)
+static long long live_inc(void) {
+    if (!g_live_track) return 0;
+    return __atomic_add_fetch(&g_live, 1, __ATOMIC_RELAXED);
+}
+static long long live_dec(void) {
+    if (!g_live_track) return 0;
+    return __atomic_sub_fetch(&g_live, 1, __ATOMIC_RELAXED);
+}
+static long long live_load(void) {
+    if (!g_live_track) return 0;
+    return __atomic_load_n(&g_live, __ATOMIC_RELAXED);
+}
+#else
+static long long live_inc(void) { if (!g_live_track) return 0; return ++g_live; }
+static long long live_dec(void) { if (!g_live_track) return 0; return --g_live; }
+static long long live_load(void) { return g_live_track ? g_live : 0; }
 #endif
 
 /* ---------- oid object registry ---------- */
@@ -103,7 +135,7 @@ static WellObj *well_registry_take(long long oid) {
 
 /* ---------- fixed-size object pool ---------- */
 #define POOL_MAX_SIZE 4096u
-#define POOL_ALIGN 16u
+#define POOL_ALIGN 8u
 #define POOL_CLASSES (POOL_MAX_SIZE / POOL_ALIGN + 1u)
 #define POOL_DEFAULT_TTL_MS 60000LL
 #define POOL_DEFAULT_MAX_MB 64LL
@@ -140,12 +172,115 @@ static size_t pool_class(size_t size) {
     return (size + POOL_ALIGN - 1u) / POOL_ALIGN;
 }
 
+/* ---------- per-thread pool cache ----------
+ * The global pool lock was taken on every object/String allocation and release.
+ * Each thread now keeps a small bounded free list per size class; it only
+ * touches the global pool when the local list is empty/full, or when it exits.
+ * The TLS key is created in well_init() (single-threaded) 鈥?creating it lazily
+ * from two connection threads let them read each other's cache. */
+#define POOL_TLS_PER_CLASS 32
+#define POOL_TLS_MAX_BYTES (256u * 1024u)
+
+typedef struct WellPoolTls {
+    PoolNode *head[POOL_CLASSES];
+    int count[POOL_CLASSES];
+    size_t bytes;
+} WellPoolTls;
+
+static WellTlsKey g_pool_tls_key = WELL_TLS_KEY_INVALID;
+static int g_pool_tls_enabled = 1;
+static int g_pool_tls_cfg = 0;
+
 static size_t pool_limit_bytes(void);
+static void pool_tls_flush(WellPoolTls *t);
+
+static void pool_tls_cfg_init(void) {
+    const char *e;
+    if (g_pool_tls_cfg) return;
+    g_pool_tls_cfg = 1;
+    e = getenv("WELL_POOL_TLS");
+    if (e && e[0] && atoi(e) == 0) g_pool_tls_enabled = 0;
+}
+
+static void pool_tls_destructor(void *p) {
+    if (!p) return;
+    pool_tls_flush((WellPoolTls *)p);
+    free(p);
+}
+
+static void pool_tls_ensure(void) {
+    pool_tls_cfg_init();
+    if (!g_pool_tls_enabled) return;
+    if (g_pool_tls_key == WELL_TLS_KEY_INVALID)
+        g_pool_tls_key = well_tls_key_create(pool_tls_destructor);
+}
+
+static WellPoolTls *pool_tls_get(int create) {
+    WellPoolTls *t;
+    if (!g_pool_tls_enabled || g_pool_tls_key == WELL_TLS_KEY_INVALID) return NULL;
+    t = (WellPoolTls *)well_tls_get(g_pool_tls_key);
+    if (t || !create) return t;
+    t = (WellPoolTls *)calloc(1, sizeof(WellPoolTls));
+    if (!t) return NULL;
+    well_tls_set(g_pool_tls_key, t);
+    return t;
+}
+
+/* Return cached blocks to the global pool; used at thread exit/shutdown. */
+static void pool_tls_flush(WellPoolTls *t) {
+    int c;
+    size_t limit;
+    if (!t) return;
+    limit = pool_limit_bytes();
+    well_lock_acquire(&g_pool_lock);
+    for (c = 1; c < (int)POOL_CLASSES; c++) {
+        PoolNode *n = t->head[c];
+        while (n) {
+            PoolNode *next = n->next;
+            if (g_pool_bytes + n->size <= limit) {
+                n->next = g_pool[c];
+                g_pool[c] = n;
+                g_pool_bytes += n->size;
+            } else {
+                free(n);
+            }
+            n = next;
+        }
+        t->head[c] = NULL;
+        t->count[c] = 0;
+    }
+    t->bytes = 0;
+    well_lock_release(&g_pool_lock);
+}
+
+/* Windows TLS slots have no destructor; the thread wrapper calls this. */
+void well_pool_thread_cleanup(void) {
+    WellPoolTls *t;
+    if (g_pool_tls_key == WELL_TLS_KEY_INVALID) return;
+    t = (WellPoolTls *)well_tls_get(g_pool_tls_key);
+    if (!t) return;
+    well_tls_set(g_pool_tls_key, NULL);
+    pool_tls_flush(t);
+    free(t);
+}
+
 static void *pool_take(size_t size) {
     size_t c = pool_class(size);
     PoolNode *n;
+    WellPoolTls *t;
     pool_cfg_init();
     if (size > POOL_MAX_SIZE) return NULL;
+    pool_tls_ensure();
+    t = pool_tls_get(0);
+    if (t) {
+        n = t->head[c];
+        if (n) {
+            t->head[c] = n->next;
+            t->count[c]--;
+            t->bytes -= n->size;
+            return n;
+        }
+    }
     well_lock_acquire(&g_pool_lock);
     n = g_pool[c];
     if (n) {
@@ -160,13 +295,25 @@ void well_obj_free(void *obj) {
     WellObj *o = (WellObj *)obj;
     PoolNode *n;
     size_t size, c;
+    WellPoolTls *t;
     if (!o) return;
+    if (o->flags & WELL_FLAG_STACK) return; /* C-frame storage, not heap */
     size = o->alloc_size;
     if (size == 0 || size > POOL_MAX_SIZE) { free(o); return; }
     c = pool_class(size);
     n = (PoolNode *)o;
-    well_lock_acquire(&g_pool_lock);
     n->size = c * POOL_ALIGN;
+    pool_tls_ensure();
+    t = pool_tls_get(1);
+    if (t && t->count[c] < POOL_TLS_PER_CLASS &&
+        t->bytes + n->size <= POOL_TLS_MAX_BYTES) {
+        n->next = t->head[c];
+        t->head[c] = n;
+        t->count[c]++;
+        t->bytes += n->size;
+        return;
+    }
+    well_lock_acquire(&g_pool_lock);
     if (g_pool_bytes + n->size > pool_limit_bytes()) {
         well_lock_release(&g_pool_lock);
         free(o);
@@ -212,6 +359,7 @@ static size_t pool_limit_bytes(void) {
 
 static void well_pool_shutdown(void) {
     int i;
+    well_pool_thread_cleanup();
     well_lock_acquire(&g_pool_lock);
     for (i = 1; i < (int)POOL_CLASSES; i++) {
         PoolNode *n = g_pool[i];
@@ -241,12 +389,22 @@ static WellMutex g_print_mutex;
 static int g_print_inited = 0;
 
 /* ---------- atomic RC ---------- */
+/* 1 until the first thread is started (assembly + controller run). */
+static volatile int g_rc_single = 1;
+void well_rc_mark_multithreaded(void) { g_rc_single = 0; }
+
 #ifdef _WIN32
 static long well_atomic_load(WellAtomicInt *p) {
     return InterlockedCompareExchange((volatile LONG *)p, 0, 0);
 }
 static long well_atomic_inc(WellAtomicInt *p) {
+#ifdef __TINYC__
+    /* TinyCC's InterlockedIncrement returns the OLD value; normalize to the
+     * new count so well_retain() can use one RMW. */
+    return InterlockedIncrement((volatile LONG *)p) + 1;
+#else
     return InterlockedIncrement((volatile LONG *)p);
+#endif
 }
 static long well_atomic_dec(WellAtomicInt *p) {
     return InterlockedDecrement((volatile LONG *)p);
@@ -308,26 +466,66 @@ long long well_int_mod(long long a, long long b) {
     return a % b;
 }
 
-/* Source position of the statement currently running on this thread. */
-static WellTlsKey g_src_file_key = WELL_TLS_KEY_INVALID;
-static WellTlsKey g_src_line_key = WELL_TLS_KEY_INVALID;
+/* Source position of the statement currently running on this thread.
+ *
+ * Generated code emits one well_source_set before every potentially panicking
+ * statement, so this sits on the hot path.  The v2 scheme did two OS TLS
+ * writes per call (~6.5 ns measured); one TLS read of a per-thread position
+ * struct is ~1.5 ns and needs no compiler TLS support (TinyCC, MinGW __thread
+ * emutls and __declspec(thread)-ignoring GCC builds all behave consistently).
+ * Linux ELF targets use native compiler TLS, which is free. */
+typedef struct {
+    const char *file;
+    int line;
+} WellSrcPos;
+
+#if !defined(_WIN32) && defined(__GNUC__) && !defined(__TINYC__)
+#define WELL_NATIVE_SRC_TLS 1
+static __thread WellSrcPos g_src_pos;
+static void src_tls_ensure(void) {}
+void well_source_set(const char *file, int line) {
+    g_src_pos.file = file;
+    g_src_pos.line = line;
+}
+static const char *src_file_get(void) { return g_src_pos.file; }
+static int src_line_get(void) { return g_src_pos.line; }
+#else
+static WellTlsKey g_src_pos_key = WELL_TLS_KEY_INVALID;
 static void src_tls_ensure(void) {
-    if (g_src_file_key == WELL_TLS_KEY_INVALID)
-        g_src_file_key = well_tls_key_create(NULL);
-    if (g_src_line_key == WELL_TLS_KEY_INVALID)
-        g_src_line_key = well_tls_key_create(NULL);
+    if (g_src_pos_key == WELL_TLS_KEY_INVALID)
+        g_src_pos_key = well_tls_key_create(free);
+}
+static WellSrcPos *src_pos(void) {
+    WellSrcPos *p;
+    if (g_src_pos_key == WELL_TLS_KEY_INVALID) src_tls_ensure();
+    if (g_src_pos_key == WELL_TLS_KEY_INVALID) return NULL;
+    p = (WellSrcPos *)well_tls_get(g_src_pos_key);
+    if (!p) {
+        p = (WellSrcPos *)calloc(1, sizeof(WellSrcPos));
+        if (p) well_tls_set(g_src_pos_key, p);
+    }
+    return p;
 }
 void well_source_set(const char *file, int line) {
-    src_tls_ensure();
-    well_tls_set(g_src_file_key, (void *)file);
-    well_tls_set(g_src_line_key, (void *)(intptr_t)line);
+    WellSrcPos *p = src_pos();
+    if (p) { p->file = file; p->line = line; }
 }
 static const char *src_file_get(void) {
-    return (const char *)well_tls_get(g_src_file_key);
+    WellSrcPos *p = src_pos();
+    return p ? p->file : NULL;
 }
 static int src_line_get(void) {
-    return (int)(intptr_t)well_tls_get(g_src_line_key);
+    WellSrcPos *p = src_pos();
+    return p ? p->line : 0;
 }
+#endif
+
+const char *well_source_file(void) { return src_file_get(); }
+int well_source_line(void) { return src_line_get(); }
+
+/* Per-thread IdUtil block cache (see well_id_util_get_id). */
+static WellTlsKey g_id_cache_key = WELL_TLS_KEY_INVALID;
+static void id_cache_key_ensure(void);
 
 void well_panic(const char *msg) {
     jmp_buf *env = panic_env_get();
@@ -370,7 +568,10 @@ static void bytes_destroy(void *p);
 static void temp_tls_ensure(void);
 
 void well_init(void) {
+    live_cfg_init();
     pool_cfg_init();
+    /* Create the TLS key before any worker/connection thread exists. */
+    pool_tls_ensure();
     memset(g_destroy, 0, sizeof(g_destroy));
     memset(g_type_desc, 0, sizeof(g_type_desc));
     g_inited = 1;
@@ -378,6 +579,7 @@ void well_init(void) {
     panic_tls_ensure();
     src_tls_ensure();
     temp_tls_ensure();
+    id_cache_key_ensure();
     well_mutex_init(&g_print_mutex);
     g_print_inited = 1;
     well_register_type(WELL_T_STRING, string_destroy);
@@ -388,15 +590,19 @@ void well_init(void) {
 }
 
 /* ---------- object / rc ---------- */
-void *well_new(size_t size, unsigned int type_id, long long oid) {
+static void *well_alloc_obj(size_t size, unsigned int type_id, long long oid, int zero) {
     size_t alloc_size = size;
     WellObj *o;
     /* Allocate whole pool classes: a class can host several object sizes, so a
      * smaller allocation must never be reused for a larger object. */
     if (size <= POOL_MAX_SIZE) alloc_size = pool_class(size) * POOL_ALIGN;
     o = (WellObj *)pool_take(size);
-    if (o) memset(o, 0, size);
-    else o = (WellObj *)calloc(1, alloc_size);
+    if (o) {
+        if (zero) memset(o, 0, size);
+    } else {
+        o = zero ? (WellObj *)calloc(1, alloc_size)
+                 : (WellObj *)malloc(alloc_size);
+    }
     if (!o) well_panic("out of memory (well_new)");
     o->rc = 1;
     o->type_id = type_id;
@@ -405,10 +611,42 @@ void *well_new(size_t size, unsigned int type_id, long long oid) {
     o->exec_pins = NULL;
     o->reg_next = NULL;
     o->reg_prev = NULL;
-    o->alloc_size = alloc_size;
+    o->alloc_size = (alloc_size <= POOL_MAX_SIZE) ? (unsigned int)alloc_size : 0u;
     live_inc();
+    return o;
+}
+
+void *well_new(size_t size, unsigned int type_id, long long oid) {
+    WellObj *o = (WellObj *)well_alloc_obj(size, type_id, oid, 1);
     well_registry_add(o);
     return o;
+}
+
+void *well_new_uninit(size_t size, unsigned int type_id, long long oid) {
+    WellObj *o = (WellObj *)well_alloc_obj(size, type_id, oid, 0);
+    well_registry_add(o);
+    return o;
+}
+
+void *well_new_uninit_unregistered(size_t size, unsigned int type_id, long long oid) {
+    WellObj *o = (WellObj *)well_alloc_obj(size, type_id, oid, 0);
+    o->flags |= WELL_FLAG_UNREGISTERED;
+    return o;
+}
+
+/* Zeroed, unregistered object: used for inline HTTP route events that are
+ * created and released on the same thread before anyone can look them up by
+ * oid.  Model.set (well_register_obj) registers them if a handler stores one. */
+void *well_new_zero_unregistered(size_t size, unsigned int type_id, long long oid) {
+    WellObj *o = (WellObj *)well_alloc_obj(size, type_id, oid, 1);
+    o->flags |= WELL_FLAG_UNREGISTERED;
+    return o;
+}
+
+void well_register_obj(WellObj *o) {
+    if (!o || !(o->flags & WELL_FLAG_UNREGISTERED)) return;
+    o->flags &= ~WELL_FLAG_UNREGISTERED;
+    well_registry_add(o);
 }
 
 void well_register_type(unsigned int id, void (*destroy)(void *)) {
@@ -489,19 +727,43 @@ void well_retain(void *obj) {
     WellObj *o = (WellObj *)obj;
     if (!o) return;
     if (o->flags & WELL_FLAG_IMMORTAL) return;
-    if (well_atomic_load(&o->rc) <= 0) well_panic("retain of dead object");
-    well_atomic_inc(&o->rc);
+    /* Single-threaded phase (assembly/controller run before any thread is
+     * started): RC cannot be observed by another thread, so a plain
+     * increment is equivalent and avoids the locked RMW.  The first
+     * well_thread_start() turns this off for the rest of the process. */
+    if (g_rc_single) {
+        long r = o->rc;
+        o->rc = r + 1;
+        if (r == 0) well_panic("retain of dead object");
+        return;
+    }
+    /* Single atomic RMW; a valid object had rc >= 1 before the increment. */
+    if (well_atomic_inc(&o->rc) == 1) well_panic("retain of dead object");
 }
 
 void well_release(void *obj) {
     WellObj *o = (WellObj *)obj;
+    long rc;
     if (!o) return;
     if (o->flags & WELL_FLAG_IMMORTAL) return;
-    if (well_atomic_load(&o->rc) <= 0) well_panic("release of dead object");
-    if (well_atomic_dec(&o->rc) == 0) {
+    /* See well_retain(): plain count while the process is single-threaded. */
+    if (g_rc_single) {
+        rc = --o->rc;
+    } else {
+        /* One atomic RMW instead of load-then-decrement.  A double release still
+         * trips the negative-count panic below. */
+        rc = well_atomic_dec(&o->rc);
+    }
+    if (rc < 0) well_panic("release of dead object");
+    if (rc == 0) {
         live_dec();
-        well_event_unpin_payload(o);
-        well_registry_remove(o);
+        /* Strings are never in the oid registry nor event payload pins (both
+         * are oid-owned objects).  Skipping both saves a registry-shard
+         * spinlock per String release. */
+        if (o->type_id != WELL_T_STRING) {
+            if (o->exec_pins) well_event_unpin_payload(o);
+            if (!(o->flags & WELL_FLAG_UNREGISTERED)) well_registry_remove(o);
+        }
         if (o->type_id < WELL_MAX_TYPES && g_destroy[o->type_id])
             g_destroy[o->type_id](o);
         else
@@ -540,6 +802,22 @@ static WellTempStack *temp_stack(void) {
 /* Called when a thread ends (Windows TLS slots have no destructor). */
 void well_temp_thread_cleanup(void) {
     WellTempStack *t;
+    if (g_id_cache_key != WELL_TLS_KEY_INVALID) {
+        void *idc = well_tls_get(g_id_cache_key);
+        if (idc) {
+            well_tls_set(g_id_cache_key, NULL);
+            free(idc);
+        }
+    }
+#ifndef WELL_NATIVE_SRC_TLS
+    if (g_src_pos_key != WELL_TLS_KEY_INVALID) {
+        void *pos = well_tls_get(g_src_pos_key);
+        if (pos) {
+            well_tls_set(g_src_pos_key, NULL);
+            free(pos);
+        }
+    }
+#endif
     if (g_temps_key == WELL_TLS_KEY_INVALID) return;
     t = (WellTempStack *)well_tls_get(g_temps_key);
     if (!t) return;
@@ -669,6 +947,46 @@ void well_ctx_unpin(WellCtx *ctx, long long oid) {
     }
 }
 
+/* Bind a reference variable to a stable journal slot.
+ *
+ * The returned index is the binding's identity in the frame journal: every
+ * later assignment to this variable updates exactly that entry, even when two
+ * bindings currently hold the same object address.  That is what makes
+ * ``a = b`` / parameter reassignment / null-then-assigned bindings safe; the
+ * old pointer-scan implementation confused aliases.
+ *
+ * ``owned`` transfers the incoming reference-count edge to the frame (a fresh
+ * object).  Otherwise the frame takes its own edge, so the binding stays valid
+ * even if the source container/static is mutated during the frame.
+ */
+int well_ctx_bind(WellCtx *ctx, void **slot, int owned) {
+    void *obj;
+    int idx;
+    if (!ctx || !slot) return -1;
+    obj = *slot;
+    if (obj && !owned) well_retain(obj);
+    ctx_refs_reserve(ctx, ctx->n + 1);
+    idx = ctx->n;
+    ctx->refs[ctx->n++] = obj;
+    return idx;
+}
+
+/* Replace a journalled binding by slot index (O(1), no pointer scan). */
+void well_ctx_replace_at(WellCtx *ctx, int idx, void **slot, void *new_value, int owned) {
+    void *old;
+    if (!ctx || !slot) return;
+    old = *slot;
+    if (new_value && !owned) well_retain(new_value);
+    if (idx >= 0 && idx < ctx->n) {
+        ctx->refs[idx] = new_value;
+    } else if (new_value) {
+        /* Stale index (should not happen); keep ownership rather than leak. */
+        well_track_owned(ctx, new_value);
+    }
+    if (!(old == new_value && owned)) well_release(old);
+    *slot = new_value;
+}
+
 void well_ctx_replace(WellCtx *ctx, void **slot, void *new_value, int owned) {
     void *old;
     int i, found = -1;
@@ -688,10 +1006,6 @@ void well_ctx_replace(WellCtx *ctx, void **slot, void *new_value, int owned) {
         else well_track_owned(ctx, new_value); /* already retained above */
     }
     *slot = new_value;
-}
-
-int well_ctx_mark(WellCtx *ctx) {
-    return ctx ? ctx->n : 0;
 }
 
 void well_ctx_release_from(WellCtx *ctx, int mark) {
@@ -723,6 +1037,7 @@ void well_ctx_clear(WellCtx *ctx) {
 }
 
 /* ---------- ownership ---------- */
+#ifndef WELL_NO_OID_CHECK
 void well_check_oid(void *obj, WellCtx *ctx, const char *where) {
     WellObj *o = (WellObj *)obj;
     if (!o) well_panic("null object write");
@@ -735,6 +1050,24 @@ void well_check_oid(void *obj, WellCtx *ctx, const char *where) {
         well_panic(msg);
     }
 }
+
+/* Out-of-line violation path for the inlined well_check_oid_at() fast path.
+ * Attaches the exact statement position before panicking. */
+WELL_NORETURN void well_check_oid_fail(void *obj, WellCtx *ctx, const char *where,
+                                       const char *file, int line) {
+    WellObj *o = (WellObj *)obj;
+    well_source_set(file, line);
+    if (!o) well_panic("null object write");
+    if (o->flags & WELL_FLAG_FROZEN) well_panic("write to frozen event");
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "well oid violation: %s (object oid=%lld, handler oid=%lld)",
+                 where ? where : "write", o->oid, ctx ? ctx->oid : 0);
+        well_panic(msg);
+    }
+}
+#endif
 
 void well_freeze(void *obj) {
     WellObj *o = (WellObj *)obj;
@@ -798,6 +1131,7 @@ void well_static_set_ref(WellCtx *ctx, void **slot, void *val, int owned, const 
     if (old) well_release(old);
 }
 
+#ifndef WELL_NO_OID_CHECK
 void well_check_value_oid(void *target, void *value, WellCtx *ctx) {
     WellObj *t = (WellObj *)target;
     WellObj *v = (WellObj *)value;
@@ -813,12 +1147,22 @@ void well_check_value_oid(void *target, void *value, WellCtx *ctx) {
         well_panic(msg);
     }
 }
+#endif
 
 /* ---------- Strings ---------- */
 typedef struct {
     WellString **items;
     int n;
     int cap;
+    /* Hash index over the interned literals.  Every string-literal expression
+     * in generated C calls well_string_lit(), so the lookup is a hot path; the
+     * original implementation scanned every literal with strcmp(), which made a
+     * literal evaluation cost O(number of literals in the program).  `slots` is
+     * an open-addressed table (power-of-two capacity, NULL = empty) published
+     * together with items.  Old snapshots keep their own slot array, so readers
+     * never observe a rehash. */
+    WellString **slots;
+    int slot_cap;
 } WellLitTable;
 
 /* The interned-literal table is read on every evaluation of a string literal
@@ -869,26 +1213,86 @@ static unsigned long long hash_bytes(const char *s, size_t n) {
     return h ? h : 1ULL;
 }
 
+/* Published literal-hash slots are read without the writer lock.  A slot write
+ * is a single aligned pointer store, so a concurrent reader sees either NULL or
+ * a fully initialized WellString (the string is filled in before publication). */
+static WellString *lits_slot_load(WellString **slot) {
+#ifdef _WIN32
+    return (WellString *)InterlockedCompareExchangePointer(
+        (PVOID volatile *)slot, NULL, NULL);
+#elif defined(__GNUC__) || defined(__clang__)
+    return __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+#else
+    return *slot;
+#endif
+}
+
+static void lits_slot_store(WellString **slot, WellString *s) {
+#ifdef _WIN32
+    InterlockedExchangePointer((PVOID volatile *)slot, (PVOID)s);
+#elif defined(__GNUC__) || defined(__clang__)
+    __atomic_store_n(slot, s, __ATOMIC_RELEASE);
+#else
+    *slot = s;
+#endif
+}
+
 static void string_set_hash(WellString *s) {
     /* R-12: hash over the cached byte length, not strlen(): a String may hold
      * embedded NULs (Bytes.toString, substring, deserialize, JSON edge cases),
      * and the hash is used by Map key lookups together with well_string_eq(). */
-    s->hash = hash_bytes(s->data, (size_t)s->len);
+    s->hash = hash_bytes(well_str_data(s), (size_t)s->len);
+    s->hdr.flags |= WELL_FLAG_HASHED;
+}
+
+unsigned long long well_string_hash(WellString *s) {
+    if (!s) return 0;
+    if (s->hdr.flags & WELL_FLAG_HASHED) return s->hash;
+    s->hash = hash_bytes(well_str_data(s), (size_t)s->len);
+    s->hdr.flags |= WELL_FLAG_HASHED;
+    return s->hash;
 }
 
 static void string_destroy(void *p) {
     WellString *s = (WellString *)p;
-    /* data lives inline in the same allocation (see string_alloc_n) */
-    free(s);
+    /* data lives inline in the same allocation (see string_alloc_n); route the
+     * block through the size-class pool so short-lived Strings do not hit
+     * malloc/free on every request. */
+    well_obj_free(s);
+}
+
+/* Allocate one block for a String header + inline bytes, using the size-class
+ * pool when it fits (pool_take already handles the >4KB fallback as NULL). */
+static WellString *string_block_alloc(size_t total) {
+    WellString *s;
+    static int pool_strings = -1;
+    size_t block;
+    if (pool_strings < 0) {
+        const char *e = getenv("WELL_STRING_POOL");
+        pool_strings = !(e && e[0] && atoi(e) == 0);
+    }
+    /* Round the allocation to the pool class even when the pool is empty and
+     * this falls back to malloc(): well_obj_free() later classifies the block
+     * from alloc_size, so a smaller-than-class malloc block would be reused for
+     * a larger request and corrupt the heap.  (This exact mismatch caused
+     * intermittent 0xC0000005 crashes under concurrent HTTP load.) */
+    block = (total <= POOL_MAX_SIZE) ? pool_class(total) * POOL_ALIGN : total;
+    s = (pool_strings && total <= POOL_MAX_SIZE) ? (WellString *)pool_take(total) : NULL;
+    if (!s) {
+        s = (WellString *)malloc(block);
+        if (!s) well_panic("out of memory (String)");
+        s->hdr.alloc_size = (total <= POOL_MAX_SIZE) ? block : 0;
+    } else {
+        s->hdr.alloc_size = block;
+    }
+    return s;
 }
 
 static WellString *string_alloc_n(const char *src, size_t n) {
     /* Header + bytes in one allocation: half the malloc/free calls for Strings. */
-    WellString *s = (WellString *)malloc(sizeof(WellString) + n + 1);
-    if (!s) well_panic("out of memory (String)");
-    s->data = (char *)(s + 1);
-    if (n && src) memcpy(s->data, src, n);
-    s->data[n] = 0;
+    WellString *s = string_block_alloc(sizeof(WellString) + n + 1);
+    if (n && src) memcpy(well_str_data(s), src, n);
+    well_str_data(s)[n] = 0;
     s->hdr.rc = 1;
     s->hdr.type_id = WELL_T_STRING;
     s->hdr.flags = 0;
@@ -896,8 +1300,7 @@ static WellString *string_alloc_n(const char *src, size_t n) {
     s->hdr.exec_pins = NULL;
     s->hdr.reg_next = NULL;
     s->hdr.reg_prev = NULL;
-    s->hdr.alloc_size = sizeof(WellString);
-    s->hash = hash_bytes(s->data, n);
+    s->hash = 0; /* computed lazily by well_string_hash() */
     s->len = (long long)n;
     live_inc();
     return s;
@@ -905,6 +1308,24 @@ static WellString *string_alloc_n(const char *src, size_t n) {
 
 static WellString *string_alloc(const char *src) {
     return string_alloc_n(src, strlen(src ? src : ""));
+}
+
+/* Allocate an uninitialized byte buffer of length n (caller fills data and calls
+ * string_set_hash).  Used by case conversion to avoid hashing twice. */
+static WellString *string_alloc_raw(size_t n) {
+    WellString *s = string_block_alloc(sizeof(WellString) + n + 1);
+    well_str_data(s)[n] = 0;
+    s->hdr.rc = 1;
+    s->hdr.type_id = WELL_T_STRING;
+    s->hdr.flags = 0;
+    s->hdr.oid = 0;
+    s->hdr.exec_pins = NULL;
+    s->hdr.reg_next = NULL;
+    s->hdr.reg_prev = NULL;
+    s->hash = 0;
+    s->len = (long long)n;
+    live_inc();
+    return s;
 }
 
 WellString *well_string_new(const char *src) {
@@ -917,11 +1338,24 @@ WellString *well_string_new_n(const char *src, size_t n) {
     return string_alloc_n(src, n);
 }
 
-static WellString *lits_lookup(WellLitTable *t, const char *key) {
-    int i;
+static WellString *lits_lookup_h(WellLitTable *t, const char *key,
+                                 unsigned long long h) {
+    int i, mask;
     if (!t) return NULL;
+    if (t->slot_cap > 0 && t->slots) {
+        mask = t->slot_cap - 1;
+        i = (int)(h & (unsigned long long)mask);
+        for (;;) {
+            WellString *s = lits_slot_load(&t->slots[i]);
+            if (!s) return NULL;
+            if (s->hash == h && strcmp(well_str_data(s), key) == 0) return s;
+            i = (i + 1) & mask;
+        }
+    }
+    /* No index yet (only possible before the first insert): linear scan. */
     for (i = 0; i < t->n; i++) {
-        if (strcmp(t->items[i]->data, key) == 0) return t->items[i];
+        if (t->items[i]->hash == h && strcmp(well_str_data(t->items[i]), key) == 0)
+            return t->items[i];
     }
     return NULL;
 }
@@ -933,13 +1367,16 @@ static WellString *lits_lookup(WellLitTable *t, const char *key) {
 static WellString *lits_insert(const char *key) {
     WellLitTable *t, *nt;
     WellString *s, *found;
-    int n, cap;
+    unsigned long long h;
+    int n, cap, slot_cap;
     s = string_alloc(key);
     s->hdr.flags |= WELL_FLAG_IMMORTAL;
     live_dec(); /* literals are process-lifetime and not "live objects" */
+    string_set_hash(s); /* literals are indexed by hash */
+    h = s->hash;
     well_lock_acquire(&g_lits_lock);
     t = lits_pub_load();
-    found = lits_lookup(t, key);
+    found = lits_lookup_h(t, key, h);
     if (found) {
         free(s); /* another worker interned it first */
         well_lock_release(&g_lits_lock);
@@ -947,6 +1384,7 @@ static WellString *lits_insert(const char *key) {
     }
     n = t ? t->n : 0;
     cap = t ? t->cap : 0;
+    slot_cap = t ? t->slot_cap : 0;
     nt = (WellLitTable *)malloc(sizeof(WellLitTable));
     if (!nt) {
         well_lock_release(&g_lits_lock);
@@ -954,7 +1392,7 @@ static WellString *lits_insert(const char *key) {
     }
     if (n == cap) {
         WellString **ni;
-        int ncap = cap ? cap * 2 : 32;
+        int ncap = cap ? cap * 2 : 64;
         ni = (WellString **)malloc((size_t)ncap * sizeof(WellString *));
         if (!ni) {
             free(nt);
@@ -973,6 +1411,40 @@ static WellString *lits_insert(const char *key) {
     }
     nt->items[n] = s;
     nt->n = n + 1;
+    /* Grow/replace the index only when the load factor would exceed 0.6.
+     * The new index includes the literal just appended. */
+    if (slot_cap == 0 || (n + 1) * 10 >= slot_cap * 6) {
+        int i;
+        int ncap = 64;
+        WellString **slots;
+        while (ncap * 6 < (n + 1) * 10) ncap *= 2;
+        slots = (WellString **)calloc((size_t)ncap, sizeof(WellString *));
+        if (!slots) {
+            free(nt);
+            well_lock_release(&g_lits_lock);
+            well_panic("out of memory (literals)");
+        }
+        for (i = 0; i <= n; i++) {
+            unsigned long long sh = nt->items[i]->hash & (unsigned long long)(ncap - 1);
+            while (lits_slot_load(&slots[sh])) sh = (sh + 1) & (unsigned long long)(ncap - 1);
+            lits_slot_store(&slots[sh], nt->items[i]);
+        }
+        nt->slots = slots;
+        nt->slot_cap = ncap;
+    } else {
+        int mask = slot_cap - 1;
+        int i = (int)(h & (unsigned long long)mask);
+        nt->slots = t->slots;
+        nt->slot_cap = slot_cap;
+        for (;;) {
+            WellString *cur = lits_slot_load(&nt->slots[i]);
+            if (!cur) {
+                lits_slot_store(&nt->slots[i], s);
+                break;
+            }
+            i = (i + 1) & mask;
+        }
+    }
     lits_pub_store(nt);
     well_lock_release(&g_lits_lock);
     return s;
@@ -980,10 +1452,22 @@ static WellString *lits_insert(const char *key) {
 
 WellString *well_string_lit(const char *src) {
     const char *key = src ? src : "";
-    WellString *s;
+    unsigned long long h;
+    WellString *lit;
     if (!g_inited) well_init();
-    s = lits_lookup(lits_pub_load(), key);
-    return s ? s : lits_insert(key);
+    h = hash_bytes(key, strlen(key));
+    lit = lits_lookup_h(lits_pub_load(), key, h);
+    return lit ? lit : lits_insert(key);
+}
+
+WellString *well_string_lit_slot(WellString **slot, const char *src) {
+    WellString *v;
+    if (!slot) return well_string_lit(src);
+    v = *slot;
+    if (v) return v;
+    v = well_string_lit(src);
+    *slot = v; /* benign race: all writers store the same interned pointer */
+    return v;
 }
 
 WellString *well_string_concat(WellString *a, WellString *b) {
@@ -1001,16 +1485,14 @@ WellString *well_string_concat(WellString *a, WellString *b) {
         well_retain(a);
         return a;
     }
-    sa = a->data;
-    sb = b->data;
+    sa = well_str_data(a);
+    sb = well_str_data(b);
     la = (size_t)a->len;
     lb = (size_t)b->len;
-    s = (WellString *)malloc(sizeof(WellString) + la + lb + 1);
-    if (!s) well_panic("out of memory (String)");
-    s->data = (char *)(s + 1);
-    memcpy(s->data, sa, la);
-    memcpy(s->data + la, sb, lb);
-    s->data[la + lb] = 0;
+    s = string_block_alloc(sizeof(WellString) + la + lb + 1);
+    memcpy(well_str_data(s), sa, la);
+    memcpy(well_str_data(s) + la, sb, lb);
+    well_str_data(s)[la + lb] = 0;
     s->hdr.rc = 1;
     s->hdr.type_id = WELL_T_STRING;
     s->hdr.flags = 0;
@@ -1018,15 +1500,14 @@ WellString *well_string_concat(WellString *a, WellString *b) {
     s->hdr.exec_pins = NULL;
     s->hdr.reg_next = NULL;
     s->hdr.reg_prev = NULL;
-    s->hdr.alloc_size = sizeof(WellString);
     s->len = (long long)(la + lb);
-    string_set_hash(s);
+    s->hash = 0;
     live_inc();
     return s;
 }
 
 const char *well_string_cstr(WellString *s) {
-    return s ? s->data : "";
+    return s ? well_str_data(s) : "";
 }
 
 int well_string_eq(WellString *a, WellString *b) {
@@ -1036,8 +1517,8 @@ int well_string_eq(WellString *a, WellString *b) {
      * an embedded NUL and would report "a\0b" == "a\0c". The cached hash is over
      * the full length, so a hash mismatch already proves inequality. */
     if (a->len != b->len) return 0;
-    if (a->hash != b->hash) return 0;
-    return a->len == 0 || memcmp(a->data, b->data, (size_t)a->len) == 0;
+    if (well_string_hash(a) != well_string_hash(b)) return 0;
+    return a->len == 0 || memcmp(well_str_data(a), well_str_data(b), (size_t)a->len) == 0;
 }
 
 long long well_string_len(WellString *s) {
@@ -1101,7 +1582,7 @@ void well_bytes_append_str(WellBytes *b, WellString *s, WellCtx *ctx) {
     n = (size_t)s->len;
     if (n == 0) return;
     bytes_reserve(b, b->len + (long long)n);
-    memcpy(b->data + b->len, s->data, n);
+    memcpy(b->data + b->len, well_str_data(s), n);
     b->len += (long long)n;
 }
 
@@ -1188,12 +1669,12 @@ WellString *well_str_replace(WellString *s, WellString *old_s, WellString *new_s
     if (!s) return well_string_lit("");
     if (!old_s || !new_s) well_panic("String.replace: arguments must be String");
     if (old_s->len <= 0) well_panic("String.replace: old must not be empty");
-    d = s->data;
+    d = well_str_data(s);
     n = (size_t)s->len;
     on = (size_t)old_s->len;
     nn = (size_t)new_s->len;
     for (i = 0; i + on <= n;) {
-        if (memcmp(d + i, old_s->data, on) == 0) { count++; i += on; }
+        if (memcmp(d + i, well_str_data(old_s), on) == 0) { count++; i += on; }
         else i++;
     }
     if (count == 0) { well_retain(s); return s; }
@@ -1201,8 +1682,8 @@ WellString *well_str_replace(WellString *s, WellString *old_s, WellString *new_s
     buf = (char *)malloc(outlen + 1);
     if (!buf) well_panic("out of memory (String.replace)");
     for (i = 0; i + on <= n;) {
-        if (memcmp(d + i, old_s->data, on) == 0) {
-            memcpy(buf + k, new_s->data, nn);
+        if (memcmp(d + i, well_str_data(old_s), on) == 0) {
+            memcpy(buf + k, well_str_data(new_s), nn);
             k += nn;
             i += on;
         } else {
@@ -1282,7 +1763,7 @@ int well_str_ends_with_take(WellString *s, WellString *suffix) {
 
 long long well_str_byte_at(WellString *s, long long i) {
     if (!s || i < 0 || i >= s->len) return -1;
-    return (long long)(unsigned char)s->data[i];
+    return (long long)(unsigned char)well_str_data(s)[i];
 }
 
 long long well_str_code_point_at(WellString *s, long long i) {
@@ -1291,7 +1772,7 @@ long long well_str_code_point_at(WellString *s, long long i) {
     unsigned cp;
     int len, k;
     if (!s || i < 0 || i >= s->len) return -1;
-    p = (const unsigned char *)s->data + i;
+    p = (const unsigned char *)well_str_data(s) + i;
     b0 = p[0];
     if (b0 < 0x80) return (long long)b0;
     if (b0 >= 0xC2 && b0 <= 0xDF) { len = 2; cp = b0 & 0x1F; }
@@ -1351,7 +1832,7 @@ WellString *well_str_from_byte(int code) {
 }
 
 WellString *well_str_substring(WellString *s, long long start, long long end) {
-    const char *d = s ? s->data : "";
+    const char *d = s ? well_str_data(s) : "";
     long long n = well_string_len(s);
     if (start < 0) start = 0;
     if (end > n) end = n;
@@ -1375,7 +1856,7 @@ static long long mem_find(const char *hay, size_t hay_len,
 }
 
 long long well_str_index_of_from(WellString *s, WellString *needle, long long from) {
-    const char *d = s ? s->data : "";
+    const char *d = s ? well_str_data(s) : "";
     long long n = well_string_len(s);
     long long nn = needle ? needle->len : 0;
     long long hit;
@@ -1383,7 +1864,7 @@ long long well_str_index_of_from(WellString *s, WellString *needle, long long fr
     if (from > n) return -1;
     if (nn == 0) return from;
     if (n - from < nn) return -1;
-    hit = mem_find(d + from, (size_t)(n - from), needle->data, (size_t)nn);
+    hit = mem_find(d + from, (size_t)(n - from), well_str_data(needle), (size_t)nn);
     return hit < 0 ? -1 : from + hit;
 }
 
@@ -1396,16 +1877,16 @@ int well_str_contains(WellString *s, WellString *needle) {
 }
 
 int well_str_starts_with(WellString *s, WellString *prefix) {
-    const char *d = s ? s->data : "";
-    const char *p = prefix ? prefix->data : "";
+    const char *d = s ? well_str_data(s) : "";
+    const char *p = prefix ? well_str_data(prefix) : "";
     long long pn = prefix ? prefix->len : 0;
     if (well_string_len(s) < pn) return 0;
     return memcmp(d, p, (size_t)pn) == 0;
 }
 
 int well_str_ends_with(WellString *s, WellString *suffix) {
-    const char *d = s ? s->data : "";
-    const char *p = suffix ? suffix->data : "";
+    const char *d = s ? well_str_data(s) : "";
+    const char *p = suffix ? well_str_data(suffix) : "";
     long long dn = well_string_len(s), pn = suffix ? suffix->len : 0;
     if (dn < pn) return 0;
     return memcmp(d + dn - pn, p, (size_t)pn) == 0;
@@ -1419,7 +1900,7 @@ WellString *well_str_trim(WellString *s) {
     const char *d;
     size_t a = 0, b, n;
     if (!s) return well_string_lit("");
-    d = s->data;
+    d = well_str_data(s);
     n = (size_t)s->len;
     b = n;
     while (a < b && str_is_space(d[a])) a++;
@@ -1432,10 +1913,25 @@ WellString *well_str_trim(WellString *s) {
     return string_alloc_n(d + a, b - a);
 }
 
+/* Two digits per division; String.fromInt is on JSON/logging hot paths. */
+static const char digits2[201] = "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899";
 WellString *well_str_from_int(long long v) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%lld", v);
-    return well_string_new(buf);
+    /* Hand-rolled conversion: the C runtime's snprintf("%lld") costs ~80ns on
+     * Windows and String.fromInt/JSON/logging call this on every number. */
+    char buf[24];
+    char *p = buf + sizeof(buf);
+    unsigned long long u;
+    int neg = v < 0;
+    if (neg) u = (unsigned long long)(-(v + 1)) + 1ULL;
+    else u = (unsigned long long)v;
+    do {
+        unsigned rem = (unsigned)(u % 100ULL);
+        u /= 100ULL;
+        *--p = digits2[rem * 2 + 1];
+        if (rem >= 10 || u) *--p = digits2[rem * 2];
+    } while (u);
+    if (neg) *--p = '-';
+    return string_alloc_n(p, (size_t)(buf + sizeof(buf) - p));
 }
 
 WellString *well_str_to_lower(WellString *s) {
@@ -1443,10 +1939,10 @@ WellString *well_str_to_lower(WellString *s) {
     WellString *r;
     if (!s) return well_string_lit("");
     n = (size_t)s->len;
-    r = string_alloc_n(s->data, n);
+    r = string_alloc_raw(n);
     for (i = 0; i < n; i++) {
-        char c = r->data[i];
-        if (c >= 'A' && c <= 'Z') r->data[i] = (char)(c - 'A' + 'a');
+        char c = well_str_data(s)[i];
+        well_str_data(r)[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
     }
     string_set_hash(r); /* content changed: refresh the cached hash */
     return r;
@@ -1457,10 +1953,10 @@ WellString *well_str_to_upper(WellString *s) {
     WellString *r;
     if (!s) return well_string_lit("");
     n = (size_t)s->len;
-    r = string_alloc_n(s->data, n);
+    r = string_alloc_raw(n);
     for (i = 0; i < n; i++) {
-        char c = r->data[i];
-        if (c >= 'a' && c <= 'z') r->data[i] = (char)(c - 'a' + 'A');
+        char c = well_str_data(s)[i];
+        well_str_data(r)[i] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
     }
     string_set_hash(r); /* content changed: refresh the cached hash */
     return r;
@@ -1468,8 +1964,8 @@ WellString *well_str_to_upper(WellString *s) {
 
 WellArray *well_str_split(WellString *s, WellString *sep, WellCtx *ctx) {
     WellArray *a = well_array_new(ctx, 1);
-    const char *d = s ? s->data : "";
-    const char *sp = sep ? sep->data : "";
+    const char *d = s ? well_str_data(s) : "";
+    const char *sp = sep ? well_str_data(sep) : "";
     size_t spl = sep ? (size_t)sep->len : 0;
     size_t total = (size_t)well_string_len(s);
     size_t start = 0;
@@ -1545,6 +2041,29 @@ long long well_now_ms(void) {
 #endif
 }
 
+/* Monotonic microsecond clock for benchmarks and fine-grained timing.
+ *
+ * Host.nowMs() is wall-clock (epoch) and, on Windows, GetSystemTimeAsFileTime
+ * has a 10-15 ms tick: a 20 ms loop measurement is mostly quantisation noise.
+ * QueryPerformanceCounter / CLOCK_MONOTONIC give sub-microsecond resolution. */
+long long well_mono_us(void) {
+#ifdef _WIN32
+    static LARGE_INTEGER freq;
+    static volatile int ready = 0;
+    LARGE_INTEGER c;
+    if (!ready) {
+        QueryPerformanceFrequency(&freq);
+        ready = 1;
+    }
+    QueryPerformanceCounter(&c);
+    return (long long)((double)c.QuadPart * 1000000.0 / (double)freq.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000LL + (long long)ts.tv_nsec / 1000LL;
+#endif
+}
+
 long long well_mono_ms(void) {
 #ifdef _WIN32
     return (long long)GetTickCount();
@@ -1555,8 +2074,46 @@ long long well_mono_ms(void) {
 #endif
 }
 
-long long well_id_util_get_id(void) {
-    long long ts, id;
+/* Id generator: the global lock used to be taken once per id (one per HTTP
+ * request).  A thread now reserves a small block of sequence numbers for the
+ * current millisecond under the lock and hands out the rest from thread-local
+ * storage, so the lock is touched once per block instead of once per id.
+ * Uniqueness is unchanged: every (timestamp, sequence) pair is handed out by
+ * the shared allocator exactly once. */
+#define WELL_ID_BLOCK 64
+typedef struct {
+    long long ts;
+    int seq;
+    int left;
+} WellIdCache;
+
+static void id_cache_key_ensure(void) {
+    if (g_id_cache_key == WELL_TLS_KEY_INVALID)
+        g_id_cache_key = well_tls_key_create(free);
+}
+
+static WellIdCache *id_cache(void) {
+    WellIdCache *c;
+    if (g_id_cache_key == WELL_TLS_KEY_INVALID) id_cache_key_ensure();
+    if (g_id_cache_key == WELL_TLS_KEY_INVALID) return NULL;
+    c = (WellIdCache *)well_tls_get(g_id_cache_key);
+    if (!c) {
+        c = (WellIdCache *)calloc(1, sizeof(WellIdCache));
+        if (c) well_tls_set(g_id_cache_key, c);
+    }
+    return c;
+}
+
+static long long id_make(long long ts, int seq) {
+    return ((ts - WELL_ID_EPOCH_MS) << WELL_ID_TIME_SHIFT) |
+           ((long long)g_id_server << WELL_ID_SERVER_SHIFT) |
+           (long long)seq;
+}
+
+static long long id_refill(long long ts) {
+    WellIdCache *c = id_cache();
+    long long id;
+    int start, block;
     well_lock_acquire(&g_id_lock);
     if (g_id_server < 0) {
         const char *env = getenv("WELL_SERVER_ID");
@@ -1566,23 +2123,42 @@ long long well_id_util_get_id(void) {
             well_panic("WELL_SERVER_ID out of range (0..1023)");
         }
     }
-    ts = well_now_ms();
-    if (ts < WELL_ID_EPOCH_MS) ts = WELL_ID_EPOCH_MS;
     if (ts > g_id_last_ts) {
         g_id_last_ts = ts;
         g_id_seq = 0;
     } else {
-        g_id_seq++;
-        if (g_id_seq > WELL_ID_SEQ_MASK) {
-            g_id_last_ts++;
-            g_id_seq = 0;
-        }
+        ts = g_id_last_ts;
     }
-    id = ((g_id_last_ts - WELL_ID_EPOCH_MS) << WELL_ID_TIME_SHIFT) |
-         ((long long)g_id_server << WELL_ID_SERVER_SHIFT) |
-         (long long)g_id_seq;
+    if (g_id_seq >= WELL_ID_SEQ_MASK) {
+        g_id_last_ts++;
+        g_id_seq = 0;
+        ts = g_id_last_ts;
+    }
+    start = g_id_seq + 1;
+    block = WELL_ID_SEQ_MASK - g_id_seq; /* values still available in this ms */
+    if (block > WELL_ID_BLOCK) block = WELL_ID_BLOCK;
+    g_id_seq += block;
+    id = id_make(ts, start);
     well_lock_release(&g_id_lock);
+    if (c) {
+        c->ts = ts;
+        c->seq = start + 1;
+        c->left = block - 1;
+    }
     return id;
+}
+
+long long well_id_util_get_id(void) {
+    WellIdCache *c = id_cache();
+    long long ts = well_now_ms();
+    if (ts < WELL_ID_EPOCH_MS) ts = WELL_ID_EPOCH_MS;
+    /* A cached block belongs to one millisecond; a clock that jumped back is
+     * clamped to the block's timestamp so ids never go backwards. */
+    if (c && c->left > 0 && ts <= c->ts) {
+        c->left--;
+        return id_make(c->ts, c->seq++);
+    }
+    return id_refill(ts);
 }
 
 /* ---------- print ---------- */
@@ -1664,3 +2240,4 @@ void well_force_free_objects(WellObj *p) {
         p = next;
     }
 }
+

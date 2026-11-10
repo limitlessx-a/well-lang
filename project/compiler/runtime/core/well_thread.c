@@ -74,6 +74,7 @@ static DWORD WINAPI well_thread_proc(LPVOID p) {
     fn(arg);
     well_temp_thread_cleanup();
     well_owner_thread_cleanup();
+    well_pool_thread_cleanup();
     return 0;
 }
 
@@ -126,7 +127,10 @@ int well_cpu_count(void) {
 }
 
 int well_thread_start(WellThread *t, void *(*fn)(void *), void *arg) {
-    WellThreadStart *s = (WellThreadStart *)malloc(sizeof(WellThreadStart));
+    WellThreadStart *s;
+    /* From now on RC can be touched by more than one thread. */
+    well_rc_mark_multithreaded();
+    s = (WellThreadStart *)malloc(sizeof(WellThreadStart));
     if (!s) return -1;
     s->fn = fn;
     s->arg = arg;
@@ -224,6 +228,8 @@ int well_cpu_count(void) {
 }
 
 int well_thread_start(WellThread *t, void *(*fn)(void *), void *arg) {
+    /* From now on RC can be touched by more than one thread. */
+    well_rc_mark_multithreaded();
     return pthread_create(t, NULL, fn, arg);
 }
 

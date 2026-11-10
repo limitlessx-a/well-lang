@@ -1,0 +1,163 @@
+{
+  "label": "MySQL scalar query TCC",
+  "metric_regex": "us_per_query\\s+([0-9.]+)",
+  "rounds": 7,
+  "warmup": 2,
+  "variants": {
+    "base": {
+      "summary": {
+        "n": 5,
+        "min": 25.0,
+        "median": 26.0,
+        "max": 27.0,
+        "mean": 25.8
+      },
+      "samples_all": [
+        26.0,
+        27.0,
+        27.0,
+        26.0,
+        26.0,
+        25.0,
+        25.0
+      ],
+      "samples_kept": [
+        27.0,
+        26.0,
+        26.0,
+        25.0,
+        25.0
+      ],
+      "wall_s": [
+        0.5314552000018011,
+        0.5611368999998376,
+        0.5609030000014172,
+        0.531765900002938,
+        0.5332292999992205,
+        0.526471400000446,
+        0.5207284999996773
+      ]
+    },
+    "v4": {
+      "summary": {
+        "n": 5,
+        "min": 22.0,
+        "median": 22.0,
+        "max": 23.0,
+        "mean": 22.2
+      },
+      "samples_all": [
+        23.0,
+        24.0,
+        22.0,
+        23.0,
+        22.0,
+        22.0,
+        22.0
+      ],
+      "samples_kept": [
+        22.0,
+        23.0,
+        22.0,
+        22.0,
+        22.0
+      ],
+      "wall_s": [
+        0.5072712000001047,
+        0.4875274999976682,
+        0.465280200001871,
+        0.4665844000010111,
+        0.4569492000009632,
+        0.45771830000012415,
+        0.45879579999746056
+      ]
+    }
+  },
+  "raw": [
+    {
+      "round": 0,
+      "variant": "base",
+      "metric": 26.0,
+      "wall_s": 0.531
+    },
+    {
+      "round": 0,
+      "variant": "v4",
+      "metric": 23.0,
+      "wall_s": 0.507
+    },
+    {
+      "round": 1,
+      "variant": "v4",
+      "metric": 24.0,
+      "wall_s": 0.488
+    },
+    {
+      "round": 1,
+      "variant": "base",
+      "metric": 27.0,
+      "wall_s": 0.561
+    },
+    {
+      "round": 2,
+      "variant": "base",
+      "metric": 27.0,
+      "wall_s": 0.561
+    },
+    {
+      "round": 2,
+      "variant": "v4",
+      "metric": 22.0,
+      "wall_s": 0.465
+    },
+    {
+      "round": 3,
+      "variant": "v4",
+      "metric": 23.0,
+      "wall_s": 0.467
+    },
+    {
+      "round": 3,
+      "variant": "base",
+      "metric": 26.0,
+      "wall_s": 0.532
+    },
+    {
+      "round": 4,
+      "variant": "base",
+      "metric": 26.0,
+      "wall_s": 0.533
+    },
+    {
+      "round": 4,
+      "variant": "v4",
+      "metric": 22.0,
+      "wall_s": 0.457
+    },
+    {
+      "round": 5,
+      "variant": "v4",
+      "metric": 22.0,
+      "wall_s": 0.458
+    },
+    {
+      "round": 5,
+      "variant": "base",
+      "metric": 25.0,
+      "wall_s": 0.526
+    },
+    {
+      "round": 6,
+      "variant": "base",
+      "metric": 25.0,
+      "wall_s": 0.521
+    },
+    {
+      "round": 6,
+      "variant": "v4",
+      "metric": 22.0,
+      "wall_s": 0.459
+    }
+  ],
+  "timestamp": "2026-10-24T19:48:06+0800"
+}

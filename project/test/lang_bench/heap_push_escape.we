@@ -1,0 +1,26 @@
+﻿module bench.heappush2;
+
+struct Holder {
+    a: Array<int>;
+}
+
+controller HeapPush2Bench {
+    run() {
+        var n: long = 2000000;
+        var acc: long = 0;
+        var h: Holder = new Holder();
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            var a: Array<int> = [];
+            a.push(1);
+            a.push(2);
+            h.a = a;
+            acc = acc + h.a[0] + h.a[1];
+        }
+        var ms: long = Host.nowMs() - t0;
+        print("well-heappush2 n=", n, " ms=", ms, " ns_per_op=", ms * 1000000 / n,
+              " acc=", acc);
+    }
+}
+
+entry HeapPush2Bench;

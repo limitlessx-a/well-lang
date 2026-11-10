@@ -1,0 +1,18 @@
+﻿module bench.arrstack;
+
+controller ArrStackBench {
+    run() {
+        var n: long = 2000000;
+        var acc: long = 0;
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            var a: Array<int> = [1, 2, 3];
+            acc = acc + a[0] + a[1] + a[2];
+        }
+        var ms: long = Host.nowMs() - t0;
+        print("well-arrstack n=", n, " ms=", ms, " ns_per_op=", ms * 1000000 / n,
+              " acc=", acc);
+    }
+}
+
+entry ArrStackBench;

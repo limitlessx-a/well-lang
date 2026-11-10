@@ -1,0 +1,20 @@
+﻿module bench.mappush;
+
+controller MapPushBench {
+    run() {
+        var n: long = 2000000;
+        var acc: long = 0;
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            var m: Map<int> = {};
+            m["a"] = 1;
+            m["b"] = 2;
+            acc = acc + m["a"] + m["b"];
+        }
+        var ms: long = Host.nowMs() - t0;
+        print("well-mappush n=", n, " ms=", ms, " ns_per_op=", ms * 1000000 / n,
+              " acc=", acc);
+    }
+}
+
+entry MapPushBench;

@@ -31,6 +31,17 @@ struct WellHttpConn {
     char cache_path[256];
     void *cache_route;
     int cache_valid;
+    /* Reused String for the last request path (keep-alive clients normally hit
+     * the same path); avoids one allocation + hash per request. */
+    char path_buf[256];
+    WellString *path_str;
+    int path_valid;
+    /* Pipelined responses are formatted into this buffer and flushed once when
+     * the connection has no more complete request buffered. */
+    char *outbuf;
+    size_t outcap;
+    size_t outlen;
+    int batching;
     struct WellHttpConn *next;
 };
 
@@ -49,6 +60,7 @@ struct WellHttpRequest {
     int written;
     int keep_alive;
     int is_head; /* HEAD request: body suppressed, headers keep the GET length */
+    int inline_sync; /* handler runs synchronously on the connection thread */
     int refs;
     long long deadline_ms;
     struct WellHttpRequest *next;

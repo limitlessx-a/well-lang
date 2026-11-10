@@ -1,0 +1,28 @@
+﻿module bench.hearefarr;
+
+struct Item {
+    n: int;
+}
+
+struct Holder {
+    a: Array<Item>;
+}
+
+controller HeapRefArrBench {
+    run() {
+        var n: long = 1000000;
+        var acc: long = 0;
+        var h: Holder = new Holder();
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            var a: Array<Item> = [new Item(), new Item()];
+            h.a = a;
+            acc = acc + h.a[0].n + h.a[1].n;
+        }
+        var ms: long = Host.nowMs() - t0;
+        print("well-hearefarr n=", n, " ms=", ms, " ns_per_op=", ms * 1000000 / n,
+              " acc=", acc);
+    }
+}
+
+entry HeapRefArrBench;

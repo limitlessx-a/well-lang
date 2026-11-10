@@ -1,0 +1,27 @@
+﻿module bench.scalar;
+
+struct Point {
+    x: int;
+    y: int;
+    z: long;
+}
+
+controller ScalarBench {
+    run() {
+        var n: long = 2000000;
+        var acc: long = 0;
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            var p: Point = new Point();
+            p.x = 1;
+            p.y = 2;
+            p.z = i;
+            acc = acc + p.x + p.y + p.z;
+        }
+        var ms: long = Host.nowMs() - t0;
+        print("well-scalar n=", n, " ms=", ms, " ns_per_op=", ms * 1000000 / n,
+              " acc=", acc);
+    }
+}
+
+entry ScalarBench;

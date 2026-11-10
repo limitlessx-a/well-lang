@@ -1,0 +1,35 @@
+{
+  "label": "v2",
+  "compiler": "E:\\Work\\WellLangV2\\project\\compiler",
+  "workers": 1,
+  "runs": [
+    {
+      "workers": 1,
+      "clients": 8,
+      "latency_avg_us": 24.48,
+      "latency_p50_us": 21.6,
+      "latency_p99_us": 82.8,
+      "requests": 438979,
+      "rps": 203186.8,
+      "errors": 0,
+      "rss_mb": 14.1,
+      "round": 1
+    },
+    {
+      "workers": 1,
+      "clients": 8,
+      "latency_avg_us": 22.41,
+      "latency_p50_us": 22.2,
+      "latency_p99_us": 30.3,
+      "requests": 440191,
+      "rps": 203842.4,
+      "errors": 0,
+      "rss_mb": 14.2,
+      "round": 2
+    }
+  ],
+  "median_rps": 203514.59999999998,
+  "min_p50_us": 21.6,
+  "min_p99_us": 30.3,
+  "max_rss_mb": 14.2
+}

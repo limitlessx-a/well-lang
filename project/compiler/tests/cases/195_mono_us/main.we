@@ -1,0 +1,21 @@
+module test.mono_us;
+
+// Host.monoUs() must be a positive, monotonic microsecond clock (QPC /
+// CLOCK_MONOTONIC).  The loop makes the elapsed time comfortably > 0 even
+// under the default TCC build.
+controller MonoBench {
+    run() {
+        var t0: long = Host.monoUs();
+        var acc: long = 0;
+        for (var i: long = 0; i < 200000; i = i + 1) {
+            acc = acc + i * 7 + acc % 1009;
+        }
+        var t1: long = Host.monoUs();
+        print(t1 >= t0);
+        print(t0 > 0);
+        print(t1 - t0 > 0);
+        print(acc > 0);
+    }
+}
+
+entry MonoBench;

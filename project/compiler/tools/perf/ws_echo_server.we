@@ -1,0 +1,46 @@
+module bench.wsecho;
+
+// WebSocket echo server used by tools/perf/bench_ws.py.  {{PORT}} is replaced
+// by the benchmark driver before compilation.
+event WsOpenEvent extends Event {
+    clientId: long;
+    path: String;
+    query: String;
+}
+
+event WsMessageEvent extends Event {
+    clientId: long;
+    text: String;
+}
+
+event WsCloseEvent extends Event {
+    clientId: long;
+    code: int;
+    reason: String;
+}
+
+controller WsEchoController {
+    run() {
+        Ws.route("/echo", WsOpenHandler, WsEchoHandler, WsCloseHandler);
+        Ws.listen({{PORT}});
+    }
+}
+
+handler WsOpenHandler {
+    onEvent(e: WsOpenEvent) {
+        Ws.send(e.clientId, "ready");
+    }
+}
+
+handler WsEchoHandler {
+    onEvent(e: WsMessageEvent) {
+        Ws.send(e.clientId, e.text);
+    }
+}
+
+handler WsCloseHandler {
+    onEvent(e: WsCloseEvent) {
+    }
+}
+
+entry WsEchoController;

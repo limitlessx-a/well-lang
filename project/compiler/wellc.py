@@ -19,10 +19,18 @@ def main(argv=None) -> int:
     b = sub.add_parser("build", help="compile .we to an executable")
     b.add_argument("file")
     b.add_argument("-o", "--out", default=None)
+    b.add_argument("--release", action="store_true",
+                   help="use an optimizing C compiler (-O2) when available")
+    b.add_argument("--release-lto", action="store_true",
+                   help="release plus -flto (opt-in; WELL_RELEASE_LTO=1 also works)")
 
     r = sub.add_parser("run", help="compile and run")
     r.add_argument("file")
     r.add_argument("-o", "--out", default=None)
+    r.add_argument("--release", action="store_true",
+                   help="use an optimizing C compiler (-O2) when available")
+    r.add_argument("--release-lto", action="store_true",
+                   help="release plus -flto (opt-in; WELL_RELEASE_LTO=1 also works)")
 
     e = sub.add_parser("emit-c", help="emit generated C")
     e.add_argument("file")
@@ -36,12 +44,14 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     try:
         if args.cmd == "build":
-            cfile, exe = build(args.file, args.out)
+            cfile, exe = build(args.file, args.out, release=args.release,
+                               release_lto=args.release_lto)
             print(f"generated: {cfile}")
             print(f"exe:       {exe}")
             return 0
         if args.cmd == "run":
-            return run(args.file, args.out)
+            return run(args.file, args.out, release=args.release,
+                       release_lto=args.release_lto)
         if args.cmd == "emit-c":
             code = emit_c(args.file, args.out)
             if not args.out:

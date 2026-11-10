@@ -73,6 +73,10 @@ long long well_host_now_ms(void) {
     return well_now_ms();
 }
 
+long long well_host_mono_us(void) {
+    return well_mono_us();
+}
+
 WellString *well_host_env(const char *name) {
     const char *v;
     if (!name) return NULL;

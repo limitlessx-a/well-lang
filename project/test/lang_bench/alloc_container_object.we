@@ -1,0 +1,25 @@
+﻿module bench.alloccont;
+
+struct H {
+    a: Array<int>;
+}
+
+controller AllocContBench {
+    run() {
+        var n: long = 2000000;
+        var acc: long = 0;
+        var h: H = new H();
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            var a: Array<int> = [1];
+            a.push(2);
+            h.a = a;
+            acc = acc + h.a[0] + h.a[1];
+        }
+        var ms: long = Host.nowMs() - t0;
+        print("well-alloccont n=", n, " ms=", ms, " ns_per_op=", ms * 1000000 / n,
+              " acc=", acc);
+    }
+}
+
+entry AllocContBench;

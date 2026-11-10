@@ -1,0 +1,24 @@
+﻿module bench.loop;
+
+// Integer loop throughput.  The accumulator feeds back into the addend
+// (acc % 1024), so the compiler cannot replace the loop with a closed form and
+// the number reflects real per-iteration code.  Timing uses Host.monoUs() so a
+// few microseconds of difference is visible (Host.nowMs() has a 10-15 ms tick).
+controller LoopBench {
+    run() {
+        var n: long = 50000000;
+        var acc: long = 1;
+        var t0: long = Host.monoUs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            acc = acc + i * 3 + (acc % 1024);
+        }
+        var t1: long = Host.monoUs();
+        print("iters ", n);
+        print("elapsed_us ", t1 - t0);
+        print("ns_per_iter ", (t1 - t0) * 1000.0 / n);
+        print("checksum ", acc);
+    }
+}
+
+entry LoopBench;
+

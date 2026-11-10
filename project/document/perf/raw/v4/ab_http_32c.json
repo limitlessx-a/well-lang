@@ -1,0 +1,516 @@
+{
+  "kind": "http",
+  "processes": 3,
+  "rounds": 5,
+  "warmup": 1,
+  "variants": {
+    "old": {
+      "rps": {
+        "n": 12,
+        "min": 206913.8,
+        "median": 221213.1,
+        "max": 232955.6,
+        "mean": 219448.22
+      },
+      "p50_us": {
+        "n": 12,
+        "min": 21.4,
+        "median": 21.6,
+        "max": 22.4,
+        "mean": 21.72
+      },
+      "p99_us": {
+        "n": 12,
+        "min": 49.2,
+        "median": 56.8,
+        "max": 68.8,
+        "mean": 57.23
+      },
+      "samples_rps": [
+        226710.8,
+        224601.0,
+        211471.8,
+        232955.6,
+        208382.0,
+        210343.2,
+        230730.6,
+        220426.2,
+        229357.1,
+        209486.5,
+        206913.8,
+        222000.0
+      ]
+    },
+    "new": {
+      "rps": {
+        "n": 12,
+        "min": 194500.6,
+        "median": 214157.85,
+        "max": 231730.4,
+        "mean": 216540.27
+      },
+      "p50_us": {
+        "n": 12,
+        "min": 20.6,
+        "median": 21.3,
+        "max": 21.8,
+        "mean": 21.25
+      },
+      "p99_us": {
+        "n": 12,
+        "min": 43.8,
+        "median": 55.55,
+        "max": 68.1,
+        "mean": 54.63
+      },
+      "samples_rps": [
+        228881.7,
+        227897.9,
+        196380.2,
+        211537.8,
+        194500.6,
+        214575.8,
+        231542.4,
+        203709.0,
+        230898.1,
+        213739.9,
+        231730.4,
+        213089.4
+      ]
+    }
+  },
+  "raw": [
+    {
+      "process": 0,
+      "variant": "old",
+      "tree": "E:\\Work\\WellLangV4\\project\\tool_ai\\prev_http2\\project\\compiler",
+      "runs": [
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 24.18,
+          "latency_p50_us": 21.6,
+          "latency_p99_us": 62.5,
+          "requests": 1509297,
+          "rps": 213051.8,
+          "errors": 0,
+          "rss_mb": 16.5,
+          "round": 1
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 23.11,
+          "latency_p50_us": 21.4,
+          "latency_p99_us": 57.5,
+          "requests": 1602961,
+          "rps": 226710.8,
+          "errors": 0,
+          "rss_mb": 16.2,
+          "round": 2
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 24.2,
+          "latency_p50_us": 22.4,
+          "latency_p99_us": 61.1,
+          "requests": 1838946,
+          "rps": 224601.0,
+          "errors": 0,
+          "rss_mb": 15.8,
+          "round": 3
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 23.65,
+          "latency_p50_us": 22.3,
+          "latency_p99_us": 60.2,
+          "requests": 1489804,
+          "rps": 211471.8,
+          "errors": 0,
+          "rss_mb": 16.5,
+          "round": 4
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 23.4,
+          "latency_p50_us": 21.7,
+          "latency_p99_us": 65.8,
+          "requests": 1740259,
+          "rps": 232955.6,
+          "errors": 0,
+          "rss_mb": 15.9,
+          "round": 5
+        }
+      ],
+      "kept": 4,
+      "median_rps": 224601.0,
+      "min_p50_us": 21.4,
+      "min_p99_us": 57.5,
+      "max_rss_mb": 16.5
+    },
+    {
+      "process": 0,
+      "variant": "new",
+      "tree": "E:\\Work\\WellLangV4\\project\\compiler",
+      "runs": [
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.9,
+          "latency_p50_us": 21.4,
+          "latency_p99_us": 65.5,
+          "requests": 1469786,
+          "rps": 210910.4,
+          "errors": 0,
+          "rss_mb": 16.4,
+          "round": 1
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.68,
+          "latency_p50_us": 21.3,
+          "latency_p99_us": 53.5,
+          "requests": 1368640,
+          "rps": 228881.7,
+          "errors": 0,
+          "rss_mb": 16.6,
+          "round": 2
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.29,
+          "latency_p50_us": 20.6,
+          "latency_p99_us": 57.6,
+          "requests": 1939759,
+          "rps": 227897.9,
+          "errors": 0,
+          "rss_mb": 15.5,
+          "round": 3
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 23.28,
+          "latency_p50_us": 21.8,
+          "latency_p99_us": 62.2,
+          "requests": 1512411,
+          "rps": 196380.2,
+          "errors": 0,
+          "rss_mb": 16.4,
+          "round": 4
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.5,
+          "latency_p50_us": 21.4,
+          "latency_p99_us": 43.8,
+          "requests": 1999544,
+          "rps": 211537.8,
+          "errors": 0,
+          "rss_mb": 15.5,
+          "round": 5
+        }
+      ],
+      "kept": 4,
+      "median_rps": 211537.8,
+      "min_p50_us": 20.6,
+      "min_p99_us": 43.8,
+      "max_rss_mb": 16.6
+    },
+    {
+      "process": 1,
+      "variant": "new",
+      "tree": "E:\\Work\\WellLangV4\\project\\compiler",
+      "runs": [
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.88,
+          "latency_p50_us": 21.3,
+          "latency_p99_us": 56.2,
+          "requests": 1382201,
+          "rps": 221392.3,
+          "errors": 0,
+          "rss_mb": 16.6,
+          "round": 1
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.87,
+          "latency_p50_us": 21.4,
+          "latency_p99_us": 61.5,
+          "requests": 1420374,
+          "rps": 194500.6,
+          "errors": 0,
+          "rss_mb": 16.4,
+          "round": 2
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.14,
+          "latency_p50_us": 21.0,
+          "latency_p99_us": 51.5,
+          "requests": 1444205,
+          "rps": 214575.8,
+          "errors": 0,
+          "rss_mb": 16.5,
+          "round": 3
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.47,
+          "latency_p50_us": 21.2,
+          "latency_p99_us": 45.4,
+          "requests": 1939350,
+          "rps": 231542.4,
+          "errors": 0,
+          "rss_mb": 15.7,
+          "round": 4
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.5,
+          "latency_p50_us": 21.4,
+          "latency_p99_us": 49.8,
+          "requests": 1367141,
+          "rps": 203709.0,
+          "errors": 0,
+          "rss_mb": 16.6,
+          "round": 5
+        }
+      ],
+      "kept": 4,
+      "median_rps": 214575.8,
+      "min_p50_us": 21.0,
+      "min_p99_us": 45.4,
+      "max_rss_mb": 16.6
+    },
+    {
+      "process": 1,
+      "variant": "old",
+      "tree": "E:\\Work\\WellLangV4\\project\\tool_ai\\prev_http2\\project\\compiler",
+      "runs": [
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.72,
+          "latency_p50_us": 21.4,
+          "latency_p99_us": 53.2,
+          "requests": 1437077,
+          "rps": 223278.2,
+          "errors": 0,
+          "rss_mb": 16.7,
+          "round": 1
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.51,
+          "latency_p50_us": 21.4,
+          "latency_p99_us": 49.2,
+          "requests": 1397651,
+          "rps": 208382.0,
+          "errors": 0,
+          "rss_mb": 16.6,
+          "round": 2
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 23.38,
+          "latency_p50_us": 21.7,
+          "latency_p99_us": 53.1,
+          "requests": 1433482,
+          "rps": 210343.2,
+          "errors": 0,
+          "rss_mb": 16.5,
+          "round": 3
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.62,
+          "latency_p50_us": 21.5,
+          "latency_p99_us": 51.9,
+          "requests": 1518106,
+          "rps": 230730.6,
+          "errors": 0,
+          "rss_mb": 16.5,
+          "round": 4
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 23.76,
+          "latency_p50_us": 22.2,
+          "latency_p99_us": 51.0,
+          "requests": 1854093,
+          "rps": 220426.2,
+          "errors": 0,
+          "rss_mb": 15.6,
+          "round": 5
+        }
+      ],
+      "kept": 4,
+      "median_rps": 220426.2,
+      "min_p50_us": 21.4,
+      "min_p99_us": 49.2,
+      "max_rss_mb": 16.7
+    },
+    {
+      "process": 2,
+      "variant": "old",
+      "tree": "E:\\Work\\WellLangV4\\project\\tool_ai\\prev_http2\\project\\compiler",
+      "runs": [
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 23.19,
+          "latency_p50_us": 21.5,
+          "latency_p99_us": 53.3,
+          "requests": 1806325,
+          "rps": 235821.4,
+          "errors": 0,
+          "rss_mb": 15.6,
+          "round": 1
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.69,
+          "latency_p50_us": 21.5,
+          "latency_p99_us": 51.2,
+          "requests": 1819822,
+          "rps": 229357.1,
+          "errors": 0,
+          "rss_mb": 15.7,
+          "round": 2
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 24.08,
+          "latency_p50_us": 21.4,
+          "latency_p99_us": 68.8,
+          "requests": 1435682,
+          "rps": 209486.5,
+          "errors": 0,
+          "rss_mb": 16.5,
+          "round": 3
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 23.35,
+          "latency_p50_us": 21.6,
+          "latency_p99_us": 60.9,
+          "requests": 1368904,
+          "rps": 206913.8,
+          "errors": 0,
+          "rss_mb": 16.8,
+          "round": 4
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 23.67,
+          "latency_p50_us": 21.6,
+          "latency_p99_us": 56.1,
+          "requests": 1503173,
+          "rps": 222000.0,
+          "errors": 0,
+          "rss_mb": 16.5,
+          "round": 5
+        }
+      ],
+      "kept": 4,
+      "median_rps": 222000.0,
+      "min_p50_us": 21.4,
+      "min_p99_us": 51.2,
+      "max_rss_mb": 16.8
+    },
+    {
+      "process": 2,
+      "variant": "new",
+      "tree": "E:\\Work\\WellLangV4\\project\\compiler",
+      "runs": [
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.91,
+          "latency_p50_us": 21.3,
+          "latency_p99_us": 69.8,
+          "requests": 1853480,
+          "rps": 229322.4,
+          "errors": 0,
+          "rss_mb": 15.4,
+          "round": 1
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.48,
+          "latency_p50_us": 21.2,
+          "latency_p99_us": 59.1,
+          "requests": 1549712,
+          "rps": 230898.1,
+          "errors": 0,
+          "rss_mb": 16.2,
+          "round": 2
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.14,
+          "latency_p50_us": 21.3,
+          "latency_p99_us": 44.2,
+          "requests": 1452861,
+          "rps": 213739.9,
+          "errors": 0,
+          "rss_mb": 16.5,
+          "round": 3
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 23.34,
+          "latency_p50_us": 21.4,
+          "latency_p99_us": 68.1,
+          "requests": 1708386,
+          "rps": 231730.4,
+          "errors": 0,
+          "rss_mb": 16.0,
+          "round": 4
+        },
+        {
+          "workers": 12,
+          "clients": 32,
+          "latency_avg_us": 22.67,
+          "latency_p50_us": 21.0,
+          "latency_p99_us": 58.9,
+          "requests": 1791370,
+          "rps": 213089.4,
+          "errors": 0,
+          "rss_mb": 16.0,
+          "round": 5
+        }
+      ],
+      "kept": 4,
+      "median_rps": 229322.4,
+      "min_p50_us": 21.0,
+      "min_p99_us": 44.2,
+      "max_rss_mb": 16.5
+    }
+  ]
+}

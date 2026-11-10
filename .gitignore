@@ -23,3 +23,7 @@ __pycache__/
 
 # logs
 *.log
+
+# benchmark logs (raw JSON results are kept)
+project/document/perf/*.log
+

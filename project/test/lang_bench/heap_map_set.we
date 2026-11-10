@@ -1,0 +1,26 @@
+﻿module bench.heamapset;
+
+struct Holder {
+    m: Map<int>;
+}
+
+controller HeapMapSetBench {
+    run() {
+        var n: long = 1000000;
+        var acc: long = 0;
+        var h: Holder = new Holder();
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            var m: Map<int> = {};
+            m["a"] = 1;
+            m["b"] = 2;
+            h.m = m;
+            acc = acc + h.m["a"] + h.m["b"];
+        }
+        var ms: long = Host.nowMs() - t0;
+        print("well-heamapset n=", n, " ms=", ms, " ns_per_op=", ms * 1000000 / n,
+              " acc=", acc);
+    }
+}
+
+entry HeapMapSetBench;

@@ -1,4 +1,5 @@
 """Well -> C99 code generator (MVP)."""
+from dataclasses import fields, is_dataclass
 from .ast_nodes import *
 
 NUMERIC = {"int", "long", "float", "double"}
@@ -73,14 +74,48 @@ class CodeGen:
         self.ind = 0
         self.env: dict[str, str] = {}
         self.c_names: dict[str, str] = {}
+        # Reference bindings that own a stable frame-journal slot (name ->
+        # generated slot variable).  Assignments use the slot index instead of
+        # searching the journal by old pointer address.
+        self.journaled: dict[str, str] = {}
         self.current_ret = "void"
         self.type_ids: dict[str, int] = {}
         self.type_kind: dict[str, str] = {}
         self.controller_ids: dict[str, int] = {}
-        self.scope_stack: list[tuple[str, bool]] = []
+        self.scope_stack: list[tuple] = []
+        self.temp_used = 0
         self.temp_mark: str | None = None
+        self.tracked = 0
+        self.early_marks: set[str] = set()
         self.continue_stack: list[str | None] = []
+        self.stack_decls: set[int] = set()
+        self.stack_vars: set[str] = set()
+        # scope mark -> [(struct type, C storage)] for frame-allocated structs
+        # with reference fields; destroyed at scope exit.
+        self.stack_cleanup: dict[str, list[tuple[str, str]]] = {}
+        self.stack_arrays: set[int] = set()
+        self.stack_array_names: dict[str, int] = {}
+        self.stack_array_storage: dict[str, str] = {}
+        self.stack_maps: set[int] = set()
+        self.stack_map_keys: dict[str, dict[str, int]] = {}
+        self.stack_map_storage: dict[str, str] = {}
+        self.direct_push_names: set[str] = set()
+        self.direct_str_push_names: set[str] = set()
+        self.direct_fresh_push_names: set[str] = set()
+        self.direct_map_names: set[str] = set()
+        self.direct_str_map_names: set[str] = set()
+        self.direct_fresh_map_names: set[str] = set()
+        self.direct_map_keys: dict[str, dict[str, int]] = {}
         self.assign_ids()
+        self.find_stack_decls()
+        self.find_stack_arrays()
+        self.find_direct_push_arrays()
+        self.find_direct_string_push_arrays()
+        self.find_direct_fresh_push_arrays()
+        self.find_direct_map_writes()
+        self.find_direct_string_map_writes()
+        self.find_direct_fresh_map_writes()
+        self.find_stack_maps()
         self.entry = prog.entry
         self.ctx = "ctx"
         self.uid = 0
@@ -91,6 +126,8 @@ class CodeGen:
 
     # ---------- helpers ----------
     def w(self, s=""):
+        if "well_track" in s:
+            self.tracked += 1
         self.lines.append("    " * self.ind + s)
 
     def assign_ids(self):
@@ -104,6 +141,564 @@ class CodeGen:
         for name in self.p.controllers:
             self.controller_ids[name] = n
             n += 1
+
+    # ---------- scalar stack allocation ----------
+    def _stack_local_struct(self, ty: str) -> bool:
+        """A struct that can live in the C frame without owning heap storage.
+
+        Scalar fields are plain values; reference and container fields are
+        allowed because the frame emits the type's destroy function at scope
+        exit (which releases them and skips the free via WELL_FLAG_STACK).
+        """
+        decl = self.p.structs.get(ty)
+        if not decl or self.type_kind.get(ty) == "event":
+            return False
+        for f in decl["fields"]:
+            if f.default is not None:
+                return False
+        return True
+
+    def _children(self, node):
+        if node is None or not is_dataclass(node) or isinstance(node, type):
+            return
+        for f in fields(node):
+            val = getattr(node, f.name)
+            if isinstance(val, list):
+                for x in val:
+                    if isinstance(x, tuple):
+                        for y in x:
+                            if is_dataclass(y) and not isinstance(y, type):
+                                yield y
+                    elif is_dataclass(x) and not isinstance(x, type):
+                        yield x
+            elif is_dataclass(val) and not isinstance(val, type):
+                yield val
+
+    def _uses_only_fields(self, node, name: str) -> bool:
+        """Conservative escape check: the object is only read/written via fields."""
+        if node is None:
+            return True
+        if isinstance(node, Ident):
+            return node.name != name
+        if isinstance(node, Member):
+            if isinstance(node.obj, Ident) and node.obj.name == name:
+                return True
+            return self._uses_only_fields(node.obj, name)
+        if isinstance(node, Assign):
+            t = node.target
+            is_own_member = (isinstance(t, Member) and
+                             isinstance(t.obj, Ident) and t.obj.name == name)
+            if isinstance(t, Ident) and t.name == name:
+                return False
+            if not is_own_member and not self._uses_only_fields(t, name):
+                return False
+            return self._uses_only_fields(node.value, name)
+        if isinstance(node, Call):
+            if (isinstance(node.func, Member) and isinstance(node.func.obj, Ident)
+                    and node.func.obj.name == name):
+                return False
+            if not self._uses_only_fields(node.func, name):
+                return False
+            return all(self._uses_only_fields(a, name) for a in node.args)
+        for child in self._children(node):
+            if not self._uses_only_fields(child, name):
+                return False
+        return True
+
+    def find_stack_decls(self):
+        """Find non-escaping ``var p = new Point()`` declarations for the C frame."""
+        blocks: list = []
+
+        def walk(node):
+            if node is None:
+                return
+            if isinstance(node, Block):
+                blocks.append(node)
+            for child in self._children(node):
+                walk(child)
+
+        walk(self.p)
+
+        def decl_count(node, name: str) -> int:
+            n = 1 if isinstance(node, VarDecl) and node.name == name else 0
+            if isinstance(node, ForEach) and node.var == name:
+                n += 1
+            for child in self._children(node):
+                n += decl_count(child, name)
+            return n
+
+        for block in blocks:
+            for stmt in block.stmts:
+                if not isinstance(stmt, VarDecl) or not isinstance(stmt.init, New):
+                    continue
+                ty = stmt.init.type.name
+                if not self._stack_local_struct(ty):
+                    continue
+                # Only when no nested/other declaration of this name is in
+                # sight, so the name-based escape check cannot confuse the
+                # declaration with a shadowed binding.
+                if decl_count(block, stmt.name) != 1:
+                    continue
+                if self._uses_only_fields(block, stmt.name):
+                    self.stack_decls.add(id(stmt))
+
+    def _uses_only_array_reads(self, node, name: str, pushes=None) -> bool:
+        """Array may only be indexed, or pushed with a scalar, without escaping."""
+        if node is None:
+            return True
+        if isinstance(node, Ident):
+            return node.name != name
+        if isinstance(node, Index):
+            if isinstance(node.obj, Ident) and node.obj.name == name:
+                return self._uses_only_array_reads(node.index, name, pushes)
+            return (self._uses_only_array_reads(node.obj, name, pushes) and
+                    self._uses_only_array_reads(node.index, name, pushes))
+        if isinstance(node, Member):
+            if isinstance(node.obj, Ident) and node.obj.name == name:
+                return False
+            return self._uses_only_array_reads(node.obj, name, pushes)
+        if isinstance(node, Assign):
+            t = node.target
+            if isinstance(t, Index) and isinstance(t.obj, Ident) and t.obj.name == name:
+                # A write can grow the inline array to the heap; disallow so a
+                # stack array can never own heap storage without a cleanup path.
+                return False
+            if isinstance(t, Ident) and t.name == name:
+                return False
+            return (self._uses_only_array_reads(t, name, pushes) and
+                    self._uses_only_array_reads(node.value, name, pushes))
+        if isinstance(node, Call):
+            if (isinstance(node.func, Member) and isinstance(node.func.obj, Ident)
+                    and node.func.obj.name == name):
+                if (pushes is not None and
+                        getattr(node, "method_op", None) == "array_push" and
+                        len(node.args) == 1):
+                    pushes.append(node)
+                    return self._uses_only_array_reads(node.args[0], name, pushes)
+                return False
+            if not self._uses_only_array_reads(node.func, name, pushes):
+                return False
+            return all(self._uses_only_array_reads(a, name, pushes) for a in node.args)
+        for child in self._children(node):
+            if not self._uses_only_array_reads(child, name, pushes):
+                return False
+        return True
+
+    def _contains_loop(self, node) -> bool:
+        if isinstance(node, (For, While, ForEach)):
+            return True
+        for child in self._children(node):
+            if self._contains_loop(child):
+                return True
+        return False
+
+    def find_stack_arrays(self):
+        counts: dict[str, int] = {}
+        blocks: list = []
+
+        def walk(node):
+            if node is None:
+                return
+            if isinstance(node, Block):
+                blocks.append(node)
+            if isinstance(node, VarDecl):
+                counts[node.name] = counts.get(node.name, 0) + 1
+            for child in self._children(node):
+                walk(child)
+
+        walk(self.p)
+        for block in blocks:
+            for stmt in block.stmts:
+                if not isinstance(stmt, VarDecl) or not isinstance(stmt.init, ArrayLit):
+                    continue
+                ty = stmt.type.name if stmt.type else None
+                kind, et = self.container_info(ty or "")
+                if (kind != "array" or len(stmt.init.items) > 4 or
+                        counts.get(stmt.name, 0) != 1):
+                    continue
+                if self.is_ref(et):
+                    # Only immortal string literals are safe without a release path.
+                    if et != "String" or not all(isinstance(it, StrLit) for it in stmt.init.items):
+                        continue
+                pushes = []
+                if (self._uses_only_array_reads(block, stmt.name, pushes) and
+                        len(stmt.init.items) + len(pushes) <= 4 and
+                        (not pushes or (not self.is_ref(et) and not self._contains_loop(block)))):
+                    self.stack_arrays.add(id(stmt))
+
+    def _array_pushes(self, node, name: str, pushes: list) -> bool:
+        if node is None:
+            return True
+        if isinstance(node, Assign) and isinstance(node.target, Ident) and node.target.name == name:
+            return False
+        if isinstance(node, Call):
+            if (getattr(node, "method_op", None) == "array_push" and
+                    isinstance(node.method_obj, Ident) and node.method_obj.name == name):
+                pushes.append(1)
+            if not all(self._array_pushes(a, name, pushes) for a in node.args):
+                return False
+            return self._array_pushes(node.func, name, pushes)
+        for child in self._children(node):
+            if not self._array_pushes(child, name, pushes):
+                return False
+        return True
+
+    def find_direct_push_arrays(self):
+        counts: dict[str, int] = {}
+        blocks: list = []
+
+        def walk(node):
+            if node is None:
+                return
+            if isinstance(node, Block):
+                blocks.append(node)
+            if isinstance(node, VarDecl):
+                counts[node.name] = counts.get(node.name, 0) + 1
+            for child in self._children(node):
+                walk(child)
+
+        walk(self.p)
+        for block in blocks:
+            if self._contains_loop(block):
+                continue
+            for stmt in block.stmts:
+                if not isinstance(stmt, VarDecl) or not isinstance(stmt.init, ArrayLit):
+                    continue
+                ty = stmt.type.name if stmt.type else None
+                kind, et = self.container_info(ty or "")
+                if (kind != "array" or self.is_ref(et) or
+                        len(stmt.init.items) > 4 or counts.get(stmt.name, 0) != 1):
+                    continue
+                pushes = []
+                if (self._array_pushes(block, stmt.name, pushes) and
+                        len(stmt.init.items) + len(pushes) <= 4):
+                    self.direct_push_names.add(stmt.name)
+
+    def _map_writes(self, node, name: str, writes: list) -> bool:
+        if node is None:
+            return True
+        if isinstance(node, Assign):
+            t = node.target
+            if isinstance(t, Index) and isinstance(t.obj, Ident) and t.obj.name == name:
+                if not isinstance(t.index, StrLit):
+                    return False
+                writes.append(t.index.value)
+                return self._map_writes(node.value, name, writes)
+            if isinstance(t, Ident) and t.name == name:
+                return False
+            return (self._map_writes(t, name, writes) and
+                    self._map_writes(node.value, name, writes))
+        for child in self._children(node):
+            if not self._map_writes(child, name, writes):
+                return False
+        return True
+
+    def _array_string_pushes(self, node, name: str, pushes: list) -> bool:
+        if node is None:
+            return True
+        if isinstance(node, Assign) and isinstance(node.target, Ident) and node.target.name == name:
+            return False
+        if isinstance(node, Call):
+            if (getattr(node, "method_op", None) == "array_push" and
+                    isinstance(node.method_obj, Ident) and node.method_obj.name == name):
+                if len(node.args) != 1 or not isinstance(node.args[0], StrLit):
+                    return False
+                pushes.append(1)
+            if not all(self._array_string_pushes(a, name, pushes) for a in node.args):
+                return False
+            return self._array_string_pushes(node.func, name, pushes)
+        for child in self._children(node):
+            if not self._array_string_pushes(child, name, pushes):
+                return False
+        return True
+
+    def find_direct_string_push_arrays(self):
+        counts: dict[str, int] = {}
+        blocks: list = []
+
+        def walk(node):
+            if node is None:
+                return
+            if isinstance(node, Block):
+                blocks.append(node)
+            if isinstance(node, VarDecl):
+                counts[node.name] = counts.get(node.name, 0) + 1
+            for child in self._children(node):
+                walk(child)
+
+        walk(self.p)
+        for block in blocks:
+            if self._contains_loop(block):
+                continue
+            for stmt in block.stmts:
+                if not isinstance(stmt, VarDecl) or not isinstance(stmt.init, ArrayLit):
+                    continue
+                ty = stmt.type.name if stmt.type else None
+                kind, et = self.container_info(ty or "")
+                if (kind != "array" or et != "String" or
+                        len(stmt.init.items) > 4 or counts.get(stmt.name, 0) != 1):
+                    continue
+                if not all(isinstance(it, StrLit) for it in stmt.init.items):
+                    continue
+                pushes = []
+                if (self._array_string_pushes(block, stmt.name, pushes) and
+                        len(stmt.init.items) + len(pushes) <= 4):
+                    self.direct_str_push_names.add(stmt.name)
+
+    def _map_string_writes(self, node, name: str, writes: list) -> bool:
+        if node is None:
+            return True
+        if isinstance(node, Assign):
+            t = node.target
+            if isinstance(t, Index) and isinstance(t.obj, Ident) and t.obj.name == name:
+                if not isinstance(t.index, StrLit) or not isinstance(node.value, StrLit):
+                    return False
+                writes.append(t.index.value)
+                return True
+            if isinstance(t, Ident) and t.name == name:
+                return False
+            return (self._map_string_writes(t, name, writes) and
+                    self._map_string_writes(node.value, name, writes))
+        for child in self._children(node):
+            if not self._map_string_writes(child, name, writes):
+                return False
+        return True
+
+    def find_direct_string_map_writes(self):
+        counts: dict[str, int] = {}
+        blocks: list = []
+
+        def walk(node):
+            if node is None:
+                return
+            if isinstance(node, Block):
+                blocks.append(node)
+            if isinstance(node, VarDecl):
+                counts[node.name] = counts.get(node.name, 0) + 1
+            for child in self._children(node):
+                walk(child)
+
+        walk(self.p)
+        for block in blocks:
+            if self._contains_loop(block):
+                continue
+            for stmt in block.stmts:
+                if not isinstance(stmt, VarDecl) or not isinstance(stmt.init, ObjectLit):
+                    continue
+                ty = stmt.type.name if stmt.type else None
+                kind, et = self.container_info(ty or "")
+                if (kind != "map" or et != "String" or
+                        len(stmt.init.pairs) > 4 or counts.get(stmt.name, 0) != 1):
+                    continue
+                if not all(isinstance(v, StrLit) for _k, v in stmt.init.pairs):
+                    continue
+                writes = []
+                if (self._map_string_writes(block, stmt.name, writes) and
+                        len(stmt.init.pairs) + len(writes) <= 4):
+                    self.direct_str_map_names.add(stmt.name)
+
+    def _array_fresh_pushes(self, node, name: str, pushes: list) -> bool:
+        if node is None:
+            return True
+        if isinstance(node, Assign) and isinstance(node.target, Ident) and node.target.name == name:
+            return False
+        if isinstance(node, Call):
+            if (getattr(node, "method_op", None) == "array_push" and
+                    isinstance(node.method_obj, Ident) and node.method_obj.name == name):
+                if len(node.args) != 1 or not isinstance(node.args[0], New):
+                    return False
+                pushes.append(1)
+            if not all(self._array_fresh_pushes(a, name, pushes) for a in node.args):
+                return False
+            return self._array_fresh_pushes(node.func, name, pushes)
+        for child in self._children(node):
+            if not self._array_fresh_pushes(child, name, pushes):
+                return False
+        return True
+
+    def find_direct_fresh_push_arrays(self):
+        counts: dict[str, int] = {}
+        blocks: list = []
+
+        def walk(node):
+            if node is None:
+                return
+            if isinstance(node, Block):
+                blocks.append(node)
+            if isinstance(node, VarDecl):
+                counts[node.name] = counts.get(node.name, 0) + 1
+            for child in self._children(node):
+                walk(child)
+
+        walk(self.p)
+        for block in blocks:
+            if self._contains_loop(block):
+                continue
+            for stmt in block.stmts:
+                if not isinstance(stmt, VarDecl) or not isinstance(stmt.init, ArrayLit):
+                    continue
+                ty = stmt.type.name if stmt.type else None
+                kind, et = self.container_info(ty or "")
+                if (kind != "array" or not self.is_ref(et) or et in ("String", "Bytes") or
+                        len(stmt.init.items) > 4 or counts.get(stmt.name, 0) != 1):
+                    continue
+                if not all(isinstance(it, New) for it in stmt.init.items):
+                    continue
+                pushes = []
+                if (self._array_fresh_pushes(block, stmt.name, pushes) and
+                        len(stmt.init.items) + len(pushes) <= 4):
+                    self.direct_fresh_push_names.add(stmt.name)
+
+    def _map_fresh_writes(self, node, name: str, writes: list) -> bool:
+        if node is None:
+            return True
+        if isinstance(node, Assign):
+            t = node.target
+            if isinstance(t, Index) and isinstance(t.obj, Ident) and t.obj.name == name:
+                if not isinstance(t.index, StrLit) or not isinstance(node.value, New):
+                    return False
+                writes.append(t.index.value)
+                return True
+            if isinstance(t, Ident) and t.name == name:
+                return False
+            return (self._map_fresh_writes(t, name, writes) and
+                    self._map_fresh_writes(node.value, name, writes))
+        for child in self._children(node):
+            if not self._map_fresh_writes(child, name, writes):
+                return False
+        return True
+
+    def find_direct_fresh_map_writes(self):
+        counts: dict[str, int] = {}
+        blocks: list = []
+
+        def walk(node):
+            if node is None:
+                return
+            if isinstance(node, Block):
+                blocks.append(node)
+            if isinstance(node, VarDecl):
+                counts[node.name] = counts.get(node.name, 0) + 1
+            for child in self._children(node):
+                walk(child)
+
+        walk(self.p)
+        for block in blocks:
+            if self._contains_loop(block):
+                continue
+            for stmt in block.stmts:
+                if not isinstance(stmt, VarDecl) or not isinstance(stmt.init, ObjectLit):
+                    continue
+                ty = stmt.type.name if stmt.type else None
+                kind, et = self.container_info(ty or "")
+                if (kind != "map" or not self.is_ref(et) or et in ("String", "Bytes") or
+                        len(stmt.init.pairs) > 4 or counts.get(stmt.name, 0) != 1):
+                    continue
+                if not all(isinstance(v, New) for _k, v in stmt.init.pairs):
+                    continue
+                writes = []
+                if (self._map_fresh_writes(block, stmt.name, writes) and
+                        len(stmt.init.pairs) + len(writes) <= 4):
+                    self.direct_fresh_map_names.add(stmt.name)
+
+    def find_direct_map_writes(self):
+        counts: dict[str, int] = {}
+        blocks: list = []
+
+        def walk(node):
+            if node is None:
+                return
+            if isinstance(node, Block):
+                blocks.append(node)
+            if isinstance(node, VarDecl):
+                counts[node.name] = counts.get(node.name, 0) + 1
+            for child in self._children(node):
+                walk(child)
+
+        walk(self.p)
+        for block in blocks:
+            if self._contains_loop(block):
+                continue
+            for stmt in block.stmts:
+                if not isinstance(stmt, VarDecl) or not isinstance(stmt.init, ObjectLit):
+                    continue
+                ty = stmt.type.name if stmt.type else None
+                kind, et = self.container_info(ty or "")
+                if (kind != "map" or self.is_ref(et) or
+                        len(stmt.init.pairs) > 4 or counts.get(stmt.name, 0) != 1):
+                    continue
+                writes = []
+                if (self._map_writes(block, stmt.name, writes) and
+                        len(stmt.init.pairs) + len(writes) <= 4):
+                    self.direct_map_names.add(stmt.name)
+
+    def _uses_only_map_reads(self, node, name: str, writes=None) -> bool:
+        if node is None:
+            return True
+        if isinstance(node, Ident):
+            return node.name != name
+        if isinstance(node, Index):
+            if isinstance(node.obj, Ident) and node.obj.name == name:
+                return self._uses_only_map_reads(node.index, name, writes)
+            return (self._uses_only_map_reads(node.obj, name, writes) and
+                    self._uses_only_map_reads(node.index, name, writes))
+        if isinstance(node, Member):
+            if isinstance(node.obj, Ident) and node.obj.name == name:
+                return False
+            return self._uses_only_map_reads(node.obj, name, writes)
+        if isinstance(node, Assign):
+            t = node.target
+            if (isinstance(t, Index) and isinstance(t.obj, Ident)
+                    and t.obj.name == name):
+                if writes is None or not isinstance(t.index, StrLit):
+                    return False
+                writes.append(t.index.value)
+                return self._uses_only_map_reads(node.value, name, writes)
+            if isinstance(t, Ident) and t.name == name:
+                return False
+            return (self._uses_only_map_reads(t, name, writes) and
+                    self._uses_only_map_reads(node.value, name, writes))
+        if isinstance(node, Call):
+            if (isinstance(node.func, Member) and isinstance(node.func.obj, Ident)
+                    and node.func.obj.name == name):
+                return False
+            if not self._uses_only_map_reads(node.func, name, writes):
+                return False
+            return all(self._uses_only_map_reads(a, name, writes) for a in node.args)
+        for child in self._children(node):
+            if not self._uses_only_map_reads(child, name, writes):
+                return False
+        return True
+
+    def find_stack_maps(self):
+        counts: dict[str, int] = {}
+        blocks: list = []
+
+        def walk(node):
+            if node is None:
+                return
+            if isinstance(node, Block):
+                blocks.append(node)
+            if isinstance(node, VarDecl):
+                counts[node.name] = counts.get(node.name, 0) + 1
+            for child in self._children(node):
+                walk(child)
+
+        walk(self.p)
+        for block in blocks:
+            for stmt in block.stmts:
+                if not isinstance(stmt, VarDecl) or not isinstance(stmt.init, ObjectLit):
+                    continue
+                ty = stmt.type.name if stmt.type else None
+                kind, et = self.container_info(ty or "")
+                if (kind != "map" or self.is_ref(et) or
+                        len(stmt.init.pairs) > 4 or counts.get(stmt.name, 0) != 1):
+                    continue
+                writes = []
+                if (self._uses_only_map_reads(block, stmt.name, writes) and
+                        len(stmt.init.pairs) + len(writes) <= 4 and
+                        (not writes or not self._contains_loop(block))):
+                    self.stack_maps.add(id(stmt))
 
     def ctype(self, ty: str) -> str:
         if ty in ("int", "bool"):
@@ -158,6 +753,7 @@ class CodeGen:
         """Generate a ref argument; owned temporaries are held until frame end."""
         code = self.gen_expr(e)
         if self.is_owned(e) and self.is_ref(getattr(e, "ty", "void")):
+            self.temp_used += 1
             return f"well_temp_hold((void*)({code}))"
         return code
 
@@ -180,6 +776,55 @@ class CodeGen:
         if line and src:
             return f'well_source_set("{c_escape(str(src))}", {line})'
         return None
+
+    def expr_may_panic(self, e) -> bool:
+        """Conservative: does evaluating `e` have a runtime panic path?"""
+        if e is None:
+            return False
+        if isinstance(e, (Call, New)):
+            return True
+        if isinstance(e, Unary):
+            return self.expr_may_panic(e.expr)
+        if isinstance(e, Binary):
+            if e.op in ("/", "%"):
+                # A non-zero constant divisor cannot panic.  Treating every
+                # division as panic-capable made hot loops emit a per-iteration
+                # well_source_set() for e.g. `i % 1024` (two TLS writes).
+                if isinstance(e.right, IntLit) and e.right.value != 0:
+                    return self.expr_may_panic(e.left) or self.expr_may_panic(e.right)
+                return True
+            if e.op == "+" and (getattr(e.left, "ty", None) == "String" or
+                                getattr(e.right, "ty", None) == "String"):
+                return True
+            return self.expr_may_panic(e.left) or self.expr_may_panic(e.right)
+        if isinstance(e, Index):
+            return self.expr_may_panic(e.obj) or self.expr_may_panic(e.index)
+        if isinstance(e, Member):
+            return self.expr_may_panic(e.obj)
+        if isinstance(e, ArrayLit):
+            return any(self.expr_may_panic(x) for x in e.items)
+        if isinstance(e, ObjectLit):
+            return any(self.expr_may_panic(v) for _, v in e.pairs)
+        return False
+
+    def stmt_may_panic(self, s) -> bool:
+        if isinstance(s, VarDecl):
+            return self.expr_may_panic(s.init)
+        if isinstance(s, Assign):
+            if isinstance(s.target, (Member, Index)):
+                return True  # oid / ownership check on the write
+            return self.expr_may_panic(s.value)
+        if isinstance(s, ExprStmt):
+            return self.expr_may_panic(s.expr)
+        if isinstance(s, Return):
+            return self.expr_may_panic(s.value)
+        if isinstance(s, Switch):
+            return self.expr_may_panic(s.expr)
+        if isinstance(s, ForEach):
+            return self.expr_may_panic(s.iter)
+        if isinstance(s, (If, While, For)):
+            return self.expr_may_panic(s.cond)
+        return False
 
     def is_const_init(self, e) -> bool:
         """True when `e` is usable as a compile-time default value.
@@ -208,6 +853,12 @@ class CodeGen:
 
     def container_ref_flag(self, et: str) -> str:
         return "1" if self.is_ref(et) else "0"
+
+    def container_new_call(self, kind: str, et: str) -> str:
+        # String/Bytes elements have no outbound references, so an Array/Map of
+        # them cannot form a cycle: keep it out of the oid registry.
+        fn = f"well_{kind}_new_flat" if et in ("String", "Bytes") else f"well_{kind}_new"
+        return f"{fn}(ctx, {self.container_ref_flag(et)})"
 
     def sort_kind_code(self, et: str) -> str:
         if et in ("int", "bool"):
@@ -300,9 +951,21 @@ class CodeGen:
             return fty is not None and self.is_ref(fty)
         return False
 
+    def _unstable_ref(self, e: Expr) -> bool:
+        """Borrowed reference whose owner may be released during a call.
+
+        Locals/parameters own an edge for the frame and string literals are
+        immortal, so they stay valid.  Field/index reads borrow from a
+        container, static or base object that a later argument could mutate.
+        """
+        if isinstance(e, (Ident, StrLit, New)):
+            return False
+        if isinstance(e, (Member, Index)):
+            return True
+        return not self.is_owned(e)
+
     def enum_macro(self, enum: str, member: str) -> str:
         return f"{c_enum(enum)}_{member}"
-
     def gen_enum_helpers(self):
         for name, en in getattr(self.p, "enums", {}).items():
             members = en["members"]
@@ -362,10 +1025,66 @@ class CodeGen:
         self.env[name] = ty
         self.c_names[name] = c_var(name)
 
+    def bind_ref(self, name: str, cname: str, owned: int):
+        """Give a reference binding a stable frame-journal slot.
+
+        ``owned`` transfers an existing RC edge (fresh object); otherwise the
+        frame retains the borrowed value so the binding survives mutation of
+        the container/static it came from.  Every later assignment to this
+        variable updates the same journal entry (``well_ctx_replace_at``), so
+        aliases that hold the same address can never be confused with this
+        binding (v3 journal-slots lesson).
+        """
+        slot = f"_js_{cname}"
+        self.journaled[name] = slot
+        self.w(f"int {slot} = well_ctx_bind(ctx, (void**)&{cname}, {owned});")
+        self.tracked += 1
+
+    def assigned_names(self, node) -> set[str]:
+        """Names assigned (or compound-assigned) anywhere under ``node``."""
+        out: set[str] = set()
+        stack = [node]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, Assign) and isinstance(cur.target, Ident):
+                out.add(cur.target.name)
+            stack.extend(self._children(cur))
+        return out
+
+    def _returns_only_param(self, body, name: str) -> bool:
+        """True for a body that is exactly ``return <name>;``.
+
+        Such a callee cannot invalidate its borrowed input before the return
+        path acquires the returned edge, so it needs no parameter journal slot.
+        This keeps the identity-forward hot path free of RC traffic (the v3
+        slot implementation measured a 16.4% regression without this carve-out).
+        """
+        if body is None or len(body.stmts) != 1:
+            return False
+        s = body.stmts[0]
+        return (isinstance(s, Return) and isinstance(s.value, Ident)
+                and s.value.name == name)
+
     def set_params_env(self, params):
         """Bind a function's parameters in the type and C-name environments."""
         self.env = {n: t.name for n, t in params}
         self.c_names = {n: c_var(n) for n, _t in params}
+        self.journaled = {}
+
+    def bind_params(self, params, body):
+        """Journal reference parameters at function entry.
+
+        The callee takes its own RC edge, so a borrowed argument stays valid
+        even if the callee replaces the container/static it came from, and a
+        reassignment inside the callee updates the parameter's own slot rather
+        than a caller binding that happens to hold the same address.
+        """
+        for n, t in params:
+            if not self.is_ref(t.name):
+                continue
+            if self._returns_only_param(body, n):
+                continue
+            self.bind_ref(n, self.c_names[n], 0)
 
     # ---------- expression ----------
     def gen_expr(self, e: Expr) -> str:
@@ -374,7 +1093,9 @@ class CodeGen:
         if isinstance(e, FloatLit):
             return repr(float(e.value))
         if isinstance(e, StrLit):
-            return f'well_string_lit("{c_escape(e.value)}")'
+            lit = c_escape(e.value)
+            return ('({ static WellString *_ws_lit; '
+                    'well_string_lit_slot(&_ws_lit, "' + lit + '"); })')
         if isinstance(e, BoolLit):
             return "1" if e.value else "0"
         if isinstance(e, NullLit):
@@ -437,11 +1158,29 @@ class CodeGen:
             kind, et = self.container_info(ot)
             obj = self.gen_expr(e.obj)
             idx = self.gen_str_arg(e.index) if kind == "map" else self.gen_expr(e.index)
+            if (kind == "array" and isinstance(e.obj, Ident)
+                    and e.obj.name in self.stack_array_names
+                    and isinstance(e.index, IntLit)):
+                n = self.stack_array_names[e.obj.name]
+                ci = e.index.value
+                if 0 <= ci < n and et in ("int", "long", "float", "double"):
+                    field = "d" if et in ("float", "double") else "i"
+                    return f"(({self.ctype(et)})(({obj})->items[{ci}].{field}))"
+                if 0 <= ci < n and et == "String":
+                    return f"((WellString*)(({obj})->items[{ci}].p))"
+            if (kind == "map" and isinstance(e.obj, Ident)
+                    and e.obj.name in self.stack_map_keys
+                    and isinstance(e.index, StrLit)
+                    and e.index.value in self.stack_map_keys[e.obj.name]
+                    and et in ("int", "long", "float", "double")):
+                ci = self.stack_map_keys[e.obj.name][e.index.value]
+                field = "d" if et in ("float", "double") else "i"
+                return f"(({self.ctype(et)})(({obj})->vals[{ci}].{field}))"
             if kind == "array":
                 if self.is_owned(e.obj):
                     val = f"well_array_get_take({obj}, (long long)({idx}))"
                 else:
-                    val = f"well_array_get({obj}, (long long)({idx}))"
+                    val = f"well_array_get_fast({obj}, (long long)({idx}))"
             elif kind == "map":
                 val = f"well_map_get({obj}, {idx})"
             else:
@@ -456,7 +1195,7 @@ class CodeGen:
                 return "well_bytes_new(ctx)"
             kind, et = self.container_info(e.type.name)
             if kind:
-                return f"well_{kind}_new(ctx, {self.container_ref_flag(et)})"
+                return self.container_new_call(kind, et)
             if e.init:
                 raise Exception("new-with-init used outside supported statement context")
             oid = "ctx->oid"
@@ -495,7 +1234,14 @@ class CodeGen:
                 eq = f"well_string_eq({self.gen_expr(e.left)}, {self.gen_expr(e.right)})"
             return eq if e.op == "==" else f"(!{eq})"
         if e.op in ("/", "%") and getattr(e, "ty", None) in ("int", "long"):
-            fn = "well_int_div" if e.op == "/" else "well_int_mod"
+            # Constant non-zero divisors (other than -1) cannot raise the
+            # divide-by-zero / LLONG_MIN/-1 panic, so emit native C arithmetic
+            # and let the C compiler fold it (e.g. `% 1024` -> `& 1023`).
+            if isinstance(e.right, IntLit) and e.right.value not in (0, -1):
+                cty = self.ctype(e.ty)
+                return (f"(({cty})((long long)({self.gen_expr(e.left)}) {e.op} "
+                        f"(long long)({e.right.value})))")
+            fn = "well_div_checked" if e.op == "/" else "well_mod_checked"
             cty = self.ctype(e.ty)
             return (f"(({cty}){fn}((long long)({self.gen_expr(e.left)}), "
                     f"(long long)({self.gen_expr(e.right)})))")
@@ -559,6 +1305,8 @@ class CodeGen:
             return f"well_file_remove(well_string_cstr({self.gen_str_arg(e.args[0])}))"
         if getattr(e, "builtin", None) == "host_now":
             return "well_host_now_ms()"
+        if getattr(e, "builtin", None) == "host_mono_us":
+            return "well_host_mono_us()"
         if getattr(e, "builtin", None) == "host_env":
             return f"well_host_env(well_string_cstr({self.gen_str_arg(e.args[0])}))"
         if getattr(e, "enum_op", None) == "from_int":
@@ -617,6 +1365,23 @@ class CodeGen:
             obj = self.gen_expr(e.method_obj)
             take = "_take" if self.is_owned(e.method_obj) else ""
             if op == "array_push":
+                if (isinstance(e.method_obj, Ident)
+                        and e.method_obj.name in self.stack_array_storage):
+                    st = self.stack_array_storage[e.method_obj.name]
+                    return (f"(({st}.items[{st}.len++] = "
+                            f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}), (void)0)")
+                if (isinstance(e.method_obj, Ident)
+                        and e.method_obj.name in self.direct_push_names):
+                    return (f"(({obj}->items[{obj}->len++] = "
+                            f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}), (void)0)")
+                if (isinstance(e.method_obj, Ident)
+                        and e.method_obj.name in self.direct_str_push_names):
+                    return (f"(({obj}->items[{obj}->len++].p = "
+                            f"(void*){self.gen_expr(e.args[0])}), (void)0)")
+                if (isinstance(e.method_obj, Ident)
+                        and e.method_obj.name in self.direct_fresh_push_names):
+                    return (f"(({obj}->items[{obj}->len++].p = "
+                            f"(void*){self.gen_expr(e.args[0])}), (void)0)")
                 return f"well_array_push({obj}, {self.box_value(self.gen_expr(e.args[0]), e.elem_ty)}, ctx)"
             if op == "array_pop":
                 return self.unbox_value(f"well_array_pop({obj}, ctx)", e.elem_ty)
@@ -810,6 +1575,14 @@ class CodeGen:
             parts.append(tmp)
             if self.is_owned(a) and self.is_ref(getattr(a, "ty", "")):
                 owned.append(tmp)
+            elif self.is_ref(getattr(a, "ty", "")) and self._unstable_ref(a):
+                # A borrowed value reached through a field/index/static can be
+                # released by the evaluation of a *later* argument (e.g.
+                # f(State.item, resetSource())).  Take an edge for the call and
+                # park it on the temp journal (which a panic unwind resets).
+                decls.append(f"well_retain((void*){tmp});")
+                self.temp_used += 1
+                decls.append(f"well_temp_hold((void*){tmp});")
         call = f"{fn_name}({', '.join(['ctx'] + parts)})"
         rt = getattr(e, "ty", None) or "void"
         rel = " ".join(f"well_release((void*){t});" for t in owned)
@@ -830,11 +1603,13 @@ class CodeGen:
         """
         saved = dict(self.env)
         saved_names = dict(self.c_names)
+        saved_slots = dict(self.journaled)
         try:
             fn()
         finally:
             self.env = saved
             self.c_names = saved_names
+            self.journaled = saved_slots
 
     def gen_block(self, b: Block):
         for s in b.stmts:
@@ -843,24 +1618,57 @@ class CodeGen:
     def push_scope(self, mark: str, is_loop: bool = False, kind: str = None):
         # Every language scope also gets its own temp-journal mark so temporaries
         # created inside a loop/block are released when that scope exits instead
-        # of piling up until the end of the function.
+        # of piling up until the end of the function.  The mark defaults to 0 and
+        # is upgraded to well_temp_mark() only if the body actually holds temps.
         tmark = f"_tm{self.next_id()}"
-        self.w(f"int {tmark} = well_temp_mark();")
-        self.scope_stack.append((mark, kind or ("loop" if is_loop else "block"), tmark))
+        self.w(f"int {tmark} = 0;")
+        idx = len(self.lines) - 1
+        self.scope_stack.append((mark, kind or ("loop" if is_loop else "block"),
+                                 tmark, idx, self.temp_used, self.tracked))
 
     def pop_scope(self, mark: str):
         if self.scope_stack and self.scope_stack[-1][0] == mark:
-            _mark, _kind, tmark = self.scope_stack.pop()
-            self.w(f"well_temp_release_to({tmark});")
+            _mark, _kind, tmark, idx, used_before, _tracked = self.scope_stack.pop()
+            if self.temp_used > used_before:
+                self.lines[idx] = self.lines[idx].replace(
+                    f"int {tmark} = 0;", f"int {tmark} = well_temp_mark();")
+                self.w(f"well_temp_release_to({tmark});")
 
-    def emit_scope_release(self, mark: str):
-        self.w(f"well_ctx_release_from(ctx, {mark});")
+    def emit_scope_release(self, mark: str, final: bool = False):
+        # Frame-allocated structs with reference fields release them here; this
+        # runs on the normal path and on every early return/break/continue path
+        # that leaves the scope.
+        for ty, st in reversed(self.stack_cleanup.get(mark, [])):
+            self.w(f"destroy_{c_type(ty)}((void*)&{st});")
+        before = None
+        for m, _kind, _tmark, _idx, _used, tracked_before in reversed(self.scope_stack):
+            if m == mark:
+                before = tracked_before
+                break
+        if before is None:
+            self.w(f"well_ctx_release_to(ctx, {mark});")
+            return
+        if not final:
+            # An early return/break/continue path uses this mark.  Never turn
+            # it into a plain 0 later, or that path would release from 0.
+            self.early_marks.add(mark)
+        has_tracks = self.tracked > before
+        if not has_tracks:
+            if final and mark not in self.early_marks:
+                for i in range(len(self.lines) - 1, -1, -1):
+                    if f"int {mark} = well_ctx_mark(ctx);" in self.lines[i]:
+                        self.lines[i] = self.lines[i].replace(
+                            f"int {mark} = well_ctx_mark(ctx);",
+                            f"int {mark} = 0;")
+                        break
+            return
+        self.w(f"well_ctx_release_to(ctx, {mark});")
 
     def emit_return_cleanup(self):
         if self.temp_mark:
             self.w(f"well_temp_release_to({self.temp_mark});")
-        for mark, _kind, _tmark in reversed(self.scope_stack):
-            self.emit_scope_release(mark)
+        for mark, _kind, _tmark, _idx, _used, _tracked in reversed(self.scope_stack):
+            self.emit_scope_release(mark, final=False)
 
     def emit_break_cleanup(self, is_continue: bool = False):
         """Release scopes on the way out of break/continue.
@@ -868,8 +1676,8 @@ class CodeGen:
         `break` leaves the nearest breakable scope (loop *or* switch); `continue`
         additionally leaves a switch and unwinds to the nearest loop.
         """
-        for mark, kind, tmark in reversed(self.scope_stack):
-            self.emit_scope_release(mark)
+        for mark, kind, tmark, _idx, _used, _tracked in reversed(self.scope_stack):
+            self.emit_scope_release(mark, final=False)
             self.w(f"well_temp_release_to({tmark});")
             if is_continue and kind == "loop":
                 break
@@ -887,13 +1695,46 @@ class CodeGen:
         self.w(f"int {cm} = well_ctx_mark(ctx);")
         self.push_scope(cm, kind="block")
         self.gen_scoped(lambda: self.gen_block(body))
-        self.emit_scope_release(cm)
+        self.emit_scope_release(cm, final=True)
         self.pop_scope(cm)
+
+    def _stack_safe_stmt(self, s) -> bool:
+        if isinstance(s, VarDecl):
+            return id(s) in self.stack_decls or id(s) in self.stack_arrays or id(s) in self.stack_maps
+        if isinstance(s, ExprStmt) and isinstance(s.expr, Call):
+            c = s.expr
+            return (getattr(c, "method_op", None) == "array_push" and
+                    isinstance(c.method_obj, Ident) and
+                    (c.method_obj.name in self.stack_array_storage or
+                     c.method_obj.name in self.direct_push_names or
+                     c.method_obj.name in self.direct_str_push_names or
+                     c.method_obj.name in self.direct_fresh_push_names))
+        if isinstance(s, Assign) and isinstance(s.target, Index):
+            obj = s.target.obj
+            return (isinstance(obj, Ident) and
+                    (obj.name in self.stack_map_storage or
+                     obj.name in self.direct_map_names or
+                     obj.name in self.direct_str_map_names or
+                     obj.name in self.direct_fresh_map_names))
+        if isinstance(s, Assign) and isinstance(s.target, Member):
+            obj = s.target.obj
+            return isinstance(obj, Ident) and obj.name in self.stack_vars
+        return False
+
+    def _self_sourced_panic(self, s) -> bool:
+        """True when every panic this statement can raise already carries its
+        own source position (well_check_oid_at), so the pre-statement
+        well_source_set() can be skipped."""
+        if isinstance(s, Assign) and isinstance(s.target, Member) \
+                and isinstance(s.target.obj, Ident):
+            return not self.expr_may_panic(s.value)
+        return False
 
     def gen_stmt(self, s: Stmt):
         line = getattr(s, "line", None)
         src = getattr(s, "file", None)
-        if line and src:
+        if line and src and self.stmt_may_panic(s) and not self._stack_safe_stmt(s) \
+                and not self._self_sourced_panic(s):
             self.w(f'well_source_set(\"{c_escape(str(src))}\", {line});')
         self._gen_stmt(s)
 
@@ -911,7 +1752,7 @@ class CodeGen:
             self.w(f"int {im} = well_ctx_mark(ctx);")
             self.push_scope(im, kind="block")
             self.gen_scoped(lambda: self.gen_stmt(s.then))
-            self.emit_scope_release(im)
+            self.emit_scope_release(im, final=True)
             self.pop_scope(im)
             self.ind -= 1
             if s.els:
@@ -921,7 +1762,7 @@ class CodeGen:
                 self.w(f"int {em} = well_ctx_mark(ctx);")
                 self.push_scope(em, kind="block")
                 self.gen_scoped(lambda: self.gen_stmt(s.els))
-                self.emit_scope_release(em)
+                self.emit_scope_release(em, final=True)
                 self.pop_scope(em)
                 self.ind -= 1
             self.w("}")
@@ -965,7 +1806,7 @@ class CodeGen:
                     self.w("}")
                 else:
                     self.w(f"(void)({expr});")
-                self.emit_scope_release(swm)
+                self.emit_scope_release(swm, final=True)
                 self.pop_scope(swm)
                 self.ind -= 1
                 self.w("} while (0);")
@@ -989,11 +1830,11 @@ class CodeGen:
                     self.w("} break;")
                 self.ind -= 1
                 self.w("}")
-                self.emit_scope_release(swm)
+                self.emit_scope_release(swm, final=True)
                 self.pop_scope(swm)
         elif isinstance(s, While):
             cond = self.gen_expr(s.cond)
-            sc = self.source_stmt(s)
+            sc = self.source_stmt(s) if self.expr_may_panic(s.cond) else None
             if sc:
                 # Re-set the source location before *every* condition evaluation:
                 # otherwise a panic in the condition of iteration 2+ reports the
@@ -1009,7 +1850,7 @@ class CodeGen:
             self.continue_stack.append(None)
             self.gen_scoped(lambda: self.gen_stmt(s.body))
             self.continue_stack.pop()
-            self.emit_scope_release(mk)
+            self.emit_scope_release(mk, final=True)
             self.pop_scope(mk)
             self.ind -= 1
             self.w("}")
@@ -1018,6 +1859,7 @@ class CodeGen:
             kind, et = self.container_info(getattr(s.iter, "ty", None) or "")
             n = self.next_id()
             saved = dict(self.env)
+            saved_slots = dict(self.journaled)
             if not isinstance(s.iter, (Ident, Member)):
                 # Evaluate the iterated expression once, before the loop: it used
                 # to be re-evaluated for every length check and element access
@@ -1026,43 +1868,54 @@ class CodeGen:
                 iname = f"_it{n}"
                 self.w(f"{cty} {iname} = {it};")
                 if self.is_owned(s.iter):
+                    self.temp_used += 1
                     self.w(f"well_temp_hold((void*){iname});")
                 it = iname
             if kind == "array":
                 self.w(f"for (long long _i{n} = 0; _i{n} < well_array_len({it}); _i{n}++) {{")
-                self.ind += 1
-                self.w(f"{self.ctype(et)} {c_var(s.var)} = {self.unbox_value(f'well_array_get({it}, _i{n})', et)};")
-                self.var_decl(s.var, et)
             elif kind == "linked":
                 self.w(f"for (WellLinkedNode* _n{n} = well_linked_first({it}); _n{n}; _n{n} = well_linked_next(_n{n})) {{")
-                self.ind += 1
-                self.w(f"{self.ctype(et)} {c_var(s.var)} = {self.unbox_value(f'well_linked_value(_n{n})', et)};")
-                self.var_decl(s.var, et)
             else:
                 self.w(f"for (long long _i{n} = 0; _i{n} < well_map_len({it}); _i{n}++) {{")
-                self.ind += 1
-                self.w(f"WellString* {c_var(s.var)} = well_map_key_at({it}, _i{n});")
-                self.var_decl(s.var, "String")
+            self.ind += 1
+            # The per-iteration journal mark is taken *before* the loop binding
+            # so the binding's edge is released at the end of each iteration.
             m = self.next_id()
             mk = f"_m{m}"
             self.w(f"int {mk} = well_ctx_mark(ctx);")
             self.push_scope(mk, True)
+            if kind == "array":
+                self.w(f"{self.ctype(et)} {c_var(s.var)} = {self.unbox_value(f'well_array_get_fast({it}, _i{n})', et)};")
+                self.var_decl(s.var, et)
+                if self.is_ref(et):
+                    self.bind_ref(s.var, c_var(s.var), 0)
+            elif kind == "linked":
+                self.w(f"{self.ctype(et)} {c_var(s.var)} = {self.unbox_value(f'well_linked_value(_n{n})', et)};")
+                self.var_decl(s.var, et)
+                if self.is_ref(et):
+                    self.bind_ref(s.var, c_var(s.var), 0)
+            else:
+                self.w(f"WellString* {c_var(s.var)} = well_map_key_at({it}, _i{n});")
+                self.var_decl(s.var, "String")
+                self.bind_ref(s.var, c_var(s.var), 0)
             self.continue_stack.append(None)
             self.gen_scoped(lambda: self.gen_stmt(s.body))
             self.continue_stack.pop()
-            self.emit_scope_release(mk)
+            self.emit_scope_release(mk, final=True)
             self.pop_scope(mk)
             self.ind -= 1
             self.w("}")
             self.env = saved
+            self.journaled = saved_slots
         elif isinstance(s, For):
             saved = dict(self.env)
+            saved_slots = dict(self.journaled)
             self.w("{")
             self.ind += 1
             if s.init:
                 self.gen_stmt(s.init)
             raw_cond = self.gen_expr(s.cond) if s.cond else "1"
-            sc = self.source_stmt(s)
+            sc = self.source_stmt(s) if self.expr_may_panic(s.cond) else None
             cond = f"({sc}, ({raw_cond}))" if sc else raw_cond
             self.w(f"while ({cond}) {{")
             self.ind += 1
@@ -1074,7 +1927,7 @@ class CodeGen:
             self.continue_stack.append(cont)
             self.gen_scoped(lambda: self.gen_stmt(s.body))
             self.continue_stack.pop()
-            self.emit_scope_release(mk)
+            self.emit_scope_release(mk, final=True)
             self.w(f"{cont}: ;")
             self.pop_scope(mk)
             if s.step:
@@ -1084,6 +1937,7 @@ class CodeGen:
             self.ind -= 1
             self.w("}")
             self.env = saved
+            self.journaled = saved_slots
         elif isinstance(s, Return):
             self.gen_return(s)
         elif isinstance(s, Break):
@@ -1103,7 +1957,7 @@ class CodeGen:
             self.w(f"int {mk} = well_ctx_mark(ctx);")
             self.push_scope(mk, False)
             self.gen_scoped(lambda: self.gen_block(s))
-            self.emit_scope_release(mk)
+            self.emit_scope_release(mk, final=True)
             self.pop_scope(mk)
             self.ind -= 1
             self.w("}")
@@ -1116,36 +1970,142 @@ class CodeGen:
             raise Exception(f"cannot determine type for {s.name}")
         cname = c_var(s.name)
         self.assert_codegen_type(ty, s.init, f"var {s.name}")
+        if id(s) in self.stack_maps:
+            # Non-escaping scalar map literal: header + 4 inline entries live in
+            # the C frame.  Keys are immortal string literals, values are scalar.
+            kind, et = self.container_info(ty)
+            st = f"_st{self.next_id()}"
+            self.w(f"WellMap {st};")
+            self.w(f"{st}.keys = {st}.inline_keys;")
+            self.w(f"{st}.vals = {st}.inline_vals;")
+            self.w(f"{st}.slots = {st}.inline_slots;")
+            self.w(f"{st}.len = 0;")
+            self.w(f"{st}.cap = 4;")
+            self.w(f"{st}.slot_cap = 0;")
+            self.w(f"{st}.is_ref = 0;")
+            for k, v in s.init.pairs:
+                slot = f"_ws_lit{self.next_id()}"
+                self.w(f'{st}.keys[{st}.len] = ({{ static WellString *{slot}; '
+                       f'well_string_lit_slot(&{slot}, "{c_escape(k)}"); }});')
+                self.w(f"{st}.vals[{st}.len] = {self.box_value(self.gen_expr(v), et)};")
+                self.w(f"{st}.len++;")
+            self.w(f"WellMap* {cname} = &{st};")
+            self.stack_map_keys[s.name] = {k: i for i, (k, _v) in enumerate(s.init.pairs)}
+            self.stack_map_storage[s.name] = st
+            if (s.name in self.direct_map_names or
+                    s.name in self.direct_str_map_names or
+                    s.name in self.direct_fresh_map_names):
+                self.direct_map_keys[s.name] = {k: i for i, (k, _v) in enumerate(s.init.pairs)}
+            self.var_decl(s.name, ty)
+            return
+        if id(s) in self.stack_arrays:
+            # Non-escaping scalar array literal: keep header + 4 slots in the
+            # C frame.  No heap, no RC, no registry.
+            kind, et = self.container_info(ty)
+            st = f"_st{self.next_id()}"
+            self.w(f"WellArray {st};")
+            self.w(f"{st}.items = {st}.inline_items;")
+            self.w(f"{st}.len = 0;")
+            self.w(f"{st}.cap = 4;")
+            self.w(f"{st}.is_ref = 0;")
+            for it in s.init.items:
+                self.w(f"{st}.items[{st}.len++] = {self.box_value(self.gen_expr(it), et)};")
+            self.w(f"WellArray* {cname} = &{st};")
+            self.stack_array_names[s.name] = len(s.init.items)
+            self.stack_array_storage[s.name] = st
+            self.var_decl(s.name, ty)
+            return
+        if id(s) in self.stack_decls:
+            # Non-escaping struct: allocate in the C frame.  No allocation, no
+            # registry; field accesses still work through the pointer and
+            # well_check_oid sees the right oid/type.  Reference fields are
+            # released by the generated destroy at scope exit.
+            ct = c_type(ty)
+            st = f"_st{self.next_id()}"
+            self.w(f"{ct} {st};")
+            self.w(f"memset(&{st}, 0, sizeof({st}));")
+            self.w(f"{st}.hdr.oid = ctx ? ctx->oid : 0;")
+            self.w(f"{st}.hdr.type_id = T_{ct};")
+            self.w(f"{st}.hdr.rc = 1;")
+            self.w(f"{st}.hdr.flags |= WELL_FLAG_STACK;")
+            self.w(f"{self.ctype(ty)} {cname} = &{st};")
+            decl = self.p.structs.get(ty) or {"fields": []}
+            has_ref = any(self.is_ref(f.type.name) for f in decl["fields"])
+            if has_ref and self.scope_stack:
+                self.stack_cleanup.setdefault(self.scope_stack[-1][0], []).append((ty, st))
+            self.stack_vars.add(s.name)
+            self.var_decl(s.name, ty)
+            return
         if isinstance(s.init, (ArrayLit, ObjectLit)):
             kind, et = self.container_info(ty)
             if not kind:
                 raise Exception(f"container literal with non-container type {ty}")
             if kind == "array":
-                self.w(f"WellArray* {cname} = well_array_new(ctx, {self.container_ref_flag(et)});")
-                for it in s.init.items:
-                    self.emit_container_push(cname, it, et)
+                self.w(f"WellArray* {cname} = {self.container_new_call('array', et)};")
+                immut = (et == "String" and
+                         all(isinstance(it, StrLit) for it in s.init.items))
+                fresh_refs = (self.is_ref(et) and s.init.items and
+                              all(isinstance(it, New) for it in s.init.items))
+                if (not self.is_ref(et) or immut) and len(s.init.items) <= 4:
+                    for idx, it in enumerate(s.init.items):
+                        self.w(f"{cname}->items[{idx}] = "
+                               f"{self.box_value(self.gen_expr(it), et)};")
+                    self.w(f"{cname}->len = {len(s.init.items)};")
+                elif fresh_refs and len(s.init.items) <= 4:
+                    # Fresh objects transfer ownership into the array; no retain.
+                    for idx, it in enumerate(s.init.items):
+                        self.w(f"{cname}->items[{idx}].p = (void*){self.gen_expr(it)};")
+                    self.w(f"{cname}->len = {len(s.init.items)};")
+                else:
+                    for it in s.init.items:
+                        self.emit_container_push(cname, it, et)
             else:
-                self.w(f"WellMap* {cname} = well_map_new(ctx, {self.container_ref_flag(et)});")
-                for k, v in s.init.pairs:
-                    self.emit_map_set(cname, f'well_string_lit("{c_escape(k)}")', v, et)
-            self.w(f"well_track_owned(ctx, {cname});")
+                self.w(f"WellMap* {cname} = {self.container_new_call('map', et)};")
+                if (s.name in self.direct_map_names or
+                        s.name in self.direct_str_map_names or
+                        s.name in self.direct_fresh_map_names):
+                    self.direct_map_keys[s.name] = {
+                        k: i for i, (k, _v) in enumerate(s.init.pairs)}
+                immut = (et == "String" and
+                         all(isinstance(v, StrLit) for _k, v in s.init.pairs))
+                fresh_refs = (self.is_ref(et) and s.init.pairs and
+                              all(isinstance(v, New) for _k, v in s.init.pairs))
+                if (not self.is_ref(et) or immut) and len(s.init.pairs) <= 4:
+                    for idx, (k, v) in enumerate(s.init.pairs):
+                        slot = f"_ws_lit{self.next_id()}"
+                        self.w(f'{cname}->keys[{idx}] = ({{ static WellString *{slot}; '
+                               f'well_string_lit_slot(&{slot}, "{c_escape(k)}"); }});')
+                        self.w(f"{cname}->vals[{idx}] = "
+                               f"{self.box_value(self.gen_expr(v), et)};")
+                    self.w(f"{cname}->len = {len(s.init.pairs)};")
+                elif fresh_refs and len(s.init.pairs) <= 4:
+                    for idx, (k, v) in enumerate(s.init.pairs):
+                        slot = f"_ws_lit{self.next_id()}"
+                        self.w(f'{cname}->keys[{idx}] = ({{ static WellString *{slot}; '
+                               f'well_string_lit_slot(&{slot}, "{c_escape(k)}"); }});')
+                        self.w(f"{cname}->vals[{idx}].p = (void*){self.gen_expr(v)};")
+                    self.w(f"{cname}->len = {len(s.init.pairs)};")
+                else:
+                    for k, v in s.init.pairs:
+                        self.emit_map_set(cname, f'well_string_lit("{c_escape(k)}")', v, et)
+            self.bind_ref(s.name, cname, 1)
             self.var_decl(s.name, ty)
             return
         if isinstance(s.init, New) and (self.container_info(s.init.type.name)[0] or getattr(s.init, "bytes_new", False)):
             self.w(f"{self.ctype(ty)} {cname} = {self.gen_expr(s.init)};")
-            self.w(f"well_track_owned(ctx, {cname});")
+            self.bind_ref(s.name, cname, 1)
             self.var_decl(s.name, ty)
             return
         if self.is_ref(ty):
             if isinstance(s.init, New):
                 self.emit_new_into(cname, ty, s.init)
-                self.w(f"well_track_owned(ctx, {cname});")
+                self.bind_ref(s.name, cname, 1)
             else:
                 self.w(f"{self.ctype(ty)} {cname} = {self.gen_expr(s.init)};")
                 if self.is_owned(s.init):
-                    self.w(f"well_track_owned(ctx, {cname});")
+                    self.bind_ref(s.name, cname, 1)
                 else:
-                    self.w(f"well_track(ctx, {cname});")
+                    self.bind_ref(s.name, cname, 0)
             self.var_decl(s.name, ty)
         else:
             self.w(f"{self.ctype(ty)} {cname} = {self.gen_expr(s.init)};")
@@ -1321,11 +2281,11 @@ class CodeGen:
                 self.w("{")
                 self.ind += 1
                 if kind == "array":
-                    self.w(f"WellArray* {tmp} = well_array_new(ctx, {self.container_ref_flag(et)});")
+                    self.w(f"WellArray* {tmp} = {self.container_new_call('array', et)};")
                     for it in s.value.items:
                         self.emit_container_push(tmp, it, et)
                 else:
-                    self.w(f"WellMap* {tmp} = well_map_new(ctx, {self.container_ref_flag(et)});")
+                    self.w(f"WellMap* {tmp} = {self.container_new_call('map', et)};")
                     for k, v in s.value.pairs:
                         self.emit_map_set(tmp, f'well_string_lit("{c_escape(k)}")', v, et)
                 self.w(f"well_static_set_ref(ctx, (void**)&{cstat}, (void*){tmp}, 1, {fname});")
@@ -1346,12 +2306,16 @@ class CodeGen:
             self.assert_codegen_type(ty, s.value, f"assignment to {tgt.name}")
             cname = self.c_names.get(tgt.name) or c_var(tgt.name)
             if self.is_ref(ty):
+                slot = self.journaled.get(tgt.name)
+                replace = (f"well_ctx_replace_at(ctx, {slot}, "
+                           f"(void**)&{cname}, (void*)%s, %d);" if slot
+                           else f"well_ctx_replace(ctx, (void**)&{cname}, (void*)%s, %d);")
                 if isinstance(s.value, New):
                     tmp = f"__new_{tgt.name}"
                     self.w("{")
                     self.ind += 1
                     self.emit_new_into(tmp, ty, s.value)
-                    self.w(f"well_ctx_replace(ctx, (void**)&{cname}, (void*){tmp}, 1);")
+                    self.w(replace % (tmp, 1))
                     self.ind -= 1
                     self.w("}")
                 else:
@@ -1360,7 +2324,7 @@ class CodeGen:
                     self.ind += 1
                     self.w(f"{self.ctype(ty)} _v = {code};")
                     owned = 1 if self.is_owned(s.value) else 0
-                    self.w(f"well_ctx_replace(ctx, (void**)&{cname}, (void*)_v, {owned});")
+                    self.w(replace % ("_v", owned))
                     self.ind -= 1
                     self.w("}")
             else:
@@ -1374,7 +2338,77 @@ class CodeGen:
             if kind == "array":
                 self.emit_array_set(obj, idx, s.value, et)
             elif kind == "map":
-                self.emit_map_set(obj, idx, s.value, et)
+                if (isinstance(tgt.obj, Ident) and
+                        tgt.obj.name in self.direct_fresh_map_names and
+                        isinstance(tgt.index, StrLit)):
+                    name = tgt.obj.name
+                    keys = self.direct_map_keys.setdefault(name, {})
+                    key = tgt.index.value
+                    if key in keys:
+                        ci = keys[key]
+                    else:
+                        ci = len(keys)
+                        slot = f"_ws_lit{self.next_id()}"
+                        self.w(f'{obj}->keys[{ci}] = ({{ static WellString *{slot}; '
+                               f'well_string_lit_slot(&{slot}, "{c_escape(key)}"); }});')
+                        self.w(f"{obj}->len++;")
+                        keys[key] = ci
+                    self.w(f"{obj}->vals[{ci}].p = "
+                           f"(void*){self.gen_expr(s.value)};")
+                elif (isinstance(tgt.obj, Ident) and
+                        tgt.obj.name in self.direct_str_map_names and
+                        isinstance(tgt.index, StrLit)):
+                    name = tgt.obj.name
+                    keys = self.direct_map_keys.setdefault(name, {})
+                    key = tgt.index.value
+                    if key in keys:
+                        ci = keys[key]
+                    else:
+                        ci = len(keys)
+                        slot = f"_ws_lit{self.next_id()}"
+                        self.w(f'{obj}->keys[{ci}] = ({{ static WellString *{slot}; '
+                               f'well_string_lit_slot(&{slot}, "{c_escape(key)}"); }});')
+                        self.w(f"{obj}->len++;")
+                        keys[key] = ci
+                    self.w(f"{obj}->vals[{ci}].p = "
+                           f"(void*){self.gen_expr(s.value)};")
+                elif (isinstance(tgt.obj, Ident) and
+                        tgt.obj.name in self.direct_map_names and
+                        isinstance(tgt.index, StrLit)):
+                    name = tgt.obj.name
+                    keys = self.direct_map_keys.setdefault(name, {})
+                    key = tgt.index.value
+                    if key in keys:
+                        ci = keys[key]
+                    else:
+                        ci = len(keys)
+                        slot = f"_ws_lit{self.next_id()}"
+                        self.w(f'{obj}->keys[{ci}] = ({{ static WellString *{slot}; '
+                               f'well_string_lit_slot(&{slot}, "{c_escape(key)}"); }});')
+                        self.w(f"{obj}->len++;")
+                        keys[key] = ci
+                    self.w(f"{obj}->vals[{ci}] = "
+                           f"{self.box_value(self.gen_expr(s.value), et)};")
+                elif (isinstance(tgt.obj, Ident) and
+                        tgt.obj.name in self.stack_map_storage and
+                        isinstance(tgt.index, StrLit)):
+                    name = tgt.obj.name
+                    st = self.stack_map_storage[name]
+                    keys = self.stack_map_keys[name]
+                    key = tgt.index.value
+                    if key in keys:
+                        ci = keys[key]
+                    else:
+                        ci = len(keys)
+                        slot = f"_ws_lit{self.next_id()}"
+                        self.w(f'{st}.keys[{ci}] = ({{ static WellString *{slot}; '
+                               f'well_string_lit_slot(&{slot}, "{c_escape(key)}"); }});')
+                        self.w(f"{st}.len++;")
+                        keys[key] = ci
+                    self.w(f"{st}.vals[{ci}] = "
+                           f"{self.box_value(self.gen_expr(s.value), et)};")
+                else:
+                    self.emit_map_set(obj, idx, s.value, et)
             else:
                 raise Exception("index assignment on non-container")
             return
@@ -1382,6 +2416,9 @@ class CodeGen:
             oty = getattr(tgt.obj, "ty", None)
             ft = self.field_type(oty, tgt.name) if oty else "int"
             self.assert_codegen_type(ft, s.value, f"field write {tgt.name}")
+            src_chk = ('well_check_oid_at((void*)_t, ctx, "field write", '
+                       f'"{c_escape(str(getattr(s, "file", "") or ""))}", '
+                       f'{int(getattr(s, "line", 0) or 0)});')
             if self.is_ref(ft):
                 obj = self.gen_expr(tgt.obj)
                 code = self.gen_expr(s.value)
@@ -1389,7 +2426,7 @@ class CodeGen:
                 self.w("{")
                 self.ind += 1
                 self.w(f"{self.ctype(oty)} _t = {obj};")
-                self.w('well_check_oid((void*)_t, ctx, "field write");')
+                self.w(src_chk)
                 self.w(f"{self.ctype(ft)} _v = {code};")
                 if ft != "String":
                     self.w("well_check_value_oid((void*)_t, (void*)_v, ctx);")
@@ -1402,10 +2439,13 @@ class CodeGen:
                 self.w("}")
             else:
                 obj = self.gen_expr(tgt.obj)
+                if isinstance(tgt.obj, Ident) and tgt.obj.name in self.stack_vars:
+                    self.w(f"{obj}->{c_field(tgt.name)} = {self.gen_expr(s.value)};")
+                    return
                 self.w("{")
                 self.ind += 1
                 self.w(f"{self.ctype(oty)} _t = {obj};")
-                self.w('well_check_oid((void*)_t, ctx, "field write");')
+                self.w(src_chk)
                 self.w(f"_t->{c_field(tgt.name)} = {self.gen_expr(s.value)};")
                 if self.is_owned(tgt.obj):
                     self.w("well_release((void*)_t);")
@@ -1462,7 +2502,28 @@ class CodeGen:
             self.w("well_print_end();")
             return
         if isinstance(e, Call) and getattr(e, "method_op", None) == "array_push":
-            self.emit_container_push(self.gen_expr(e.method_obj), e.args[0], e.elem_ty)
+            if (isinstance(e.method_obj, Ident)
+                    and e.method_obj.name in self.stack_array_storage):
+                st = self.stack_array_storage[e.method_obj.name]
+                self.w(f"{st}.items[{st}.len++] = "
+                       f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)};")
+            elif (isinstance(e.method_obj, Ident)
+                    and e.method_obj.name in self.direct_push_names):
+                obj = self.gen_expr(e.method_obj)
+                self.w(f"{obj}->items[{obj}->len++] = "
+                       f"{self.box_value(self.gen_expr(e.args[0]), e.elem_ty)};")
+            elif (isinstance(e.method_obj, Ident)
+                    and e.method_obj.name in self.direct_str_push_names):
+                obj = self.gen_expr(e.method_obj)
+                self.w(f"{obj}->items[{obj}->len++].p = "
+                       f"(void*){self.gen_expr(e.args[0])};")
+            elif (isinstance(e.method_obj, Ident)
+                    and e.method_obj.name in self.direct_fresh_push_names):
+                obj = self.gen_expr(e.method_obj)
+                self.w(f"{obj}->items[{obj}->len++].p = "
+                       f"(void*){self.gen_expr(e.args[0])};")
+            else:
+                self.emit_container_push(self.gen_expr(e.method_obj), e.args[0], e.elem_ty)
             return
         if isinstance(e, Call) and getattr(e, "method_op", None) in ("linked_pushHead", "linked_pushTail"):
             self.emit_linked_push(self.gen_expr(e.method_obj), e.args[0], e.elem_ty,
@@ -1521,23 +2582,22 @@ class CodeGen:
             self.w("return;")
             return
         rt = self.current_ret
+        # Evaluate the result *before* releasing locals: `return a.value` must
+        # read the object while it is still alive, and a scalar result may be
+        # computed from a binding the cleanup is about to release.
+        tmp = f"_rv{self.next_id()}"
+        self.w("{")
+        self.ind += 1
         if self.is_ref(rt):
-            # Evaluate first: the expression may use locals that the return
-            # cleanup is about to release (e.g. `return b.toString()`).
-            tmp = f"_rv{self.next_id()}"
-            self.w("{")
-            self.ind += 1
             self.w(f"{self.ctype(rt)} {tmp} = {self.gen_expr(s.value)};")
             if not self.is_owned(s.value):
                 self.w(f"well_retain((void*){tmp});")
-            self.emit_return_cleanup()
-            self.w(f"return {tmp};")
-            self.ind -= 1
-            self.w("}")
         else:
-            code = self.gen_expr(s.value)
-            self.emit_return_cleanup()
-            self.w(f"return {code};")
+            self.w(f"{self.ctype(rt)} {tmp} = {self.gen_expr(s.value)};")
+        self.emit_return_cleanup()
+        self.w(f"return {tmp};")
+        self.ind -= 1
+        self.w("}")
 
     # ---------- declarations ----------
     def gen(self) -> str:
@@ -1551,6 +2611,7 @@ class CodeGen:
             self.w('#include "well_mysql.h"')
         self.w("#include <stdio.h>")
         self.w("#include <stdlib.h>")
+        self.w("#include <string.h>")
         self.w("")
         self.gen_enums_consts()
         self.gen_enum_helpers()
@@ -1625,12 +2686,16 @@ class CodeGen:
             kind = self.type_kind[name]
             ct = c_type(name)
             fields = self.p.structs[name]["fields"]
+            # Plain scalar structs cannot form cycles: allocate outside the oid
+            # registry and initialize fields explicitly instead of memset + add.
+            plain = kind != "event" and all(not self.is_ref(f.type.name) for f in fields)
             self.w(f"static {ct}* new_{ct}(WellCtx* ctx, long long oid) {{")
             self.ind += 1
             self.w("(void)ctx;")
             if kind == "event":
                 self.w("if (oid == 0) oid = well_id_util_get_id();")
-            self.w(f"{ct}* o = ({ct}*)well_new(sizeof({ct}), T_{ct}, oid);")
+            alloc = "well_new_uninit_unregistered" if plain else "well_new"
+            self.w(f"{ct}* o = ({ct}*){alloc}(sizeof({ct}), T_{ct}, oid);")
             for f in fields:
                 ty = f.type.name
                 if f.default is not None:
@@ -1642,6 +2707,8 @@ class CodeGen:
                         self.w(f"o->{c_field(f.name)} = {self.gen_expr(val)};")
                 elif ty == "String":
                     self.w(f'o->{c_field(f.name)} = well_string_lit("");')
+                elif plain:
+                    self.w(f"o->{c_field(f.name)} = 0;")
             if kind == "event":
                 self.w("well_freeze((void*)o);")
             self.w("return o;")
@@ -1735,6 +2802,46 @@ class CodeGen:
             self.w(f"static void {c_handler(name)}_onEvent(WellCtx* ctx, void* evp);")
         self.w("")
 
+    def _event_param_written(self, node, name: str) -> bool:
+        """True when the handler assigns to a field of the event parameter.
+
+        A frame-allocated event borrows its String fields (no retain), so a
+        write through the parameter must keep the heap path where the event
+        owns its edges.
+        """
+        if isinstance(node, Assign):
+            t = node.target
+            while isinstance(t, (Member, Index)):
+                t = t.obj
+            if isinstance(t, Ident) and t.name == name:
+                return True
+        for child in self._children(node):
+            if self._event_param_written(child, name):
+                return True
+        return False
+
+    def _stack_event_ok(self, handler_name: str) -> bool:
+        """True when a route handler only reads fields of its event parameter.
+
+        In that case the route wrapper can build the event in the C frame: the
+        parameter never escapes, so the event does not need a heap allocation
+        or retained String fields (the message/request owns them for the whole
+        call).  A handler that passes the event itself anywhere (call argument,
+        assignment, container/Model store) or writes one of its fields fails
+        this check and keeps the heap path.
+        """
+        mname = getattr(self.p, "handler_method", {}).get(handler_name)
+        h = getattr(self.p, "handlers", {}).get(handler_name)
+        if not mname or not h:
+            return False
+        for m in h.methods:
+            if m.name == mname and m.params:
+                pname = m.params[0][0]
+                if self._event_param_written(m.body, pname):
+                    return False
+                return self._uses_only_fields(m.body, pname)
+        return False
+
     def gen_http_routes(self):
         routes = getattr(self.p, "http_routes", [])
         for i, r in enumerate(routes):
@@ -1743,15 +2850,42 @@ class CodeGen:
             ct = c_type(ev)
             self.w(f"static void http_route_{i}(WellCtx* ctx, WellHttpRequest* req) {{")
             self.ind += 1
-            self.w(f"{ct}* e = new_{ct}(ctx, req->id);")
-            self.w(f"e->{c_field('reqId')} = req->id;")
-            for fn in ("method", "path", "query", "body"):
-                self.w(f"well_set_ref((void*)e, (void**)&e->{c_field(fn)}, (void*)req->{fn});")
-            self.w(f"{c_handler(h)}_onEvent(ctx, (void*)e);")
-            self.w("well_release((void*)e);")
+            # Events are immutable and only reference immutable Strings, so the
+            # route wrapper can skip the generic constructor's empty defaults
+            # and the per-field graph edges; retain the request Strings directly.
+            # The event is unregistered: it is created and released on the
+            # connection thread before anyone can look it up by oid (V4 perf).
+            if self._stack_event_ok(h):
+                # Non-escaping handler: build the event in the C frame and
+                # borrow the request strings (no alloc, no retain/release).
+                self.w(f"{ct} e;")
+                self.w("memset(&e, 0, sizeof(e));")
+                self.w("e.hdr.oid = req->id;")
+                self.w(f"e.hdr.type_id = T_{ct};")
+                self.w("e.hdr.rc = 1;")
+                self.w("e.hdr.flags = WELL_FLAG_STACK;")
+                self.w(f"e.{c_field('reqId')} = req->id;")
+                for fn in ("method", "path", "query", "body"):
+                    self.w(f"e.{c_field(fn)} = req->{fn};")
+                self.w("well_freeze((void*)&e);")
+                self.w(f"{c_handler(h)}_onEvent(ctx, (void*)&e);")
+            else:
+                self.w(f"{ct}* e = ({ct}*)well_new_zero_unregistered(sizeof({ct}), T_{ct}, req->id);")
+                self.w(f"e->{c_field('reqId')} = req->id;")
+                for fn in ("method", "path", "query", "body"):
+                    f = c_field(fn)
+                    self.w(f"e->{f} = req->{fn};")
+                    self.w(f"well_retain((void*)e->{f});")
+                self.w("well_freeze((void*)e);")
+                self.w(f"{c_handler(h)}_onEvent(ctx, (void*)e);")
+                self.w("well_release((void*)e);")
             self.ind -= 1
             self.w("}")
             self.w("")
+
+    def _event_has_defaults(self, ev: str) -> bool:
+        d = self.p.structs.get(ev)
+        return bool(d) and any(f.default is not None for f in d["fields"])
 
     def gen_ws_routes(self):
         routes = getattr(self.p, "ws_routes", [])
@@ -1759,33 +2893,71 @@ class CodeGen:
             oe, me, ce = r["open_ev"], r["msg_ev"], r["close_ev"]
             oh, mh, ch = r["open"], r["msg"], r["close"]
             oct_, mct, cct = c_type(oe), c_type(me), c_type(ce)
+            open_stack = self._stack_event_ok(oh) and not self._event_has_defaults(oe)
+            msg_stack = self._stack_event_ok(mh) and not self._event_has_defaults(me)
+            close_stack = self._stack_event_ok(ch) and not self._event_has_defaults(ce)
             self.w(f"static void ws_open_{i}(WellCtx* ctx, WellWsClient* c) {{")
             self.ind += 1
-            self.w(f"{oct_}* e = new_{oct_}(ctx, c->id);")
-            self.w(f"e->{c_field('clientId')} = c->id;")
-            self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('path')}, (void*)c->path);")
-            self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('query')}, (void*)c->query);")
-            self.w(f"{c_handler(oh)}_onEvent(ctx, (void*)e);")
-            self.w("well_release((void*)e);")
+            if open_stack:
+                self.w(f"{oct_} e;")
+                self.w("memset(&e, 0, sizeof(e));")
+                self.w("e.hdr.oid = c->id;")
+                self.w(f"e.hdr.type_id = T_{oct_};")
+                self.w("e.hdr.rc = 1;")
+                self.w("e.hdr.flags = WELL_FLAG_STACK;")
+                self.w(f"e.{c_field('clientId')} = c->id;")
+                self.w(f"e.{c_field('path')} = c->path;")
+                self.w(f"e.{c_field('query')} = c->query;")
+                self.w(f"{c_handler(oh)}_onEvent(ctx, (void*)&e);")
+            else:
+                self.w(f"{oct_}* e = new_{oct_}(ctx, c->id);")
+                self.w(f"e->{c_field('clientId')} = c->id;")
+                self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('path')}, (void*)c->path);")
+                self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('query')}, (void*)c->query);")
+                self.w(f"{c_handler(oh)}_onEvent(ctx, (void*)e);")
+                self.w("well_release((void*)e);")
             self.ind -= 1
             self.w("}")
             self.w(f"static void ws_msg_{i}(WellCtx* ctx, WellWsClient* c, WellString* text) {{")
             self.ind += 1
-            self.w(f"{mct}* e = new_{mct}(ctx, c->id);")
-            self.w(f"e->{c_field('clientId')} = c->id;")
-            self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('text')}, (void*)text);")
-            self.w(f"{c_handler(mh)}_onEvent(ctx, (void*)e);")
-            self.w("well_release((void*)e);")
+            if msg_stack:
+                self.w(f"{mct} e;")
+                self.w("memset(&e, 0, sizeof(e));")
+                self.w("e.hdr.oid = c->id;")
+                self.w(f"e.hdr.type_id = T_{mct};")
+                self.w("e.hdr.rc = 1;")
+                self.w("e.hdr.flags = WELL_FLAG_STACK;")
+                self.w(f"e.{c_field('clientId')} = c->id;")
+                self.w(f"e.{c_field('text')} = text;")
+                self.w(f"{c_handler(mh)}_onEvent(ctx, (void*)&e);")
+            else:
+                self.w(f"{mct}* e = new_{mct}(ctx, c->id);")
+                self.w(f"e->{c_field('clientId')} = c->id;")
+                self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('text')}, (void*)text);")
+                self.w(f"{c_handler(mh)}_onEvent(ctx, (void*)e);")
+                self.w("well_release((void*)e);")
             self.ind -= 1
             self.w("}")
             self.w(f"static void ws_close_{i}(WellCtx* ctx, WellWsClient* c, int code, WellString* reason) {{")
             self.ind += 1
-            self.w(f"{cct}* e = new_{cct}(ctx, c->id);")
-            self.w(f"e->{c_field('clientId')} = c->id;")
-            self.w(f"e->{c_field('code')} = code;")
-            self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('reason')}, (void*)reason);")
-            self.w(f"{c_handler(ch)}_onEvent(ctx, (void*)e);")
-            self.w("well_release((void*)e);")
+            if close_stack:
+                self.w(f"{cct} e;")
+                self.w("memset(&e, 0, sizeof(e));")
+                self.w("e.hdr.oid = c->id;")
+                self.w(f"e.hdr.type_id = T_{cct};")
+                self.w("e.hdr.rc = 1;")
+                self.w("e.hdr.flags = WELL_FLAG_STACK;")
+                self.w(f"e.{c_field('clientId')} = c->id;")
+                self.w(f"e.{c_field('code')} = code;")
+                self.w(f"e.{c_field('reason')} = reason;")
+                self.w(f"{c_handler(ch)}_onEvent(ctx, (void*)&e);")
+            else:
+                self.w(f"{cct}* e = new_{cct}(ctx, c->id);")
+                self.w(f"e->{c_field('clientId')} = c->id;")
+                self.w(f"e->{c_field('code')} = code;")
+                self.w(f"well_set_ref((void*)e, (void**)&e->{c_field('reason')}, (void*)reason);")
+                self.w(f"{c_handler(ch)}_onEvent(ctx, (void*)e);")
+                self.w("well_release((void*)e);")
             self.ind -= 1
             self.w("}")
             self.w("")
@@ -1840,8 +3012,9 @@ class CodeGen:
             self.w(f"int {mk} = well_ctx_mark(ctx);")
             tm, old_tm = self.begin_frame_temp()
             self.push_scope(mk, False)
+            self.bind_params(f.params, f.body)
             self.gen_block(f.body)
-            self.emit_scope_release(mk)
+            self.emit_scope_release(mk, final=True)
             self.pop_scope(mk)
             self.end_frame_temp(tm, old_tm)
             self.ind -= 1
@@ -1868,8 +3041,9 @@ class CodeGen:
                 self.w(f"int {mk} = well_ctx_mark(ctx);")
                 tm, old_tm = self.begin_frame_temp()
                 self.push_scope(mk, False)
+                self.bind_params(f.params, f.body)
                 self.gen_block(f.body)
-                self.emit_scope_release(mk)
+                self.emit_scope_release(mk, final=True)
                 self.pop_scope(mk)
                 self.end_frame_temp(tm, old_tm)
                 self.ind -= 1
@@ -1891,8 +3065,9 @@ class CodeGen:
                 self.w(f"int {mk} = well_ctx_mark(ctx);")
                 tm, old_tm = self.begin_frame_temp()
                 self.push_scope(mk, False)
+                self.bind_params(f.params, f.body)
                 self.gen_block(f.body)
-                self.emit_scope_release(mk)
+                self.emit_scope_release(mk, final=True)
                 self.pop_scope(mk)
                 self.end_frame_temp(tm, old_tm)
                 self.ind -= 1
@@ -1943,14 +3118,14 @@ class CodeGen:
                 elif isinstance(d, ArrayLit):
                     kind, et = self.container_info(f.type.name)
                     tmp = f"_sf{self.next_id()}"
-                    self.w(f"WellArray* {tmp} = well_array_new(ctx, {self.container_ref_flag(et)});")
+                    self.w(f"WellArray* {tmp} = {self.container_new_call('array', et)};")
                     for it in d.items:
                         self.emit_container_push(tmp, it, et)
                     self.w(f"{cstat} = {tmp};")
                 elif isinstance(d, ObjectLit):
                     kind, et = self.container_info(f.type.name)
                     tmp = f"_sf{self.next_id()}"
-                    self.w(f"WellMap* {tmp} = well_map_new(ctx, {self.container_ref_flag(et)});")
+                    self.w(f"WellMap* {tmp} = {self.container_new_call('map', et)};")
                     for k, v in d.pairs:
                         self.emit_map_set(tmp, f'well_string_lit("{c_escape(k)}")', v, et)
                     self.w(f"{cstat} = {tmp};")
@@ -2005,6 +3180,7 @@ class CodeGen:
             self.ind += 1
             self.env = {}
             self.c_names = {}
+            self.journaled = {}
             self.current_ret = "void"
             m = self.next_id()
             mk = f"_m{m}"
@@ -2013,7 +3189,7 @@ class CodeGen:
             self.push_scope(mk, False)
             if run:
                 self.gen_block(run.body)
-            self.emit_scope_release(mk)
+            self.emit_scope_release(mk, final=True)
             self.pop_scope(mk)
             self.end_frame_temp(tm, old_tm)
             self.ind -= 1
@@ -2040,15 +3216,22 @@ class CodeGen:
             self.w("(void)oid;")
             self.env = {pname: ev, "oid": "long"}
             self.c_names = {pname: cpname, "oid": "oid"}
+            self.journaled = {}
             self.current_ret = "void"
             mmark = self.next_id()
             mk = f"_m{mmark}"
             self.w(f"int {mk} = well_ctx_mark(ctx);")
             tm, old_tm = self.begin_frame_temp()
             self.push_scope(mk, False)
+            # The scheduler already pins the event payload for the duration of
+            # the handler, so the parameter only needs its own slot when the
+            # body reassigns it (otherwise the old pointer-scan could rewrite a
+            # different binding's journal entry).
+            if m and pname in self.assigned_names(m.body):
+                self.bind_ref(pname, cpname, 0)
             if m:
                 self.gen_block(m.body)
-            self.emit_scope_release(mk)
+            self.emit_scope_release(mk, final=True)
             self.pop_scope(mk)
             self.end_frame_temp(tm, old_tm)
             self.ind -= 1

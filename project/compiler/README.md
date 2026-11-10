@@ -73,7 +73,7 @@ compiler/
 
 ## 使用
 
-需要 Python 3 和一个 C 编译器。本机已验证 TinyCC 0.9.27（仓库内 `project/tool_ai/tools/tcc/`）与 MinGW-w64 GCC 16.2.0（`D:\Soft\gcc`，已加入用户 PATH；`WELL_CC=gcc` 自动 `-O2 -fwrapv`）。
+需要 Python 3 和一个 C 编译器。本机已验证 TinyCC 0.9.27（仓库内 `project/tool_ai/tools/tcc/`）与 WinLibs GCC 16.2.0（`D:\Soft\gcc\mingw64\bin\gcc.exe`；`WELL_CC=gcc` 自动 `-O2 -fwrapv`）。`--release` 会**编译+链接探测**候选编译器，PATH 上不完整的 gcc 不会遮蔽可用工具链。
 
 ```powershell
 cd compiler
@@ -82,10 +82,21 @@ python wellc.py run examples\hello.we
 python wellc.py build examples\features.we -o build\features.exe
 python wellc.py emit-c examples\hello.we -o build\hello.c
 
+# 优化构建（GCC/Clang），以及显式 LTO（opt-in，默认关闭）
+python wellc.py build examples\features.we -o build\features_gcc.exe --release
+python wellc.py build examples\features.we -o build\features_lto.exe --release-lto
+
 # 只做词法/语法/语义检查：不生成可执行文件，不写 build/
 python wellc.py check examples\hello.we
 python wellc.py check examples\hello.we --json
 ```
+
+V4 运行时/代码生成要点（详见 `../document/v4-改进与性能报告.md`）：
+
+- 引用绑定使用稳定 journal 槽位（`well_ctx_bind` / `well_ctx_replace_at`），赋值不再按旧指针扫描；
+- 源码位置为每线程 `{file,line}` + 单次 TLS 读（Windows 不依赖编译器 TLS）；
+- 非逃逸 struct（含引用/容器字段）直接分配在 C 帧，作用域出口统一 `destroy_*`，`WELL_FLAG_STACK` 防止误 free；
+- 调度器合并空闲唤醒；MySQL 连接带 8 KiB 读缓冲。
 
 构建产物默认写入 `build/<stem>_<sha1前8>.c/.exe`（`<sha1前8>` 是源码绝对路径的摘要，不同目录同名源码不再互相覆盖；`<stem>` 是源文件名去扩展名）；`-o` 显式指定输出路径，`emit-c -o` 会自动创建父目录；`build` 对未解析的 `import` 打印 `wellc: warning: ...`（不中断构建）。
 
@@ -140,10 +151,12 @@ $env:WELL_CFLAGS = "-O2 -g"
 $env:WELL_CFLAGS = ""
 ```
 
-测试规模（2026-10-23）：`.we` 用例 **188** 个 + C 测试 **18** 个；runner 默认 `WELL_WORKERS=1` 保证确定性；`52_mysql`/`53_mysql_pool`/`128_mysql_big_column`/`140_mysql_exec_resultset`/`141_mysql_pool_panic`/`169_mysql_json_escapes` 与 `mysql_conn_test` 通过 `requires.txt` 声明依赖，`127.0.0.1:3306` 不可达时打印 `SKIP`。
-验证状态（2026-10-22）：GCC 16.2 -O2 -fwrapv 下定向 HTTP/WS/JSON/TTL 用例与全部 C 测试通过；CPU parser 微基准约 6–8 µs（TCC 约 11–14 µs，≈1.8×）；HTTP 压测噪声大，暂未观察到稳定吞吐差异；gcc 全量 `.we` 用例串行编译约 25s/case，未完整跑完。Linux CI（Ubuntu 24.04 + gcc -O2）的 `.we` 用例已跑通（MySQL 依赖用例跳过）。
+测试规模（2026-10-24，V4）：`.we` 用例 **190** 个 + C 测试 **19** 个 + journal 契约 **14** 个；runner 默认 `WELL_WORKERS=1` 保证确定性；`52_mysql`/`53_mysql_pool`/`128_mysql_big_column`/`140_mysql_exec_resultset`/`141_mysql_pool_panic`/`169_mysql_json_escapes` 与 `mysql_conn_test` 通过 `requires.txt` 声明依赖，`127.0.0.1:3306` 不可达时打印 `SKIP`。
+验证状态（2026-10-24，V4）：本机 MySQL 5.7.40 可用时 **190/190 `.we` + 19/19 C 测试 + 14/14 journal 契约通过**；C 测试统一追加 `-UNDEBUG`；`tests/c/src_pos_tls_test.c` 覆盖 20 对并发线程的源码位置隔离；交替 A/B 基线见 `../document/v4-改进与性能报告.md`。
 
 ### CI（Linux）
+
+> 本仓库即 V4 主线，`.github/workflows/` 等工作流随仓库提供，CI 说明如下（V4 在本机以 `python tools\verify.py` 作为同等门禁）。
 
 仓库根 `.github/workflows/verify.yml` 在 Ubuntu 上用 gcc 跑完整 `tools/verify.py`（**全部 `.we` 用例 + 全部 C 测试 + check-cli**；POSIX 上 `find_cc` 优先 gcc/clang，自动 `-O2 -fwrapv`）。2026-10-23 起 **CI 已转正**：C 测试纳入每次 push/PR 的 Linux 门禁；需要本机 MySQL 的用例（`52/53/128/140/141/169` 与 `mysql_conn_test`）因 runner 无 MySQL 自动 SKIP。bench（HTTP 压测/解析器基线）不进入 push 门禁，通过 `workflow_dispatch` 勾选 `run_bench=true` 手动触发，避免共享 runner 的计时噪声。依赖通过用例目录里的 `requires.txt` 声明：`127.0.0.1:3306` 不可达时打印 `SKIP` 而不是误报失败。
 

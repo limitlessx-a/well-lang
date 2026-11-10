@@ -65,6 +65,13 @@ typedef struct WellMysqlConn {
     int connected;
     int checked_out; /* currently borrowed from a pool (audit M12) */
     int io_err; /* last low-level I/O outcome, for explicit panic messages */
+    long long last_used_ms; /* last acquire/release: avoids a ping per query */
+    /* v3 lesson (P1): small reads come out of an 8 KiB buffer so a scalar
+     * query costs one recv instead of one syscall per protocol field.  Large
+     * reads bypass the buffer and land directly in the destination. */
+    char read_buf[8192];
+    int read_pos;
+    int read_end;
     struct WellMysqlConn *next_all; /* pool's live-connection list */
 } WellMysqlConn;
 
@@ -74,6 +81,21 @@ typedef struct WellMysqlConn {
 #define MY_IO_EOF 3
 
 static WellMysqlConn g_default;
+
+/* Pool acquire used to send COM_PING on every borrow, doubling the round trips
+ * for a trivial query.  A connection that was used within this window is known
+ * alive, so only ping after it has been idle for a while.  0 = always ping
+ * (old behaviour), <0 = never ping. */
+static long long g_ping_idle_ms = 1000;
+static int g_ping_cfg = 0;
+
+static void my_ping_cfg_init(void) {
+    const char *e;
+    if (g_ping_cfg) return;
+    g_ping_cfg = 1;
+    e = getenv("WELL_MYSQL_PING_IDLE_MS");
+    if (e && e[0]) g_ping_idle_ms = atoll(e);
+}
 
 /* Audit M11: the process-wide default connection used to be completely
  * unsynchronized, so two handlers calling Mysql.exec/queryJson concurrently
@@ -212,11 +234,38 @@ static int my_connect_timed(MysqlSocket s, const MysqlAddr *a, int timeout_ms) {
 /* Copies a low-level I/O failure into the connection's error slot so the panic
  * message can say "timed out after N ms" instead of a generic "failed". */
 static int my_read_all(WellMysqlConn *c, char *b, size_t n) {
+    /* Drain anything already buffered first. */
+    if (c->read_pos < c->read_end) {
+        size_t avail = (size_t)(c->read_end - c->read_pos);
+        size_t take = avail < n ? avail : n;
+        memcpy(b, c->read_buf + c->read_pos, take);
+        c->read_pos += (int)take;
+        b += take;
+        n -= take;
+    }
     while (n) {
-        int k = my_recv(c->fd, b, (int)n);
+        int k;
+        if (n >= sizeof(c->read_buf)) {
+            /* Large read: straight into the caller's buffer (no copy). */
+            k = my_recv(c->fd, b, (int)n);
+            if (k == 0) { c->io_err = MY_IO_EOF; return -1; }
+            if (k < 0) { c->io_err = my_io_is_timeout() ? MY_IO_TIMEOUT : MY_IO_ERROR; return -1; }
+            b += k;
+            n -= (size_t)k;
+            continue;
+        }
+        k = my_recv(c->fd, c->read_buf, (int)sizeof(c->read_buf));
         if (k == 0) { c->io_err = MY_IO_EOF; return -1; }
         if (k < 0) { c->io_err = my_io_is_timeout() ? MY_IO_TIMEOUT : MY_IO_ERROR; return -1; }
-        b += k; n -= (size_t)k;
+        c->read_pos = 0;
+        c->read_end = k;
+        {
+            size_t take = (size_t)k < n ? (size_t)k : n;
+            memcpy(b, c->read_buf, take);
+            c->read_pos = (int)take;
+            b += take;
+            n -= take;
+        }
     }
     return 0;
 }
@@ -306,6 +355,13 @@ static int my_read_packet(WellMysqlConn *c, unsigned char **out, size_t *outlen)
 static int my_write_packet(WellMysqlConn *c, const unsigned char *p, size_t n) {
     unsigned char h[4];
     h[0]=(unsigned char)n; h[1]=(unsigned char)(n>>8); h[2]=(unsigned char)(n>>16); h[3]=c->seq++;
+    if (n <= 512) {
+        /* One send for the common small query instead of header+payload. */
+        unsigned char buf[4 + 512];
+        memcpy(buf, h, 4);
+        if (n) memcpy(buf + 4, p, n);
+        return my_send_all(c, (const char *)buf, n + 4);
+    }
     if (my_send_all(c, (const char *)h, 4) != 0) return -1;
     return my_send_all(c, (const char *)p, n);
 }
@@ -456,6 +512,8 @@ static void my_connect_conn(WellMysqlConn *c, const char *host, int port,
     char msg[192];
     my_socket_init();
     if (c->connected) { my_close(c->fd); c->connected = 0; }
+    c->read_pos = 0;
+    c->read_end = 0;
     memset(&addr, 0, sizeof(addr));
     addr.family = 2; addr.port = my_htons((unsigned short)port);
     { unsigned int ip = 0, a, b, cc, d;
@@ -556,12 +614,16 @@ static int my_discard_resultset(WellMysqlConn *c, const unsigned char *first, si
 
 int well_mysql_conn_exec(WellMysqlConn *c, const char *sql) {
     unsigned char *pkt = NULL; size_t plen = 0; long long affected = 0;
-    size_t n = strlen(sql); unsigned char *q = (unsigned char *)malloc(n + 1);
-    if (!c->connected) well_panic("MySQL: not connected");
+    size_t n = strlen(sql);
+    unsigned char qstack[256];
+    unsigned char *q = (n + 1 <= sizeof(qstack)) ? qstack
+                                                 : (unsigned char *)malloc(n + 1);
+    if (!q) well_panic("out of memory (MySQL query)");
+    if (!c->connected) { if (q != qstack) free(q); well_panic("MySQL: not connected"); }
     c->io_err = MY_IO_OK;
     q[0] = 0x03; memcpy(q + 1, sql, n); c->seq = 0;
-    if (my_write_packet(c, q, n + 1) != 0) { free(q); my_panic_io(c, "send"); }
-    free(q);
+    if (my_write_packet(c, q, n + 1) != 0) { if (q != qstack) free(q); my_panic_io(c, "send"); }
+    if (q != qstack) free(q);
     if (my_read_packet(c, &pkt, &plen) != 0) my_panic_io(c, "read");
     if (plen > 0 && pkt[0] == 0xFF) {
         char msg[512];
@@ -651,10 +713,13 @@ WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
     if (!buf) well_panic("out of memory (MySQL json)");
     if (!c->connected) well_panic("MySQL: not connected");
     c->io_err = MY_IO_OK;
-    { size_t n = strlen(sql); unsigned char *q = (unsigned char *)malloc(n + 1);
+    { size_t n = strlen(sql); unsigned char qstack[256];
+      unsigned char *q = (n + 1 <= sizeof(qstack)) ? qstack
+                                                   : (unsigned char *)malloc(n + 1);
+      if (!q) { free(buf); well_panic("out of memory (MySQL query)"); }
       q[0]=0x03; memcpy(q+1,sql,n); c->seq=0;
-      if (my_write_packet(c, q, n + 1) != 0) { free(q); my_panic_io(c, "send"); }
-      free(q); }
+      if (my_write_packet(c, q, n + 1) != 0) { if (q != qstack) free(q); my_panic_io(c, "send"); }
+      if (q != qstack) free(q); }
     if (my_read_packet(c, &pkt, &plen) != 0) my_panic_io(c, "read");
     if (plen > 0 && pkt[0] == 0xFF) { char msg[512]; size_t n=plen>3?plen-3:0; if(n>sizeof(msg)-1)n=sizeof(msg)-1; memcpy(msg,pkt+3,n); msg[n]='\0'; free(pkt); well_panic(msg); }
     pos = 0;
@@ -754,7 +819,7 @@ WellString *well_mysql_conn_query_json(WellMysqlConn *c, const char *sql) {
     }
     buf = mysql_json_reserve(buf, &cap, len + 2);
     buf[len++] = ']'; buf[len] = '\0';
-    out = well_string_new(buf);
+    out = well_string_new_n(buf, len);
     free(buf);
     for (col = 0; col < cols; col++) free(names[col]);
     free(names);
@@ -803,6 +868,8 @@ WellString *well_mysql_query_json(const char *sql) {
 void well_mysql_conn_close(WellMysqlConn *c) {
     if (!c) return;
     if (c->connected) { my_close(c->fd); c->connected = 0; }
+    c->read_pos = 0;
+    c->read_end = 0;
 }
 
 void well_mysql_close(void) {
@@ -906,16 +973,22 @@ WellMysqlPool *well_mysql_pool_new(const char *host, int port,
 WellMysqlConn *well_mysql_pool_acquire(WellMysqlPool *pool, int timeout_ms) {
     long long deadline = timeout_ms < 0 ? -1 : well_mono_ms() + timeout_ms;
     if (!pool) return NULL;
+    my_ping_cfg_init();
     for (;;) {
         WellMysqlConn *c = NULL;
         well_mutex_lock(&pool->lock);
         if (pool->closing) { well_mutex_unlock(&pool->lock); return NULL; }
         if (pool->idle_n > 0) {
+            long long now;
+            int need_ping;
             c = pool->idle[--pool->idle_n];
             pool->active++;
             c->checked_out = 1; /* audit M12 */
             well_mutex_unlock(&pool->lock);
-            if (!c->connected || my_ping(c) != 0) {
+            now = well_mono_ms();
+            need_ping = (g_ping_idle_ms >= 0) &&
+                        (g_ping_idle_ms == 0 || now - c->last_used_ms >= g_ping_idle_ms);
+            if (!c->connected || (need_ping && my_ping(c) != 0)) {
                 /* Stale idle connection: drop it and continue with a fresh one
                  * instead of handing a dead socket to the caller. */
                 well_mysql_conn_close(c);
@@ -928,6 +1001,7 @@ WellMysqlConn *well_mysql_pool_acquire(WellMysqlPool *pool, int timeout_ms) {
                 if (deadline >= 0 && well_mono_ms() >= deadline) return NULL;
                 continue;
             }
+            c->last_used_ms = now;
             return c;
         }
         if (pool->total < pool->max_conn) {
@@ -963,6 +1037,7 @@ WellMysqlConn *well_mysql_pool_acquire(WellMysqlPool *pool, int timeout_ms) {
             }
             my_pool_track_locked(pool, nc);
             nc->checked_out = 1; /* audit M12 */
+            nc->last_used_ms = well_mono_ms();
             well_mutex_unlock(&pool->lock);
             return nc;
         }
@@ -984,6 +1059,7 @@ void well_mysql_pool_release(WellMysqlPool *pool, WellMysqlConn *conn) {
         return;
     }
     conn->checked_out = 0;
+    conn->last_used_ms = well_mono_ms();
     if (pool->active > 0) pool->active--;
     if (pool->closing || !conn->connected || pool->idle_n >= pool->idle_cap) {
         pool->total--;

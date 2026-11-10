@@ -1,0 +1,30 @@
+﻿module bench.allocobj;
+
+struct P {
+    x: long;
+}
+
+struct H {
+    p: P;
+}
+
+controller AllocObjBench {
+    run() {
+        var n: long = 2000000;
+        var acc: long = 0;
+        var h: H = new H();
+        var t0: long = Host.nowMs();
+        for (var i: long = 0; i < n; i = i + 1) {
+            var p: P = new P();
+            p.x = i;
+            h.p = p;
+            acc = acc + h.p.x;
+        }
+        var ms: long = Host.nowMs() - t0;
+        print("well-allocobj n=", n, " ms=", ms, " ns_per_op=", ms * 1000000 / n,
+              " acc=", acc);
+    }
+}
+
+entry AllocObjBench;
+

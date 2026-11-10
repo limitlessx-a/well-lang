@@ -128,6 +128,18 @@ void well_oid_unpin(long long oid) {
     well_lock_release(&g_act_lock);
 }
 
+/* One lock acquisition for the touch+pin pair that every dispatched event
+ * performs (was well_model_touch_oid() followed by well_oid_pin()). */
+void well_oid_touch_and_pin(long long oid) {
+    long long now = 0;
+    int act = activity_enabled();
+    if (act) now = well_mono_ms();
+    well_lock_acquire(&g_act_lock);
+    if (act) act_touch_locked(oid, now);
+    act_pin_locked(oid);
+    well_lock_release(&g_act_lock);
+}
+
 void well_model_init(void) {
     if (g_model_inited) return;
     g_model_store = well_memory_store_new();
@@ -181,6 +193,7 @@ void well_model_set(void *obj, WellCtx *ctx) {
     WellObj *o = (WellObj *)obj;
     if (!o) well_panic("Model.set(null)");
     if (o->oid != ctx->oid) well_panic("Model.set: oid mismatch");
+    well_register_obj(o);
     well_model_init();
     if (g_model_store && g_model_store->upsert) {
         if (g_model_store->upsert(g_model_store->self, obj) != 0)

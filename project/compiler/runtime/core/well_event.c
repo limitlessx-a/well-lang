@@ -175,8 +175,16 @@ static long long g_pending = 0;
 static int g_stop = 0;
 static int g_service_count = 0;
 static int g_cleanup_running = 0;
+/* Workers currently blocked in well_cond_wait (guarded by g_sched_mutex).
+ * Enqueue only signals when somebody is actually idle: under load all workers
+ * are busy and each WakeConditionVariable is pure overhead. */
+static int g_idle_workers = 0;
+/* A wake-up is already in flight (guarded by g_sched_mutex). */
+static int g_wake_pending = 0;
 static WellThread g_threads[WELL_MAX_WORKERS];
 static int g_thread_count = 0;
+
+static void sched_wake_one(void);
 
 #define QMAP_TOMB ((WellOidQueue *)-1)
 
@@ -323,6 +331,7 @@ void well_event_shutdown(void) {
         g_pending = 0;
         g_service_count = 0;
         g_cleanup_running = 0;
+        g_idle_workers = 0;
         g_stop = 0;
     }
     well_cond_destroy(&g_sched_cond);
@@ -660,7 +669,7 @@ void well_emit_event(void *event, long long channel) {
         if (idle) g_pending++;
         if (!q->cleaning && !q->scheduled && !q->running) {
             ready_push(q);
-            well_cond_signal(&g_sched_cond);
+            sched_wake_one();
         }
     }
     well_mutex_unlock(&g_sched_mutex);
@@ -697,7 +706,7 @@ void well_schedule_task(long long oid, WellTaskFn fn, void *arg, WellTaskDone do
         if (idle) g_pending++;
         if (!q->cleaning && !q->scheduled && !q->running) {
             ready_push(q);
-            well_cond_signal(&g_sched_cond);
+            sched_wake_one();
         }
     }
     well_mutex_unlock(&g_sched_mutex);
@@ -706,14 +715,14 @@ void well_schedule_task(long long oid, WellTaskFn fn, void *arg, WellTaskDone do
 static void dispatch_event(WellEventNode *node) {
     WellObj *ev = (WellObj *)node->event;
     WellSub *s;
-    WellSub **matches = NULL;
-    int nm = 0, cap = 0, i;
+    /* Snapshot the matching subscriptions under the lock, then dispatch
+     * without it.  0-8 subscribers is the common case, so keep the snapshot in
+     * the frame and only fall back to the heap for larger fan-out (was one
+     * realloc+free per emitted event). */
+    WellSub *inline_matches[8];
+    WellSub **matches = inline_matches;
+    int nm = 0, cap = 8, heap = 0, i;
 
-    well_model_touch_oid(ev->oid);
-    /* Keep the target oid leased for the whole dispatch: handlers may only
-     * compute/emit without Model.get/set, and we still must not let TTL reclaim
-     * this oid's objects while its event is executing. */
-    well_oid_pin(ev->oid);
     well_lock_acquire(&g_subs_lock);
     for (s = g_subs; s; s = s->next) {
         if (!s->active) continue;
@@ -724,15 +733,30 @@ static void dispatch_event(WellEventNode *node) {
             s->claimed = 1;
         }
         if (nm == cap) {
-            int ncap = cap ? cap * 2 : 8;
-            WellSub **nmatch = (WellSub **)realloc(matches, (size_t)ncap * sizeof(WellSub *));
+            int ncap = cap * 2;
+            WellSub **nmatch;
+            if (heap) {
+                nmatch = (WellSub **)realloc(matches, (size_t)ncap * sizeof(WellSub *));
+            } else {
+                nmatch = (WellSub **)malloc((size_t)ncap * sizeof(WellSub *));
+                if (nmatch) memcpy(nmatch, matches, (size_t)nm * sizeof(WellSub *));
+            }
             if (!nmatch) well_panic("out of memory (dispatch)");
             matches = nmatch;
             cap = ncap;
+            heap = 1;
         }
         matches[nm++] = s;
     }
     well_lock_release(&g_subs_lock);
+
+    /* No handler will run: no need to lease/touch the oid at all. */
+    if (nm == 0) return;
+
+    /* Keep the target oid leased while handlers run: handlers may only
+     * compute/emit without Model.get/set, and TTL must not reclaim this oid's
+     * objects mid-dispatch.  Touch+pin share one activity-lock acquisition. */
+    well_oid_touch_and_pin(ev->oid);
 
     for (i = 0; i < nm; i++) {
         WellSub *sub = matches[i];
@@ -751,7 +775,7 @@ static void dispatch_event(WellEventNode *node) {
         }
         well_ctx_clear((WellCtx *)&ctx);
     }
-    free(matches);
+    if (heap) free(matches);
     well_oid_unpin(ev->oid);
 }
 
@@ -772,6 +796,16 @@ static void dispatch_task(long long oid, WellEventNode *node) {
     if (node->task_done) node->task_done(node->task_arg);
 }
 
+static void sched_wake_one(void) {
+    /* One pending wake-up is enough: the woken worker steals across all local
+     * queues, so a burst of enqueues must not turn into one condvar syscall
+     * per task.  The flag is cleared as soon as a worker leaves cond_wait. */
+    if (g_idle_workers > 0 && !g_wake_pending) {
+        g_wake_pending = 1;
+        well_cond_signal(&g_sched_cond);
+    }
+}
+
 /* One scheduler worker. Returns when g_stop is set (non-main) or idle (main). */
 /* Caller holds the scheduler mutex. A plain signal may wake another worker,
  * but only the main worker checks the idle-exit predicate, so use a broadcast
@@ -780,13 +814,14 @@ static void sched_notify(void) {
     if (g_pending == 0 && g_service_count == 0)
         well_cond_broadcast(&g_sched_cond);
     else
-        well_cond_signal(&g_sched_cond);
+        sched_wake_one();
 }
 
 static void sched_worker_loop(int wid, int is_main) {
     for (;;) {
         WellOidQueue *q;
-        WellEventNode *node;
+        WellEventNode *batch[32];
+        int batch_n = 0, i;
 
         well_model_cleanup_if_due();
 
@@ -807,24 +842,36 @@ static void sched_worker_loop(int wid, int is_main) {
                 well_mutex_unlock(&g_sched_mutex);
                 return;
             }
+            g_idle_workers++;
             well_cond_wait(&g_sched_cond, &g_sched_mutex);
+            g_idle_workers--;
+            g_wake_pending = 0;
             }
+        /* Take up to 32 nodes of this oid under one lock.  Tasks of the same
+         * oid are strictly FIFO, so draining a batch preserves ordering while
+         * removing two lock acquisitions per task from the hottest path. */
         q->running = 1;
-        {
-            node = q->head;
-            q->head = node->next;
-            if (!q->head) q->tail = NULL;
-            well_mutex_unlock(&g_sched_mutex);
+        q->scheduled = 0;
+        while (q->head && batch_n < (int)(sizeof(batch) / sizeof(batch[0]))) {
+            WellEventNode *n = q->head;
+            q->head = n->next;
+            n->next = NULL;
+            batch[batch_n++] = n;
+        }
+        if (!q->head) q->tail = NULL;
+        well_mutex_unlock(&g_sched_mutex);
 
+        for (i = 0; i < batch_n; i++) {
+            WellEventNode *node = batch[i];
             if (node->kind == 1) dispatch_task(q->oid, node);
             else {
                 dispatch_event(node);
                 well_release(node->event);
             }
-            }
+        }
 
         well_mutex_lock(&g_sched_mutex);
-        node_pool_put(node);
+        for (i = 0; i < batch_n; i++) node_pool_put(batch[i]);
         q->running = 0;
         if (q->head) {
             if (!q->scheduled && !q->cleaning) ready_push(q);
@@ -890,7 +937,7 @@ void well_scheduler_end_cleanup(long long oid) {
         q->cleaning = 0;
         if (q->head && !q->scheduled && !q->running) {
             ready_push(q);
-            well_cond_signal(&g_sched_cond);
+            sched_wake_one();
         } else if (!q->head && !q->scheduled && !q->running) {
             /* R-14: drop the placeholder queue created by begin_cleanup. */
             qmap_remove(q);
@@ -924,6 +971,7 @@ void well_run_loop(void) {
         return;
     }
     g_stop = 0;
+    g_idle_workers = 0;
     g_thread_count = workers - 1;
     if (g_thread_count > WELL_MAX_WORKERS) g_thread_count = WELL_MAX_WORKERS;
     g_worker_count = workers;

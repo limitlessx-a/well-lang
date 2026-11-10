@@ -1,0 +1,87 @@
+{
+  "kind": "http",
+  "config": {
+    "workers": 12,
+    "clients": 8,
+    "seconds": 3.0,
+    "lat_iters": 2000,
+    "rounds": 3
+  },
+  "impl": {
+    "well_v4": {
+      "runs": [
+        {
+          "rps": 208513.3,
+          "requests": 664124,
+          "errors": 0,
+          "p50_us": 21.5,
+          "p99_us": 58.4,
+          "rss_mb": 6.2,
+          "round": 1
+        },
+        {
+          "rps": 208302.1,
+          "requests": 670244,
+          "errors": 0,
+          "p50_us": 21.3,
+          "p99_us": 57.9,
+          "rss_mb": 6.2,
+          "round": 2
+        },
+        {
+          "rps": 208410.2,
+          "requests": 669546,
+          "errors": 0,
+          "p50_us": 21.7,
+          "p99_us": 74.2,
+          "rss_mb": 6.2,
+          "round": 3
+        }
+      ],
+      "rps": 208410.2,
+      "best_rps": 208513.3,
+      "p50_us": 21.3,
+      "p99_us": 57.9,
+      "rss_mb": 6.2,
+      "vs_best": 0.911
+    },
+    "c": {
+      "runs": [
+        {
+          "rps": 226754.6,
+          "requests": 727877,
+          "errors": 0,
+          "p50_us": 20.1,
+          "p99_us": 50.9,
+          "rss_mb": 5.2,
+          "round": 1
+        },
+        {
+          "rps": 228667.0,
+          "requests": 724664,
+          "errors": 0,
+          "p50_us": 21.0,
+          "p99_us": 54.1,
+          "rss_mb": 5.2,
+          "round": 2
+        },
+        {
+          "rps": 229779.9,
+          "requests": 726427,
+          "errors": 0,
+          "p50_us": 20.4,
+          "p99_us": 54.5,
+          "rss_mb": 5.2,
+          "round": 3
+        }
+      ],
+      "rps": 228667.0,
+      "best_rps": 229779.9,
+      "p50_us": 20.1,
+      "p99_us": 50.9,
+      "rss_mb": 5.2,
+      "vs_best": 1.0
+    }
+  },
+  "complete": true
+}

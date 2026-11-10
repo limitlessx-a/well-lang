@@ -1,0 +1,163 @@
+{
+  "label": "alloc release vs release-lto",
+  "metric_regex": "ns_per_iter\\s+([0-9.]+)",
+  "rounds": 7,
+  "warmup": 2,
+  "variants": {
+    "rel": {
+      "summary": {
+        "n": 5,
+        "min": 90.0,
+        "median": 91.0,
+        "max": 93.0,
+        "mean": 91.6
+      },
+      "samples_all": [
+        91.0,
+        91.0,
+        90.0,
+        91.0,
+        93.0,
+        91.0,
+        93.0
+      ],
+      "samples_kept": [
+        90.0,
+        91.0,
+        93.0,
+        91.0,
+        93.0
+      ],
+      "wall_s": [
+        0.22043010000197683,
+        0.19060259999969276,
+        0.18800459999692976,
+        0.1890187999997579,
+        0.1938159999990603,
+        0.18845490000239806,
+        0.19475249999959487
+      ]
+    },
+    "lto": {
+      "summary": {
+        "n": 5,
+        "min": 87.0,
+        "median": 89.0,
+        "max": 91.0,
+        "mean": 89.0
+      },
+      "samples_all": [
+        89.0,
+        89.0,
+        87.0,
+        90.0,
+        91.0,
+        89.0,
+        88.0
+      ],
+      "samples_kept": [
+        87.0,
+        90.0,
+        91.0,
+        89.0,
+        88.0
+      ],
+      "wall_s": [
+        0.21272180000232765,
+        0.18639079999775277,
+        0.1824778999980481,
+        0.1870113000004494,
+        0.1902512000015122,
+        0.18624700000145822,
+        0.1847347999973863
+      ]
+    }
+  },
+  "raw": [
+    {
+      "round": 0,
+      "variant": "rel",
+      "metric": 91.0,
+      "wall_s": 0.22
+    },
+    {
+      "round": 0,
+      "variant": "lto",
+      "metric": 89.0,
+      "wall_s": 0.213
+    },
+    {
+      "round": 1,
+      "variant": "lto",
+      "metric": 89.0,
+      "wall_s": 0.186
+    },
+    {
+      "round": 1,
+      "variant": "rel",
+      "metric": 91.0,
+      "wall_s": 0.191
+    },
+    {
+      "round": 2,
+      "variant": "rel",
+      "metric": 90.0,
+      "wall_s": 0.188
+    },
+    {
+      "round": 2,
+      "variant": "lto",
+      "metric": 87.0,
+      "wall_s": 0.182
+    },
+    {
+      "round": 3,
+      "variant": "lto",
+      "metric": 90.0,
+      "wall_s": 0.187
+    },
+    {
+      "round": 3,
+      "variant": "rel",
+      "metric": 91.0,
+      "wall_s": 0.189
+    },
+    {
+      "round": 4,
+      "variant": "rel",
+      "metric": 93.0,
+      "wall_s": 0.194
+    },
+    {
+      "round": 4,
+      "variant": "lto",
+      "metric": 91.0,
+      "wall_s": 0.19
+    },
+    {
+      "round": 5,
+      "variant": "lto",
+      "metric": 89.0,
+      "wall_s": 0.186
+    },
+    {
+      "round": 5,
+      "variant": "rel",
+      "metric": 91.0,
+      "wall_s": 0.188
+    },
+    {
+      "round": 6,
+      "variant": "rel",
+      "metric": 93.0,
+      "wall_s": 0.195
+    },
+    {
+      "round": 6,
+      "variant": "lto",
+      "metric": 88.0,
+      "wall_s": 0.185
+    }
+  ],
+  "timestamp": "2026-10-24T19:35:21+0800"
+}

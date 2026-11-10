@@ -250,7 +250,90 @@ def compile_source(src: str, filename: str = "<src>") -> str:
         raise BuildError(f"internal compiler error: {type(e).__name__}: {e}")
 
 
-def build(path: str, out: str | None = None) -> tuple[str, str]:
+# Release profiles.  `--release` keeps the historical flags; `--release-lto`
+# adds link-time optimisation and stays opt-in (v3 lesson: never turn LTO on by
+# default, it changes codegen and build time).
+RELEASE_FLAGS = "-O2 -fwrapv -DWELL_NO_OID_CHECK=1"
+RELEASE_LTO_FLAGS = "-O2 -fwrapv -flto -DWELL_NO_OID_CHECK=1"
+
+_CC_PROBE_CACHE: dict = {}
+
+
+def _release_lto_requested() -> bool:
+    v = os.environ.get("WELL_RELEASE_LTO", "").strip().lower()
+    return v not in ("", "0", "false", "no", "off")
+
+
+def _cc_probe(cc_cmd: list[str]) -> bool:
+    """True when ``cc_cmd`` can compile *and link* a trivial program.
+
+    A toolchain on PATH can be incomplete (missing import libraries make every
+    link fail).  Probing once keeps `--release` from selecting a broken gcc
+    over a working one.
+    """
+    key = tuple(cc_cmd)
+    if key in _CC_PROBE_CACHE:
+        return _CC_PROBE_CACHE[key]
+    import tempfile
+    ok = False
+    tmp = tempfile.mkdtemp(prefix="wellcc-")
+    try:
+        exe = os.path.join(tmp, "probe.exe" if os.name == "nt" else "probe")
+        r = subprocess.run(cc_cmd + ["-x", "c", "-", "-o", exe],
+                           input="int main(void){return 0;}\n",
+                           capture_output=True, text=True, timeout=120)
+        ok = r.returncode == 0 and os.path.isfile(exe)
+    except (OSError, subprocess.TimeoutExpired):
+        ok = False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    _CC_PROBE_CACHE[key] = ok
+    return ok
+
+
+def _pick_release_cc(lto: bool) -> str | None:
+    """Find a working optimizing C compiler; ``None`` when there is none."""
+    candidates: list[list[str]] = []
+    for name in ("clang", "gcc"):
+        p = shutil.which(name)
+        if p:
+            candidates.append([p])
+    if os.name == "nt":
+        # Prefer the documented V4 toolchain locations before PATH: the machine
+        # may carry an incomplete MinGW that fails to link anything.
+        for p, extra in ((r"D:\Soft\gcc\mingw64\bin\gcc.exe", []),
+                         (r"D:\Soft\gcc\bin\gcc.exe", []),
+                         (r"D:\Soft\zig\zig.exe", ["cc"])):
+            if os.path.isfile(p):
+                candidates.append([p] + extra)
+    z = shutil.which("zig")
+    if z:
+        candidates.append([z, "cc"])
+    for cmd in candidates:
+        if _cc_probe(cmd):
+            return subprocess.list2cmdline(cmd) if os.name == "nt" else " ".join(cmd)
+    return None
+
+
+def _configure_release(lto: bool = False) -> None:
+    """Select an optimizing compiler for `--release[-lto]`."""
+    lto = lto or _release_lto_requested()
+    if "WELL_CFLAGS" not in os.environ:
+        os.environ["WELL_CFLAGS"] = RELEASE_LTO_FLAGS if lto else RELEASE_FLAGS
+    if os.environ.get("WELL_CC"):
+        return
+    cc = _pick_release_cc(lto)
+    if cc:
+        os.environ["WELL_CC"] = cc
+    elif lto:
+        raise BuildError("--release-lto needs a working gcc/clang/zig on PATH "
+                         "(set WELL_CC explicitly)")
+
+
+def build(path: str, out: str | None = None, release: bool = False,
+          release_lto: bool = False) -> tuple[str, str]:
+    if release or release_lto:
+        _configure_release(release_lto)
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         raise BuildError(f"file not found: {path}")
@@ -276,7 +359,12 @@ def build(path: str, out: str | None = None) -> tuple[str, str]:
         out = os.path.join(BUILD_DIR, _artifact_stem(path) + (".exe" if os.name == "nt" else ""))
     out = _ensure_parent(out, "executable")
     cc = find_cc()
-    cmd = [cc, "-I", os.path.join(RUNTIME_DIR, "core"),
+    cc_parts = shlex.split(cc, posix=(os.name != "nt"))
+    if os.name == "nt":
+        cc_parts = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p
+                    for p in cc_parts]
+    cmd = cc_parts + [
+           "-I", os.path.join(RUNTIME_DIR, "core"),
            "-I", os.path.join(RUNTIME_DIR, "modules", "http"),
            "-I", os.path.join(RUNTIME_DIR, "modules", "ws"),
            "-I", os.path.join(RUNTIME_DIR, "modules", "mysql")]
@@ -301,8 +389,9 @@ def build(path: str, out: str | None = None) -> tuple[str, str]:
     return c_path, out
 
 
-def run(path: str, out: str | None = None) -> int:
-    _, exe = build(path, out)
+def run(path: str, out: str | None = None, release: bool = False,
+        release_lto: bool = False) -> int:
+    _, exe = build(path, out, release=release, release_lto=release_lto)
     r = subprocess.run([exe])
     return r.returncode
 

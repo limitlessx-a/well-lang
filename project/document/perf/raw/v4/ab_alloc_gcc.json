@@ -1,0 +1,163 @@
+{
+  "label": "alloc GCC base vs v4(stack)",
+  "metric_regex": "ns_per_iter\\s+([0-9.]+)",
+  "rounds": 7,
+  "warmup": 2,
+  "variants": {
+    "base": {
+      "summary": {
+        "n": 5,
+        "min": 98.0,
+        "median": 98.0,
+        "max": 102.0,
+        "mean": 99.2
+      },
+      "samples_all": [
+        99.0,
+        98.0,
+        100.0,
+        98.0,
+        98.0,
+        98.0,
+        102.0
+      ],
+      "samples_kept": [
+        100.0,
+        98.0,
+        98.0,
+        98.0,
+        102.0
+      ],
+      "wall_s": [
+        0.21086969999669236,
+        0.20463720000043395,
+        0.20809300000109943,
+        0.20419799999945099,
+        0.20376129999931436,
+        0.20344879999902332,
+        0.21109579999756534
+      ]
+    },
+    "v4": {
+      "summary": {
+        "n": 5,
+        "min": 29.0,
+        "median": 30.0,
+        "max": 31.0,
+        "mean": 30.0
+      },
+      "samples_all": [
+        30.0,
+        30.0,
+        31.0,
+        30.0,
+        30.0,
+        29.0,
+        30.0
+      ],
+      "samples_kept": [
+        31.0,
+        30.0,
+        30.0,
+        29.0,
+        30.0
+      ],
+      "wall_s": [
+        0.06889170000067679,
+        0.06662990000040736,
+        0.06759880000026897,
+        0.06640879999758909,
+        0.06638670000029379,
+        0.06545380000170553,
+        0.06708459999936167
+      ]
+    }
+  },
+  "raw": [
+    {
+      "round": 0,
+      "variant": "base",
+      "metric": 99.0,
+      "wall_s": 0.211
+    },
+    {
+      "round": 0,
+      "variant": "v4",
+      "metric": 30.0,
+      "wall_s": 0.069
+    },
+    {
+      "round": 1,
+      "variant": "v4",
+      "metric": 30.0,
+      "wall_s": 0.067
+    },
+    {
+      "round": 1,
+      "variant": "base",
+      "metric": 98.0,
+      "wall_s": 0.205
+    },
+    {
+      "round": 2,
+      "variant": "base",
+      "metric": 100.0,
+      "wall_s": 0.208
+    },
+    {
+      "round": 2,
+      "variant": "v4",
+      "metric": 31.0,
+      "wall_s": 0.068
+    },
+    {
+      "round": 3,
+      "variant": "v4",
+      "metric": 30.0,
+      "wall_s": 0.066
+    },
+    {
+      "round": 3,
+      "variant": "base",
+      "metric": 98.0,
+      "wall_s": 0.204
+    },
+    {
+      "round": 4,
+      "variant": "base",
+      "metric": 98.0,
+      "wall_s": 0.204
+    },
+    {
+      "round": 4,
+      "variant": "v4",
+      "metric": 30.0,
+      "wall_s": 0.066
+    },
+    {
+      "round": 5,
+      "variant": "v4",
+      "metric": 29.0,
+      "wall_s": 0.065
+    },
+    {
+      "round": 5,
+      "variant": "base",
+      "metric": 98.0,
+      "wall_s": 0.203
+    },
+    {
+      "round": 6,
+      "variant": "base",
+      "metric": 102.0,
+      "wall_s": 0.211
+    },
+    {
+      "round": 6,
+      "variant": "v4",
+      "metric": 30.0,
+      "wall_s": 0.067
+    }
+  ],
+  "timestamp": "2026-10-24T19:40:06+0800"
+}
