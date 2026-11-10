@@ -2467,39 +2467,57 @@ class CodeGen:
         self.ind -= 1
         self.w("}")
 
+    def emit_print_call(self, e, prefix: str):
+        """Emit print/host_log with the arguments evaluated *before* the print
+        lock is taken.
+
+        The lock (``g_print_mutex``) is non-recursive on POSIX, so evaluating
+        an argument that itself prints (e.g. ``print(tag("A"))``) deadlocked
+        when the old order locked first and evaluated lazily.  Arguments are
+        therefore spilled into locals in source order, then printed while the
+        lock is held, then any owned strings are released.
+        """
+        self.w("{")
+        self.ind += 1
+        temps = []
+        for a in e.args:
+            ty = getattr(a, "ty", "int")
+            code = self.gen_expr(a)
+            tmp = f"_pa{self.next_id()}"
+            if ty == "String":
+                self.w(f"WellString* {tmp} = {code};")
+            elif ty == "bool":
+                self.w(f"int {tmp} = (int)({code});")
+            elif ty in ("double", "float"):
+                self.w(f"double {tmp} = (double)({code});")
+            else:
+                self.w(f"long long {tmp} = (long long)({code});")
+            temps.append((ty, tmp, self.is_owned(a) if ty == "String" else False))
+        self.w("well_print_begin();")
+        for ty, tmp, _owned in temps:
+            if ty == "String":
+                self.w(f"{prefix}_str({tmp});")
+            elif ty == "bool":
+                self.w(f"{prefix}_bool({tmp});")
+            elif ty in ("double", "float"):
+                self.w(f"{prefix}_double({tmp});")
+            else:
+                self.w(f"{prefix}_int({tmp});")
+        self.w(f"{prefix}_nl();")
+        self.w("well_print_end();")
+        for ty, tmp, owned in temps:
+            if ty == "String" and owned:
+                self.w(f"well_release((void*){tmp});")
+        self.ind -= 1
+        self.w("}")
+
     def gen_expr_stmt(self, s: ExprStmt):
         e = s.expr
         if isinstance(e, Call) and getattr(e, "builtin", None) == "print":
-            self.w("well_print_begin();")
-            for a in e.args:
-                ty = getattr(a, "ty", "int")
-                code = self.gen_expr(a)
-                if ty == "String":
-                    self.emit_print_str(code, a, "well_print_str")
-                elif ty == "bool":
-                    self.w(f"well_print_bool({code});")
-                elif ty in ("double", "float"):
-                    self.w(f"well_print_double({code});")
-                else:
-                    self.w(f"well_print_int((long long)({code}));")
-            self.w("well_print_nl();")
-            self.w("well_print_end();")
+            self.emit_print_call(e, "well_print")
             return
         if isinstance(e, Call) and getattr(e, "builtin", None) == "host_log":
-            self.w("well_print_begin();")
-            for a in e.args:
-                ty = getattr(a, "ty", "int")
-                code = self.gen_expr(a)
-                if ty == "String":
-                    self.emit_print_str(code, a, "well_log_str")
-                elif ty == "bool":
-                    self.w(f"well_log_bool({code});")
-                elif ty in ("double", "float"):
-                    self.w(f"well_log_double({code});")
-                else:
-                    self.w(f"well_log_int((long long)({code}));")
-            self.w("well_log_nl();")
-            self.w("well_print_end();")
+            self.emit_print_call(e, "well_log")
             return
         if isinstance(e, Call) and getattr(e, "method_op", None) == "array_push":
             if (isinstance(e.method_obj, Ident)

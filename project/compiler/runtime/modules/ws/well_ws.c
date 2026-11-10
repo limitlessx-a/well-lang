@@ -33,6 +33,7 @@ typedef struct { long sec; long usec; } WsTimeval;
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 #include <signal.h>
 #include <poll.h>
